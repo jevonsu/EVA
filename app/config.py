@@ -62,6 +62,22 @@ class Settings(BaseSettings):
     # MCP: JSON array string of server configs
     mcp_servers: str = ""
 
+    # ---- Card auth / 发卡登录（高防）----
+    # AUTH_ENABLED=false 可临时关闭整站卡密门禁（仅调试）
+    auth_enabled: bool = True
+    # 会话 / HMAC pepper（务必在生产环境改为长随机串）
+    auth_pepper: str = ""
+    auth_secret: str = ""
+    # 用户卡密会话有效天数
+    auth_session_days: int = 7
+    # Cookie Secure（仅 HTTPS 时设 true）
+    auth_cookie_secure: bool = False
+    # 发卡后台管理员
+    auth_admin_user: str = "admin"
+    # 明文密码（开发可用）；生产建议用 AUTH_ADMIN_PASSWORD_HASH=bcrypt
+    auth_admin_password: str = ""
+    auth_admin_password_hash: str = ""
+
     @field_validator("data_dir", mode="before")
     @classmethod
     def _path(cls, v: Any) -> Path:

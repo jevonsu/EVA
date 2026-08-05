@@ -40,3 +40,7 @@ pysmb>=1.2.10
 # Optional skill extras (safe on Linux; install when needed):
 # paramiko>=3.4.0   # skills/netops SSH/SCP
 # psutil>=5.9.0     # skills/server_health_check
+
+# Auth (card login / admin)
+bcrypt>=4.2.0
+

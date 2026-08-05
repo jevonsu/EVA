@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="robots" content="noindex,nofollow" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Eva · 发卡平台</title>
+  <link rel="stylesheet" href="/static/auth/auth.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="card wide" id="appRoot">
+
+      <!-- Login panel -->
+      <div id="loginPanel">
+        <div class="brand">
+          <div class="logo">A</div>
+          <div>
+            <h1>发卡平台</h1>
+            <p>管理员登录 · 仅限授权人员</p>
+          </div>
+        </div>
+        <form id="adminLoginForm" autocomplete="off">
+          <label for="user">用户名</label>
+          <input id="user" type="text" autocomplete="username" required />
+          <label for="pass">密码</label>
+          <input id="pass" type="password" autocomplete="current-password" required />
+          <div class="hp" aria-hidden="true">
+            <input id="website" type="text" tabindex="-1" autocomplete="off" />
+          </div>
+          <button class="btn primary" id="btnAdminLogin" type="submit">登录管理台</button>
+          <div class="msg" id="loginMsg"></div>
+        </form>
+        <div class="hint">用户入口：<a href="/login">/login</a></div>
+      </div>
+
+      <!-- Dashboard -->
+      <div id="dashPanel" hidden>
+        <div class="admin-top">
+          <div class="brand" style="margin:0">
+            <div class="logo">A</div>
+            <div>
+              <h1>发卡平台</h1>
+              <p>批量制卡 · 吊销 · 审计</p>
+            </div>
+          </div>
+          <div class="row-actions">
+            <a class="btn ghost" href="/" target="_blank" rel="noopener">打开前台</a>
+            <button class="btn" type="button" id="btnRefresh">刷新</button>
+            <button class="btn danger" type="button" id="btnLogout">退出</button>
+          </div>
+        </div>
+
+        <div class="stats" id="stats"></div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <h3>批量发卡</h3>
+            <label>数量 (1–100)</label>
+            <input id="count" type="number" min="1" max="100" value="5" />
+            <label>有效天数（0 = 永不过期）</label>
+            <input id="days" type="number" min="0" max="3650" value="30" />
+            <label>最大同时在线设备数</label>
+            <input id="maxSess" type="number" min="1" max="20" value="3" />
+            <label>备注</label>
+            <input id="note" type="text" maxlength="200" placeholder="例如：测试批次 / 客户A" />
+            <div class="row-actions">
+              <button class="btn primary" style="width:auto;margin:0" type="button" id="btnIssue">生成卡密</button>
+              <button class="btn" type="button" id="btnCopy" hidden>复制全部</button>
+            </div>
+            <div class="msg" id="issueMsg"></div>
+            <div class="codes-box" id="codesBox" hidden></div>
+          </div>
+
+          <div class="panel">
+            <h3>审计日志</h3>
+            <div class="audit" id="audit"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>卡列表</h3>
+          <div class="row-actions" style="margin-top:0;margin-bottom:10px">
+            <select id="filterStatus">
+              <option value="">全部状态</option>
+              <option value="unused">unused 未使用</option>
+              <option value="active">active 已激活</option>
+              <option value="revoked">revoked 已吊销</option>
+              <option value="expired">expired 已过期</option>
+            </select>
+            <button class="btn" type="button" id="btnFilter">筛选</button>
+          </div>
+          <div style="overflow:auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>提示</th>
+                  <th>状态</th>
+                  <th>批次</th>
+                  <th>设备上限</th>
+                  <th>登录次数</th>
+                  <th>过期</th>
+                  <th>备注</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="cardBody"></tbody>
+            </table>
+          </div>
+          <div class="msg" id="listMsg"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="/static/auth/admin.js" defer></script>
+</body>
+</html>

@@ -9,6 +9,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -18,6 +19,9 @@ from app.api import knowledge as knowledge_api
 from app.api import smb_media
 from app.api import webhook as webhook_api
 from app.api import workflows as workflows_api
+from app.auth.gate import AuthGateASGI
+from app.auth.routes import router as auth_router
+from app.auth.store import get_auth_store
 from app.config import get_settings
 from app.config_store import get_config_store
 from app.mcp.client import get_mcp_manager
@@ -54,6 +58,27 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.ensure_dirs()
     get_config_store()  # ensure data/config.json exists
+
+    # Card auth DB
+    try:
+        get_auth_store()
+        if getattr(settings, "auth_enabled", True):
+            has_pwd = bool(
+                (getattr(settings, "auth_admin_password_hash", "") or "").strip()
+                or (getattr(settings, "auth_admin_password", "") or "").strip()
+            )
+            if not has_pwd:
+                logger.warning(
+                    "AUTH enabled but AUTH_ADMIN_PASSWORD / AUTH_ADMIN_PASSWORD_HASH "
+                    "is empty — admin card platform login will fail until set"
+                )
+            if not (getattr(settings, "auth_pepper", "") or getattr(settings, "auth_secret", "")):
+                logger.warning(
+                    "AUTH_PEPPER is empty — using derived default; set a long random "
+                    "AUTH_PEPPER in .env for production"
+                )
+    except Exception:
+        logger.exception("Auth store init failed")
 
     summary = await rebuild_runtime(reconnect_mcp=True)
 
@@ -210,6 +235,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(auth_router)
     app.include_router(system.router)
     app.include_router(chat.router)
     app.include_router(sessions.router)
@@ -224,6 +250,32 @@ def create_app() -> FastAPI:
     app.include_router(webhook_api.router)
     app.include_router(smb_media.router)
 
+    def _auth_page(name: str) -> Response:
+        path = STATIC_DIR / "auth" / name
+        try:
+            html = path.read_text(encoding="utf-8")
+        except OSError:
+            return HTMLResponse("<h1>Auth page missing</h1>", status_code=500)
+        return HTMLResponse(
+            html,
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "Referrer-Policy": "no-referrer",
+            },
+        )
+
+    @app.get("/login", include_in_schema=False)
+    @app.get("/login.html", include_in_schema=False)
+    async def login_page() -> Response:
+        return _auth_page("login.html")
+
+    @app.get("/admin", include_in_schema=False)
+    @app.get("/admin.html", include_in_schema=False)
+    async def admin_page() -> Response:
+        return _auth_page("admin.html")
+
     # Static assets (JS/CSS). Must be after API routers.
     app.mount(
         "/static",
@@ -237,8 +289,8 @@ def create_app() -> FastAPI:
 
 
 def build_app() -> ASGIApp:
-    """ASGI app with mobile-safe HTML shell in front of FastAPI."""
-    return MobileHtmlASGI(create_app())
+    """ASGI: Auth gate → mobile-safe HTML shell → FastAPI."""
+    return AuthGateASGI(MobileHtmlASGI(create_app()))
 
 
 # Used by uvicorn: app.main:app
