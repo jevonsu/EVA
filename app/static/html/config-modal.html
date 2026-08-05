@@ -1,0 +1,1333 @@
+<!-- Config Modal -->
+ <div class="modal-backdrop hidden" id="configModal" role="dialog" aria-modal="true" aria-labelledby="cfgTitle">
+ <div class="modal">
+ <header class="modal-header">
+ <div>
+ <h2 id="cfgTitle" class="icon-inline"><span data-ipk="setting-two" data-ipk-class="ipk-md"></span> 设定</h2>
+ <p class="hint">Tab 可横向滑动；列表 / 表单在下方滚动。改完即时热加载。</p>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnCloseConfig"><span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭</button>
+ </header>
+
+ <nav class="tabs" id="configTabs" aria-label="设定分类">
+ <button type="button" class="tab active icon-inline" data-tab="agent"><span data-ipk="robot-one" data-ipk-class="ipk-xs"></span> Agent</button>
+ <button type="button" class="tab icon-inline" data-tab="llm"><span data-ipk="lightning" data-ipk-class="ipk-xs"></span> LLM</button>
+ <button type="button" class="tab icon-inline" data-tab="tools"><span data-ipk="tool" data-ipk-class="ipk-xs"></span> Tools</button>
+ <button type="button" class="tab icon-inline" data-tab="skills"><span data-ipk="puzzle" data-ipk-class="ipk-xs"></span> Skills</button>
+ <button type="button" class="tab icon-inline" data-tab="mcp"><span data-ipk="api" data-ipk-class="ipk-xs"></span> MCP</button>
+ <button type="button" class="tab icon-inline" data-tab="integrations"><span data-ipk="connection" data-ipk-class="ipk-xs"></span> 集成</button>
+ <button type="button" class="tab icon-inline" data-tab="tasks"><span data-ipk="alarm-clock" data-ipk-class="ipk-xs"></span> 任务</button>
+ <button type="button" class="tab icon-inline" data-tab="memory"><span data-ipk="brain" data-ipk-class="ipk-xs"></span> 记忆</button>
+ <button type="button" class="tab icon-inline" data-tab="kb"><span data-ipk="book-open" data-ipk-class="ipk-xs"></span> 知识库</button>
+ <button type="button" class="tab icon-inline" data-tab="workflows"><span data-ipk="network-tree" data-ipk-class="ipk-xs"></span> 工作流</button>
+ <button type="button" class="tab icon-inline" data-tab="workspace"><span data-ipk="folder-open" data-ipk-class="ipk-xs"></span> 工作区</button>
+ <button type="button" class="tab icon-inline" data-tab="webhooks"><span data-ipk="link" data-ipk-class="ipk-xs"></span> Webhook</button>
+ </nav>
+
+ <div class="modal-body">
+ <!-- Agent -->
+ <section class="tab-panel active" data-panel="agent">
+ <div class="panel-banner agent-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="robot-one" data-ipk-class="ipk-sm"></span> Agent 角色设定</strong>
+ <p class="hint" style="margin:4px 0 0">
+ <strong>① 身份与人设</strong>：名称、语言、角色背景；需要沉浸时打开「启用角色扮演」。
+ 工作方法见 ②～⑥。超长手册放<strong>知识库</strong> / <strong>工作流</strong>。
+ </p>
+ </div>
+ <div class="row-actions agent-banner-actions" style="margin:0">
+ <button type="button" class="btn ghost-sm icon-inline" id="btnAgentGoKb" title="打开知识库">
+ <span data-ipk="book-open" data-ipk-class="ipk-xs"></span> 知识库
+ </button>
+ <button type="button" class="btn ghost-sm icon-inline" id="btnAgentGoWf" title="打开工作流">
+ <span data-ipk="network-tree" data-ipk-class="ipk-xs"></span> 工作流
+ </button>
+ </div>
+ </div>
+
+ <div class="agent-form-compact">
+ <!-- ① 身份与人设（基础身份 + 可选扮演，同一区块） -->
+ <div class="agent-section agent-section-identity">
+ <div class="agent-section-head">
+ <span class="agent-section-title">① 身份与人设</span>
+ <span class="agent-section-hint">谁 · 怎么说话 · 要不要沉浸扮演</span>
+ </div>
+
+ <p class="agent-subhead" id="agentBaseSubhead">基础身份 <em id="agentBaseHint">名称 · 语言 · 角色背景</em></p>
+ <div id="agentBaseFields" class="agent-base-fields">
+ <div class="agent-row agent-row-top">
+ <label class="agent-field">名称
+ <input id="cfgAgentName" type="text" placeholder="Lily" />
+ </label>
+ <label class="agent-field">语言
+ <select id="cfgLanguage"></select>
+ </label>
+ </div>
+ <div class="agent-row">
+ <label class="agent-field">角色背景 <em class="agent-opt-hint" id="agentRoleBgHint">是谁 · 经历立场 · 世界观</em>
+ <textarea id="cfgRoleBackground" class="agent-ta-sm" rows="4" placeholder="例：你是谁、职业/身份、经历与立场、世界观。&#10;助手与扮演模式都会注入；扮演时再配合下方关系/性格即可。"></textarea>
+ </label>
+ </div>
+ </div>
+
+ <div class="agent-identity-divider" role="separator"></div>
+
+ <details class="agent-fold-details agent-roleplay-details" id="roleplayDetails">
+ <summary>
+ 角色扮演（可选 · 展开填写人设）
+ <span class="agent-fold-badge" id="roleplaySummaryBadge">未启用</span>
+ </summary>
+ <label class="agent-roleplay-toggle" for="cfgRoleplayEnabled" style="margin-top:8px">
+ <input type="checkbox" id="cfgRoleplayEnabled" />
+ <span class="agent-roleplay-toggle-text">
+ <strong>启用角色扮演</strong>
+ <em>关 = 普通助手；开 = 按下方关系/性格/示例沉浸回复（关闭时内容可预填但不注入）</em>
+ </span>
+ </label>
+ <div id="roleplayFields" class="roleplay-fields is-off" aria-hidden="true">
+ <div class="agent-row agent-row-top">
+ <label class="agent-field agent-field-sm">扮演强度
+ <select id="cfgRoleplayIntensity">
+ <option value="light">轻度 — 带一点角色口吻</option>
+ <option value="medium" selected>中度 — 角色与任务并重</option>
+ <option value="deep">深度 — 优先沉浸少出戏</option>
+ </select>
+ </label>
+ </div>
+ <div class="agent-row agent-row-2">
+ <label class="agent-field">与用户关系
+ <textarea id="cfgRelationship" class="agent-ta-sm" rows="2" placeholder="例：称呼「你/老板」；贴身助理兼损友；亲密度偏高但不越界"></textarea>
+ </label>
+ <label class="agent-field">性格与情绪
+ <textarea id="cfgPersonality" class="agent-ta-sm" rows="2" placeholder="例：外冷内热、嘴硬心软；被质疑时先愣再认真解释"></textarea>
+ </label>
+ </div>
+ <div class="agent-row">
+ <label class="agent-field">说话方式 · 口癖与称呼
+ <textarea id="cfgSpeechPatterns" class="agent-ta-sm" rows="2" placeholder="例：自称「我」；少说「作为AI」；句式短、可带一点调侃"></textarea>
+ </label>
+ </div>
+ <div class="agent-row">
+ <label class="agent-field">示例对话 <em>2～4 轮最佳</em>
+ <textarea id="cfgExampleDialogue" class="agent-ta" rows="4" placeholder="例：&#10;用户：今天好累&#10;你：……辛苦了。先喝口水，再说要我帮你收拾哪一件。"></textarea>
+ </label>
+ </div>
+ <div class="agent-row">
+ <label class="agent-field">破戏 / OOC 规则
+ <textarea id="cfgOocRules" class="agent-ta-sm" rows="2" placeholder="例：默认不破戏；用户说「出戏/OOC/切换助手」时用括号简短说明后再回角色"></textarea>
+ </label>
+ </div>
+ </div>
+ </details>
+
+ <details class="agent-fold-details agent-runtime-details">
+ <summary>运行参数（工具轮次 · 历史上限 · 会话演化）</summary>
+ <div class="agent-row agent-row-top" style="margin-top:8px">
+ <label class="agent-field agent-field-sm">工具轮次
+ <input id="cfgMaxRounds" type="number" min="1" max="64" title="单轮对话最多工具调用次数" />
+ </label>
+ <label class="agent-field agent-field-sm">历史上限
+ <input id="cfgMaxHistory" type="number" min="4" max="200" title="会话保留消息条数（硬上限）" />
+ </label>
+ <label class="agent-field agent-field-sm" title="开启后，对话变长时自动压缩为会话演化摘要">
+ 会话演化
+ <select id="cfgEvoEnabled">
+ <option value="1">开启</option>
+ <option value="0">关闭</option>
+ </select>
+ </label>
+ </div>
+ <div class="agent-row agent-row-top" style="margin-top:8px">
+ <label class="agent-field agent-field-sm" title="自上次演化起，消息条数达到该值则自动压缩">
+ 演化触发条数
+ <input id="cfgEvoTrigger" type="number" min="6" max="200" />
+ </label>
+ <label class="agent-field agent-field-sm" title="压缩后保留的最近原始消息条数">
+ 保留近讯
+ <input id="cfgEvoKeep" type="number" min="4" max="80" />
+ </label>
+ <label class="agent-field agent-field-sm" title="演化摘要最多保留几条要点">
+ 演化条目上限
+ <input id="cfgEvoMaxEntries" type="number" min="4" max="40" />
+ </label>
+ </div>
+ <p class="field-hint" style="margin:6px 0 0">会话演化：达到触发条数后把更早内容压成摘要并注入后续对话，避免长聊遗忘关键结论。</p>
+ </details>
+ </div>
+
+ <!-- ② 隐性决策树 -->
+ <div class="agent-section">
+ <div class="agent-section-head">
+ <span class="agent-section-title">② 隐性决策树</span>
+ <span class="agent-section-hint">内部判断路径 · 不直接对用户复述</span>
+ </div>
+ <label class="agent-field">
+ <textarea id="cfgDecisionTree" class="agent-ta" rows="5" placeholder="例：
+若用户目标不明 → 先澄清 1～3 个关键点，再行动
+若信息不足 → 区分可确认 / 推测 / 需补充，禁止编造
+若可多路径完成 → 优先成本低、可验证的路径
+若冲突（安全 vs 便利）→ 安全优先"></textarea>
+ </label>
+ </div>
+
+ <!-- ③ 动态语言校准器 -->
+ <div class="agent-section">
+ <div class="agent-section-head">
+ <span class="agent-section-title">③ 动态语言校准器</span>
+ <span class="agent-section-hint">如何随场景调节语气与措辞</span>
+ </div>
+ <label class="agent-field">
+ <textarea id="cfgLanguageCalibrator" class="agent-ta" rows="4" placeholder="例：
+任务/交付：简洁、可执行、少套话
+闲聊：跟随用户语气，可更口语
+高压/投诉：先共情再给方案，避免辩解
+专业场景：术语准确，必要时给一句话白话解释"></textarea>
+ </label>
+ </div>
+
+ <!-- ④ 标准化作业流程 -->
+ <div class="agent-section">
+ <div class="agent-section-head">
+ <span class="agent-section-title">④ 标准化作业流程（SOP）</span>
+ <span class="agent-section-hint">可复用的分步工作法</span>
+ </div>
+ <label class="agent-field">
+ <textarea id="cfgSop" class="agent-ta" rows="6" placeholder="例：
+1. 理解目标与约束
+2. 收集 / 核验必要信息
+3. 制定方案并说明取舍
+4. 执行（工具 / 输出）
+5. 验收要点与下一步建议
+（复杂流水线也可放到「工作流」面板编排）"></textarea>
+ </label>
+ </div>
+
+ <!-- ⑤ 硬性边界 -->
+ <div class="agent-section">
+ <div class="agent-section-head">
+ <span class="agent-section-title">⑤ 硬性边界</span>
+ <span class="agent-section-hint">通用红线 · 不可突破</span>
+ </div>
+ <label class="agent-field">
+ <textarea id="cfgHardBoundaries" class="agent-ta" rows="5" placeholder="例：
+- 不编造事实、数据、来源
+- 不协助违法、伤害、欺诈
+- 不当/虚假/误导内容拒绝并说明理由
+- 涉及隐私与凭证时最小化暴露
+- 与系统安全规则冲突时以系统为准"></textarea>
+ </label>
+ </div>
+
+ <!-- ⑥ 通用开机语 -->
+ <div class="agent-section">
+ <div class="agent-section-head">
+ <span class="agent-section-title">⑥ 通用开机语</span>
+ <span class="agent-section-hint">新对话默认开场；同时写入人设</span>
+ </div>
+ <label class="agent-field">
+ <textarea id="cfgGreeting" class="agent-ta-sm" rows="3" placeholder="例：你好，我是 Lily。今天想先处理哪件事？"></textarea>
+ </label>
+ </div>
+
+ <details class="agent-fixed-details">
+ <summary>系统固定规则（只读 · 不可在此改）</summary>
+ <pre class="agent-fixed-pre" id="cfgSystemFixedRules"></pre>
+ </details>
+
+ <div class="agent-form-actions">
+ <button type="button" class="btn primary icon-inline" id="btnSaveAgent"><span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存人设</button>
+ <span class="form-msg" id="msgAgent"></span>
+ </div>
+ </div>
+ </section>
+
+ <!-- LLM -->
+ <section class="tab-panel" data-panel="llm">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="lightning" data-ipk-class="ipk-sm"></span> LLM 配置</strong>
+ <p class="hint" style="margin:4px 0 0">数据源 <code>/api/config/llms</code>。可添加、编辑、测试、设默认、删除。</p>
+ </div>
+ <div class="row-actions" style="margin:0">
+ <button type="button" class="btn primary icon-inline" id="btnAddLlm"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 添加 LLM</button>
+ </div>
+ </div>
+ <span class="form-msg" id="msgLlm"></span>
+ <div class="card-list" id="llmList"></div>
+ </section>
+
+ <!-- Tools -->
+ <section class="tab-panel" data-panel="tools">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="tool" data-ipk-class="ipk-sm"></span> 工具开关</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 此处为 <strong>LLM 实际可调用的函数</strong>（function calling）。
+ 数据源 <code>/api/config/tools</code>。开关即时生效；下方可加自订 HTTP 工具。
+ </p>
+ <p class="hint panel-relation-hint" style="margin:6px 0 0">
+ <strong>Skill = 能力包</strong>，<strong>Tool = 可调用接口</strong>。多数 Skill 会注册 1 个 Tool，
+ 两个面板数字<strong>不要相加</strong>。角标「主入口 / 等价 / 后备」仅作推荐指引。
+ 分组<strong>默认折叠</strong>，点标题展开。
+ </p>
+ </div>
+ <div class="row-actions" style="margin:0">
+ <button type="button" class="btn primary icon-inline" id="btnAddCustomTool"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 添加 HTTP 工具</button>
+ </div>
+ </div>
+ <span class="form-msg" id="msgTools"></span>
+ <h3 class="panel-title">已注册工具（按场景分组）</h3>
+ <div class="card-list" id="toolList"></div>
+
+ <h3 class="panel-title">自订 HTTP 工具</h3>
+ <div class="card-list" id="customToolList"></div>
+ </section>
+
+ <!-- Skills -->
+ <section class="tab-panel" data-panel="skills">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="puzzle" data-ipk-class="ipk-sm"></span> Skills</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 此处为 <strong>能力包目录</strong>（安装/开关单元），不是 LLM 直接调用的函数名。
+ 数据源 <code>/api/config/skills</code> · 目录 <code>skills/&lt;id&gt;/</code>。
+ </p>
+ <p class="hint panel-relation-hint" style="margin:6px 0 0">
+ 关闭某个 Skill 会卸载其注册的 Tool；开启后重新出现在 Tools 列表。
+ 与 Tools 面板数字不叠加。分组<strong>默认折叠</strong>，点标题展开。
+ </p>
+ </div>
+ </div>
+ <span class="form-msg" id="msgSkills"></span>
+ <h3 class="panel-title">能力包（按场景分组）</h3>
+ <div class="card-list" id="skillList"></div>
+ </section>
+
+ <!-- MCP · 扩展能力（普通人友好） -->
+ <section class="tab-panel" data-panel="mcp">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="api" data-ipk-class="ipk-sm"></span> 扩展能力（MCP）</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 给助手<strong>外挂更多本事</strong>（网页、文件夹、Git…）。点预设即可添加，一般<strong>不用写代码</strong>。
+ 多数预设需要本机已安装 <strong>Node.js</strong>。
+ </p>
+ </div>
+ <div class="row-actions" style="margin:0">
+ <button type="button" class="btn primary icon-inline" id="btnAddMcp"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 自定义添加</button>
+ <button type="button" class="btn icon-inline" id="btnReloadMcp"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 重新连接</button>
+ </div>
+ </div>
+ <span class="form-msg" id="msgMcp"></span>
+
+ <div class="mcp-presets-block">
+ <div class="mcp-block-title">一键添加（推荐）</div>
+ <p class="field-hint" style="margin:0 0 8px">点一张卡片 → 自动填好并保存连接。成功后可在对话里用到新能力。</p>
+ <div class="mcp-preset-grid" id="mcpPresetGrid"></div>
+ </div>
+
+ <div class="mcp-block-title" style="margin-top:16px">已添加的扩展</div>
+ <div class="card-list" id="mcpList"></div>
+ </section>
+
+ <!-- Integrations -->
+ <section class="tab-panel" data-panel="integrations">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="connection" data-ipk-class="ipk-sm"></span> 集成连接</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 技能（NocoDB / NAS / qB / HTTP 代理等）的<strong>连接参数</strong>。存于 <code>config.json → integrations</code>，
+ 前端可增改删，无需手改文件。密码/Token 脱敏；留空保存表示不修改已有密钥。
+ </p>
+ <p class="hint panel-relation-hint" style="margin:6px 0 0">
+ Skills 面板可看到是否已配置；调用技能时实时读取此处配置。
+ </p>
+ </div>
+ <div class="row-actions" style="margin:0">
+ <button type="button" class="btn primary icon-inline" id="btnAddIntegration"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 自定义集成</button>
+ <button type="button" class="btn icon-inline" id="btnRefreshIntegrations"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新</button>
+ </div>
+ </div>
+ <span class="form-msg" id="msgIntegrations"></span>
+ <div class="card-list" id="integrationList"></div>
+ </section>
+
+ <!-- Tasks -->
+ <section class="tab-panel" data-panel="tasks">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="alarm-clock" data-ipk-class="ipk-sm"></span> 定时任务</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 与技能 <code>scheduled_task</code> 同一数据源。到点由 Agent 执行下方「要做什么」。
+ 旧版 reminders 已停用。
+ </p>
+ </div>
+ <div class="row-actions" style="margin:0">
+ <button type="button" class="btn primary icon-inline" id="btnNewTask"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 新建任务</button>
+ <button type="button" class="btn icon-inline" id="btnRefreshTasks"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新</button>
+ </div>
+ </div>
+ <span class="form-msg" id="msgTasks"></span>
+ <div class="mem-list-head">任务列表</div>
+ <div class="card-list" id="taskList"></div>
+ </section>
+
+ <!-- Memory -->
+ <section class="tab-panel" data-panel="memory">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="brain" data-ipk-class="ipk-sm"></span> 长期记忆</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 对话时按关键词<strong>匹配几条</strong>注入（非整库）。顶栏「记忆」开关控制是否注入；密钥请写配置，勿写入记忆。
+ </p>
+ </div>
+ </div>
+
+ <div class="row-actions mem-toolbar">
+ <input type="search" id="memSearch" class="mem-search" placeholder="搜索记忆…" />
+ <button type="button" class="btn icon-inline" id="btnSearchMemory"><span data-ipk="search" data-ipk-class="ipk-xs"></span> 搜索</button>
+ <button type="button" class="btn icon-inline" id="btnRefreshMemory"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新</button>
+ <button type="button" class="btn primary icon-inline" id="btnOpenMemAdd"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 新增记忆</button>
+ <span class="form-msg" id="msgMemory"></span>
+ </div>
+ <div class="mem-list-head">已保存</div>
+ <div class="card-list" id="memoryList"></div>
+ </section>
+
+ <!-- Knowledge Base Wiki -->
+ <section class="tab-panel" data-panel="kb">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="book-open" data-ipk-class="ipk-sm"></span> 知识库 Wiki</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 业务标准库：SOP / 产品参数 / 手册 / 参考模板。短偏好用「记忆」。对话按匹配注入；Agent 可用 <code>kb</code> 工具读写。
+ </p>
+ </div>
+ </div>
+ <div class="row-actions mem-toolbar">
+ <input type="search" id="kbSearch" class="mem-search" placeholder="搜索标题、标签、正文…" />
+ <select id="kbFilterCollection" title="按分类筛选" class="kb-filter-select">
+ <option value="">全部分类</option>
+ </select>
+ <button type="button" class="btn icon-inline" id="btnSearchKb"><span data-ipk="search" data-ipk-class="ipk-xs"></span> 搜索</button>
+ <button type="button" class="btn icon-inline" id="btnRefreshKb"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新</button>
+ <button type="button" class="btn primary icon-inline" id="btnNewKbPage"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 新建页</button>
+ <span class="form-msg" id="msgKb"></span>
+ </div>
+
+ <div class="mem-list-head">页面列表</div>
+ <div class="card-list" id="kbPageList"></div>
+ </section>
+
+ <!-- Workflows -->
+ <section class="tab-panel" data-panel="workflows">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="network-tree" data-ipk-class="ipk-sm"></span> 工作流</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 把「常做的几步事」做成清单，点一下按顺序自动做完。
+ 也可以让流程中途<strong>停下来问你一声</strong>再继续。
+ </p>
+ </div>
+ <div class="row-actions" style="margin:0">
+ <button type="button" class="btn primary icon-inline" id="btnNewWorkflow"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 新建流程</button>
+ <button type="button" class="btn icon-inline" id="btnRefreshWorkflows"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新</button>
+ </div>
+ </div>
+ <span class="form-msg" id="msgWorkflows"></span>
+ <div class="card-list" id="workflowList"></div>
+ <div class="mem-list-head wf-runs-head">
+ <span>最近跑过的记录</span>
+ <div class="wf-runs-toolbar" id="wfRunsToolbar" hidden>
+ <label class="wf-runs-select-all kb-check-line">
+ <input type="checkbox" id="wfRunSelectAll" />
+ <span>全选</span>
+ </label>
+ <button type="button" class="btn ghost-sm danger" id="btnWfDeleteSelectedRuns" disabled>
+ 删除所选
+ </button>
+ <button type="button" class="btn ghost-sm danger" id="btnWfClearRuns" title="清空全部运行记录">
+ 一键清理
+ </button>
+ </div>
+ </div>
+ <div class="card-list" id="workflowRunList"></div>
+ </section>
+
+ <!-- Workspace files -->
+ <section class="tab-panel" data-panel="workspace">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="folder-open" data-ipk-class="ipk-sm"></span> 工作区</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 浏览 <code>workspace/</code>。可上传/下载、在线编辑文本、新建/删除。
+ 对话附件默认在 <code>uploads/</code>；面板上传写入<strong>当前目录</strong>。
+ </p>
+ </div>
+ <div class="row-actions" style="margin:0">
+ <input type="file" id="wsUploadInput" class="hidden" multiple />
+ <button type="button" class="btn primary icon-inline" id="btnWsUpload" title="上传到当前目录">
+ <span data-ipk="upload" data-ipk-class="ipk-xs"></span> 上传
+ </button>
+ <button type="button" class="btn icon-inline" id="btnWsNewFile"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 新建文件</button>
+ <button type="button" class="btn icon-inline" id="btnWsNewDir"><span data-ipk="folder-open" data-ipk-class="ipk-xs"></span> 新建文件夹</button>
+ <button type="button" class="btn icon-inline" id="btnRefreshWorkspace"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新</button>
+ </div>
+ </div>
+ <div class="ws-pathbar">
+ <button type="button" class="btn ghost-sm" id="btnWsUp" title="上级目录" disabled>↑ 上级</button>
+ <div class="ws-breadcrumb" id="wsBreadcrumb" aria-label="当前路径"></div>
+ </div>
+ <span class="form-msg" id="msgWorkspace"></span>
+ <div class="ws-grid" id="workspaceList" tabindex="0" title="可将文件拖到此处上传"></div>
+ </section>
+
+ <!-- Webhooks multi-channel -->
+ <section class="tab-panel" data-panel="webhooks">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="link" data-ipk-class="ipk-sm"></span> Webhook 通道</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 为每个外部平台建一条通道，各自独立 Token，并绑定不同对话。
+ 调用 <code>POST /api/webhook/{slug}/chat</code>，请求头 <code>X-Webhook-Token</code>。
+ </p>
+ </div>
+ <div class="row-actions" style="margin:0">
+ <button type="button" class="btn primary icon-inline" id="btnNewWebhook">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span> 新建通道
+ </button>
+ <button type="button" class="btn icon-inline" id="btnRefreshWebhooks">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新
+ </button>
+ </div>
+ </div>
+ <span class="form-msg" id="msgWebhooks"></span>
+ <div class="card-list" id="webhookList"></div>
+ </section>
+ <!-- Workspace text editor modal -->
+ <div class="modal-backdrop kb-page-backdrop cfg-editor-backdrop hidden" id="wsFileModal" role="dialog" aria-modal="true" aria-labelledby="wsFileTitle">
+ <div class="modal cfg-editor-modal cfg-editor-modal-lg">
+ <header class="modal-header kb-page-modal-header">
+ <div class="kb-editor-head-main">
+ <h2 class="icon-inline" id="wsFileTitle"><span data-ipk="edit" data-ipk-class="ipk-sm"></span> 编辑文件</h2>
+ <p class="hint kb-editor-lead" id="wsFileLead">路径相对于 workspace/。保存后立即写入磁盘。</p>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnCloseWsFile" title="关闭">
+ <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ </button>
+ </header>
+ <div class="modal-body kb-page-modal-body">
+ <input type="hidden" id="wsEditMode" value="edit" />
+ <div class="form-grid">
+ <label class="full">路径
+ <input type="text" id="wsFilePath" placeholder="例如 notes/todo.md" autocomplete="off" />
+ </label>
+ <label class="full">内容
+ <textarea id="wsFileContent" rows="16" class="ws-file-textarea" spellcheck="false" placeholder="文件内容…"></textarea>
+ </label>
+ </div>
+ <span class="form-msg" id="msgWsFile"></span>
+ </div>
+ <footer class="kb-form-footer kb-page-modal-footer">
+ <div class="kb-form-footer-btns">
+ <button type="button" class="btn primary icon-inline" id="btnSaveWsFile">
+ <span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存
+ </button>
+ <button type="button" class="btn" id="btnCancelWsFile">取消</button>
+ </div>
+ </footer>
+ </div>
+ </div>
+
+ <!-- 共享：编辑 Tool / Skill 关键提示词（存 config，不改代码） -->
+ <div class="subcard hidden" id="promptEditor">
+ <h3 class="icon-inline" id="promptEditorTitle"><span data-ipk="edit" data-ipk-class="ipk-sm"></span> 编辑提示词</h3>
+ <p class="hint" id="promptEditorHint" style="margin:0 0 10px">
+ 这里改的是模型看到的工具说明（function description）。保存到配置，无需改代码；留空并点「恢复默认」可清除覆盖。
+ </p>
+ <input type="hidden" id="promptTargetKind" value="tool" />
+ <input type="hidden" id="promptTargetId" value="" />
+ <div class="form-grid">
+ <label class="full">目标
+ <input id="promptTargetLabel" type="text" readonly />
+ </label>
+ <label class="full">代码默认说明（只读）
+ <textarea id="promptBaseDesc" rows="3" readonly class="prompt-readonly"></textarea>
+ </label>
+ <label class="full">自定义提示词（给 LLM 看）
+ <textarea id="promptCustomDesc" rows="6" placeholder="写清楚：什么时候用这个工具、参数怎么填、不要用它做什么…"></textarea>
+ </label>
+ </div>
+ <div class="row-actions">
+ <button type="button" class="btn primary icon-inline" id="btnSavePrompt"><span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存</button>
+ <button type="button" class="btn" id="btnResetPrompt">恢复默认</button>
+ <button type="button" class="btn" id="btnCancelPrompt">取消</button>
+ <span class="form-msg" id="msgPrompt"></span>
+ </div>
+ </div>
+ </div>
+ </div>
+ </div>
+
+ 
+ <!-- nested editor: llmEditorModal -->
+ <div class="modal-backdrop kb-page-backdrop cfg-editor-backdrop hidden" id="llmEditorModal" role="dialog" aria-modal="true" aria-labelledby="llmEditorTitle">
+ <div class="modal cfg-editor-modal">
+ <header class="modal-header kb-page-modal-header">
+ <div class="kb-editor-head-main">
+ <h2 class="icon-inline" id="llmEditorTitle"><span data-ipk="lightning" data-ipk-class="ipk-sm"></span> 编辑 LLM</h2>
+ <p class="hint kb-editor-lead">添加或修改模型提供商与 API Key。</p>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnCloseLlmEditor" title="关闭">
+ <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ </button>
+ </header>
+ <div class="modal-body kb-page-modal-body">
+
+ <input type="hidden" id="llmId" />
+ <div class="form-grid">
+ <label>显示名称<input id="llmName" type="text" placeholder="xAI Grok" /></label>
+ <label>Provider
+ <select id="llmProvider">
+ <option value="openai">OpenAI 兼容</option>
+ <option value="xai">xAI</option>
+ <option value="custom">Custom</option>
+ </select>
+ </label>
+ <label class="full">Base URL<input id="llmBaseUrl" type="text" placeholder="https://api.x.ai/v1" /></label>
+ <label class="full">API Key<input id="llmApiKey" type="password" placeholder="留空表示不修改已有 Key" autocomplete="off" /></label>
+ <label class="full">Model
+ <div class="llm-model-row">
+ <select id="llmModelSelect" class="llm-model-select" title="从接口拉取后选择">
+ <option value="">— 先填 Base URL / Key，再点拉取 —</option>
+ </select>
+ <button type="button" class="btn icon-inline" id="btnFetchLlmModels" title="从 Base URL 拉取 /models 列表">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 拉取模型
+ </button>
+ </div>
+ <input id="llmModel" type="text" placeholder="或手动输入 model id，如 grok-4.5" autocomplete="off" />
+ <p class="field-hint llm-modality-hint" id="llmModalityHint">选择模型后显示：文本 / 全模态(识图) 等</p>
+ </label>
+ <label class="check"><input id="llmEnabled" type="checkbox" checked /> 启用</label>
+ <label class="check"><input id="llmDefault" type="checkbox" /> 设为默认</label>
+ </div>
+ <span class="form-msg" id="msgLlmEditor"></span>
+
+ </div>
+ <footer class="kb-form-footer kb-page-modal-footer">
+ <div class="kb-form-footer-btns">
+
+ <button type="button" class="btn primary icon-inline" id="btnSaveLlm"><span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存</button>
+ <button type="button" class="btn icon-inline" id="btnTestLlm"><span data-ipk="connection" data-ipk-class="ipk-xs"></span> 测试连接</button>
+ <button type="button" class="btn" id="btnCancelLlm">取消</button>
+
+ </div>
+ </footer>
+ </div>
+ </div>
+
+ <!-- nested editor: customToolEditorModal -->
+ <div class="modal-backdrop kb-page-backdrop cfg-editor-backdrop hidden" id="customToolEditorModal" role="dialog" aria-modal="true" aria-labelledby="ctEditorTitle">
+ <div class="modal cfg-editor-modal">
+ <header class="modal-header kb-page-modal-header">
+ <div class="kb-editor-head-main">
+ <h2 class="icon-inline" id="ctEditorTitle"><span data-ipk="tool" data-ipk-class="ipk-sm"></span> 编辑 HTTP 工具</h2>
+ <p class="hint kb-editor-lead">自订 HTTP 工具会出现在 Tools 列表，可供 LLM 调用。</p>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnCloseCustomToolEditor" title="关闭">
+ <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ </button>
+ </header>
+ <div class="modal-body kb-page-modal-body">
+
+ <input type="hidden" id="ctId" />
+ <div class="form-grid">
+ <label>名称（函数名）<input id="ctName" type="text" placeholder="weather_api" /></label>
+ <label>Method
+ <select id="ctMethod">
+ <option>GET</option>
+ <option>POST</option>
+ <option>PUT</option>
+ <option>DELETE</option>
+ </select>
+ </label>
+ <label class="full">描述<textarea id="ctDesc" rows="2"></textarea></label>
+ <label class="full">URL（可用 {param} 占位）<input id="ctUrl" type="text" placeholder="https://api.example.com/v1/{query}" /></label>
+ <label class="full">Headers JSON<input id="ctHeaders" type="text" placeholder='{"Authorization":"Bearer xxx"}' /></label>
+ <label class="check"><input id="ctEnabled" type="checkbox" checked /> 启用</label>
+ </div>
+
+ </div>
+ <footer class="kb-form-footer kb-page-modal-footer">
+ <div class="kb-form-footer-btns">
+
+ <button type="button" class="btn primary icon-inline" id="btnSaveCustomTool"><span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存</button>
+ <button type="button" class="btn" id="btnCancelCustomTool">取消</button>
+
+ </div>
+ </footer>
+ </div>
+ </div>
+
+ <!-- nested editor: mcpEditorModal -->
+ <div class="modal-backdrop kb-page-backdrop cfg-editor-backdrop hidden" id="mcpEditorModal" role="dialog" aria-modal="true" aria-labelledby="mcpEditorTitle">
+ <div class="modal cfg-editor-modal">
+ <header class="modal-header kb-page-modal-header">
+ <div class="kb-editor-head-main">
+ <h2 class="icon-inline" id="mcpEditorTitle"><span data-ipk="api" data-ipk-class="ipk-sm"></span> 添加扩展</h2>
+ <p class="hint kb-editor-lead">自定义 MCP 扩展；也可用面板上的预设一键添加。</p>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnCloseMcpEditor" title="关闭">
+ <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ </button>
+ </header>
+ <div class="modal-body kb-page-modal-body">
+
+ <p class="field-hint" id="mcpEditorLead" style="margin:0 0 10px">选预设最快；熟悉命令行时可改下面高级项。</p>
+ <div class="form-grid">
+ <input type="hidden" id="mcpId" />
+ <input type="hidden" id="mcpPresetId" />
+ <label class="full">显示名称
+ <input id="mcpName" type="text" placeholder="例：本机文件夹、网页抓取" autocomplete="off" />
+ </label>
+ <label class="full">启动命令
+ <input id="mcpCommand" type="text" placeholder="例：npx（或整行 npx -y @scope/pkg）" autocomplete="off" />
+ </label>
+ <label class="full">参数（每行一条，可空）
+ <textarea id="mcpArgs" class="task-prompt-ta" rows="3" placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;."></textarea>
+ </label>
+ <label class="check"><input id="mcpEnabled" type="checkbox" checked /> 启用</label>
+ <details class="wf-soft-details" style="grid-column:1/-1;margin-top:4px">
+ <summary><span>高级 · 环境变量</span><span class="wf-soft-details-meta">一般不用</span></summary>
+ <label class="full" style="margin-top:8px">环境变量（KEY=值，每行一条）
+ <textarea id="mcpEnv" class="task-prompt-ta" rows="3" placeholder="API_KEY=sk-xxx"></textarea>
+ </label>
+ <p class="field-hint">也支持 JSON：{"KEY":"value"}</p>
+ </details>
+ </div>
+
+ </div>
+ <footer class="kb-form-footer kb-page-modal-footer">
+ <div class="kb-form-footer-btns">
+
+ <button type="button" class="btn primary icon-inline" id="btnSaveMcp"><span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存并连接</button>
+ <button type="button" class="btn" id="btnCancelMcp">取消</button>
+
+ </div>
+ </footer>
+ </div>
+ </div>
+
+ <!-- nested editor: integrationEditorModal -->
+ <div class="modal-backdrop kb-page-backdrop cfg-editor-backdrop hidden" id="integrationEditorModal" role="dialog" aria-modal="true" aria-labelledby="integEditorTitle">
+ <div class="modal cfg-editor-modal">
+ <header class="modal-header kb-page-modal-header">
+ <div class="kb-editor-head-main">
+ <h2 class="icon-inline" id="integEditorTitle"><span data-ipk="connection" data-ipk-class="ipk-sm"></span> 编辑集成</h2>
+ <p class="hint kb-editor-lead">配置技能连接参数；密钥留空表示不修改。</p>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnCloseIntegEditor" title="关闭">
+ <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ </button>
+ </header>
+ <div class="modal-body kb-page-modal-body">
+
+ <input type="hidden" id="integId" value="" />
+ <p class="hint" id="integEditorDesc" style="margin:0 0 10px"></p>
+ <div class="form-grid" id="integFields"></div>
+ <span class="form-msg" id="msgIntegEditor"></span>
+
+ </div>
+ <footer class="kb-form-footer kb-page-modal-footer">
+ <div class="kb-form-footer-btns">
+
+ <button type="button" class="btn primary icon-inline" id="btnSaveInteg"><span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存</button>
+ <button type="button" class="btn icon-inline" id="btnTestInteg"><span data-ipk="connection" data-ipk-class="ipk-xs"></span> 测试</button>
+ <button type="button" class="btn danger icon-inline" id="btnDeleteInteg"><span data-ipk="delete" data-ipk-class="ipk-xs"></span> 清空/删除</button>
+ <button type="button" class="btn" id="btnCancelInteg">取消</button>
+
+ </div>
+ </footer>
+ </div>
+ </div>
+
+ <!-- nested editor: memoryAddModal -->
+ <div class="modal-backdrop kb-page-backdrop cfg-editor-backdrop hidden" id="memoryAddModal" role="dialog" aria-modal="true" aria-labelledby="memAddTitle">
+ <div class="modal cfg-editor-modal">
+ <header class="modal-header kb-page-modal-header">
+ <div class="kb-editor-head-main">
+ <h2 class="icon-inline" id="memAddTitle"><span data-ipk="brain" data-ipk-class="ipk-sm"></span> 新增记忆</h2>
+ <p class="hint kb-editor-lead" id="memAddLead">内容写完整一句话（场景 + 要求）；类型说明用途；标签方便以后搜到。列表卡片可点「编辑」修改。</p>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnCloseMemAdd" title="关闭">
+ <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ </button>
+ </header>
+ <div class="modal-body kb-page-modal-body">
+
+ <div class="mem-form">
+ <div class="mem-field">
+ <div class="mem-label">1. 内容</div>
+ <textarea id="memContent" rows="4" placeholder="做 PPT 时默认 16:9、中文标题、简洁风格"></textarea>
+ <div class="field-hint" id="memContentHint">写完整句子，匹配更准。</div>
+ <div class="mem-examples" id="memExamples"></div>
+ </div>
+ <div class="mem-field-row">
+ <div class="mem-field">
+ <div class="mem-label">2. 类型</div>
+ <select id="memKind">
+ <option value="preference" selected>偏好 — 我喜欢 / 默认怎么做</option>
+ <option value="fact">事实 — 客观信息（路径、位置等）</option>
+ <option value="template">模板 — 固定流程 / 步骤</option>
+ <option value="habit">习惯 — 每次 / 总是</option>
+ <option value="rule">规则 — 必须遵守</option>
+ <option value="note">笔记 — 一般备忘</option>
+ </select>
+ <div class="field-hint" id="memKindHint">最常用选「偏好」。</div>
+ </div>
+ <div class="mem-field">
+ <div class="mem-label">3. 标签 <span class="mem-optional">可选</span></div>
+ <input id="memTags" type="text" placeholder="ppt, 风格" autocomplete="off" />
+ <div class="field-hint">1～3 个词，逗号分隔。</div>
+ </div>
+ </div>
+ <div class="mem-field mem-field-chips">
+ <div class="mem-label">快捷标签</div>
+ <div class="mem-tag-chips" id="memTagChips" aria-label="快捷标签"></div>
+ </div>
+ <label class="mem-always-row" style="margin-top:8px;display:flex;align-items:center;gap:8px">
+ <input type="checkbox" id="memAlways" />
+ <span>始终生效（硬规则，宜少用）</span>
+ </label>
+ </div>
+
+ </div>
+ <footer class="kb-form-footer kb-page-modal-footer">
+ <div class="kb-form-footer-btns">
+
+ <button type="button" class="btn primary icon-inline" id="btnAddMemory"><span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存</button>
+ <button type="button" class="btn" id="btnCancelMemAdd">取消</button>
+
+ </div>
+ </footer>
+ </div>
+ </div>
+
+ <!-- nested editor: webhookEditorModal -->
+ <div class="modal-backdrop kb-page-backdrop cfg-editor-backdrop hidden" id="webhookEditorModal" role="dialog" aria-modal="true" aria-labelledby="whEditorTitle">
+ <div class="modal cfg-editor-modal">
+ <header class="modal-header kb-page-modal-header">
+ <div class="kb-editor-head-main">
+ <h2 class="icon-inline" id="whEditorTitle"><span data-ipk="link" data-ipk-class="ipk-sm"></span> 编辑通道</h2>
+ <p class="hint kb-editor-lead">每条通道独立 Token，可绑定不同对话。</p>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnCloseWebhookEditor" title="关闭">
+ <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ </button>
+ </header>
+ <div class="modal-body kb-page-modal-body">
+
+ <input type="hidden" id="whId" value="" />
+ <div class="form-grid">
+ <label>名称
+ <input type="text" id="whName" placeholder="例如：飞书客服" autocomplete="off" />
+ </label>
+ <label>Slug（URL 路径）
+ <input type="text" id="whSlug" placeholder="feishu-cs" autocomplete="off" />
+ </label>
+ <label>平台
+ <select id="whPlatform">
+ <option value="custom">自定义</option>
+ <option value="feishu">飞书 / Lark</option>
+ <option value="wecom">企业微信</option>
+ <option value="dingtalk">钉钉</option>
+ <option value="telegram">Telegram</option>
+ <option value="discord">Discord</option>
+ <option value="slack">Slack</option>
+ <option value="other">其它</option>
+ </select>
+ </label>
+ <label>启用
+ <select id="whEnabled">
+ <option value="true">开</option>
+ <option value="false">关</option>
+ </select>
+ </label>
+ <label class="full">会话绑定方式
+ <select id="whSessionMode">
+ <option value="fixed">固定会话（推荐：一条通道 → 一个对话）</option>
+ <option value="map">按外部 ID 映射（同一用户/群自动续聊）</option>
+ <option value="new">每次新建会话</option>
+ </select>
+ </label>
+ <label class="full">绑定会话
+ <select id="whSessionId">
+ <option value="">（不固定 / 新会话时由系统创建）</option>
+ </select>
+ </label>
+ <label>启用工具
+ <select id="whUseTools">
+ <option value="true">是</option>
+ <option value="false">否</option>
+ </select>
+ </label>
+ <label>启用记忆
+ <select id="whUseMemory">
+ <option value="true">是</option>
+ <option value="false">否</option>
+ </select>
+ </label>
+ <label class="full">备注
+ <input type="text" id="whNote" placeholder="可选说明" />
+ </label>
+ <label class="full">调用地址
+ <input type="text" id="whUrlPreview" readonly class="prompt-readonly" />
+ </label>
+ <label class="full">Token
+ <div class="wh-token-row">
+ <input type="password" id="whToken" placeholder="保存后可查看/重置" autocomplete="new-password" />
+ <button type="button" class="btn ghost-sm" id="btnWhRevealToken">显示</button>
+ <button type="button" class="btn ghost-sm" id="btnWhRegenToken">重置 Token</button>
+ <button type="button" class="btn ghost-sm" id="btnWhCopyToken">复制</button>
+ </div>
+ </label>
+ </div>
+ <span class="form-msg" id="msgWhEditor"></span>
+
+ </div>
+ <footer class="kb-form-footer kb-page-modal-footer">
+ <div class="kb-form-footer-btns">
+
+ <button type="button" class="btn primary icon-inline" id="btnSaveWebhook"><span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存</button>
+ <button type="button" class="btn" id="btnCancelWebhook">取消</button>
+
+ </div>
+ </footer>
+ </div>
+ </div>
+
+ <!-- 知识库新建/编辑页 · 独立弹窗（叠在设定之上） -->
+ <div class="modal-backdrop kb-page-backdrop hidden" id="kbPageModal" role="dialog" aria-modal="true" aria-labelledby="kbEditorTitle">
+ <div class="modal kb-page-modal">
+ <header class="modal-header kb-page-modal-header">
+ <div class="kb-editor-head-main">
+ <h2 class="icon-inline kb-editor-title" id="kbEditorTitle"><span data-ipk="plus" data-ipk-class="ipk-sm"></span> 新建知识页</h2>
+ <p class="hint kb-editor-lead" id="kbEditorLead">先选分类，再写标题与正文 · 一页一类、一事</p>
+ </div>
+ <div class="kb-page-modal-header-right">
+ <div class="kb-editor-head-meta">
+ <span class="kb-meta-pill" id="kbMetaColl">sop</span>
+ <span class="kb-meta-pill kb-meta-muted" id="kbMetaChars">0 字</span>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnCloseKbPage" title="关闭">
+ <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ </button>
+ </div>
+ </header>
+
+ <div class="modal-body kb-page-modal-body">
+ <input type="hidden" id="kbPageId" value="" />
+ <div class="kb-form kb-form-modal">
+ <section class="kb-form-section kb-sec-coll">
+ <div class="kb-sec-head">
+ <span class="kb-step">1</span>
+ <div>
+ <div class="kb-form-section-title">分类</div>
+ <p class="kb-sec-desc" id="kbCollectionHint">大类分区，决定检索加权与模板</p>
+ </div>
+ </div>
+ <input type="hidden" id="kbCollection" value="sop" />
+ <div class="kb-quick-coll" id="kbQuickColl" aria-label="常用分类"></div>
+ <div class="kb-coll-advanced">
+ <span class="kb-adv-label">更多 / 自定义</span>
+ <div class="agent-ms" id="kbCollectionMs" data-kind="collection" data-placeholder="选择或管理分类"></div>
+ </div>
+ </section>
+
+ <div class="kb-form-grid-2">
+ <section class="kb-form-section">
+ <div class="kb-sec-head">
+ <span class="kb-step">2</span>
+ <div>
+ <div class="kb-form-section-title">标题与置顶</div>
+ <p class="kb-sec-desc">标题用于列表与匹配；置顶提高被注入概率</p>
+ </div>
+ </div>
+ <div class="kb-form-row">
+ <label class="kb-label">标题 <em class="kb-req">必填</em>
+ <input id="kbTitle" type="text" placeholder="例：产品内容流水线SOP" autocomplete="off" />
+ </label>
+ <label class="kb-pin-toggle" title="置顶页面">
+ <input id="kbPinned" type="checkbox" />
+ <span class="kb-pin-ui">
+ <span class="kb-pin-knob"></span>
+ <span class="kb-pin-text">置顶</span>
+ </span>
+ </label>
+ </div>
+ </section>
+
+ <section class="kb-form-section">
+ <div class="kb-sec-head">
+ <span class="kb-step">3</span>
+ <div>
+ <div class="kb-form-section-title">标签 <em>可选</em></div>
+ <p class="kb-sec-desc">细关键词，辅助搜索（不是分类）</p>
+ </div>
+ </div>
+ <div class="kb-tags-wrap">
+ <input id="kbTags" type="text" placeholder="逗号分隔，或点下方芯片添加" autocomplete="off" />
+ </div>
+ <div class="kb-tag-chips" id="kbTagChips"></div>
+ </section>
+ </div>
+
+ <section class="kb-form-section kb-sec-body">
+ <div class="kb-sec-head">
+ <span class="kb-step">4</span>
+ <div>
+ <div class="kb-form-section-title">正文 Markdown</div>
+ <p class="kb-sec-desc">写清步骤、格式与规则；可先插模板再改</p>
+ </div>
+ </div>
+ <div class="kb-content-toolbar">
+ <button type="button" class="btn ghost-sm icon-inline" id="btnKbTpl" title="按当前分类插入结构模板">
+ <span data-ipk="doc-detail" data-ipk-class="ipk-xs"></span> 插入分类模板
+ </button>
+ <span class="kb-toolbar-hint" id="kbTplHint">空正文时一键起稿</span>
+ <span class="kb-char-count" id="kbCharCount">0 字</span>
+ </div>
+ <textarea id="kbContent" class="kb-content-ta" rows="16" placeholder="# 标题&#10;&#10;## 目标&#10;…&#10;&#10;## 步骤 / 规则&#10;- …"></textarea>
+ </section>
+
+ <section class="kb-form-section hidden" id="kbChangelogWrap">
+ <div class="kb-sec-head">
+ <span class="kb-step">5</span>
+ <div>
+ <div class="kb-form-section-title">更新说明 <em>可选</em></div>
+ <p class="kb-sec-desc">写入版本历史，便于追溯</p>
+ </div>
+ </div>
+ <input id="kbChangelog" type="text" placeholder="本次改动摘要" autocomplete="off" />
+ </section>
+ </div>
+ </div>
+
+ <footer class="kb-form-footer kb-page-modal-footer">
+ <span class="form-msg" id="msgKbEditor"></span>
+ <div class="kb-form-footer-btns">
+ <button type="button" class="btn" id="btnCancelKb">取消</button>
+ <button type="button" class="btn primary icon-inline" id="btnSaveKb">
+ <span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存
+ </button>
+ </div>
+ </footer>
+ </div>
+ </div>
+
+ <!-- 定时任务新建 · 独立弹窗 -->
+ <div class="modal-backdrop kb-page-backdrop hidden" id="taskPageModal" role="dialog" aria-modal="true" aria-labelledby="taskEditorTitle">
+ <div class="modal task-page-modal">
+ <header class="modal-header kb-page-modal-header">
+ <div class="kb-editor-head-main">
+ <h2 class="icon-inline" id="taskEditorTitle"><span data-ipk="alarm-clock" data-ipk-class="ipk-sm"></span> 新建定时任务</h2>
+ <p class="hint kb-editor-lead">用白话填写：叫什么、多久跑、到点让 AI 做什么。列表卡片可点「编辑」改配置。</p>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnCloseTaskPage" title="关闭">
+ <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ </button>
+ </header>
+ <div class="modal-body task-page-modal-body">
+ <div class="task-form task-form-modal">
+ <section class="kb-form-section">
+ <div class="kb-sec-head">
+ <span class="kb-step">1</span>
+ <div>
+ <div class="kb-form-section-title">任务名称 <em class="kb-req">必填</em></div>
+ <p class="kb-sec-desc">列表里显示的名字，方便辨认</p>
+ </div>
+ </div>
+ <input id="taskName" type="text" placeholder="例：每天早报、每小时检查下载" autocomplete="off" />
+ </section>
+ <section class="kb-form-section">
+ <div class="kb-sec-head">
+ <span class="kb-step">2</span>
+ <div>
+ <div class="kb-form-section-title">到点让 AI 做什么 <em class="kb-req">必填</em></div>
+ <p class="kb-sec-desc">到期后会当作一条用户指令交给 Agent 执行。可先点模板再改。</p>
+ </div>
+ </div>
+ <div class="task-prompt-toolbar">
+ <span class="task-prompt-toolbar-label">常用模板</span>
+ <div class="task-prompt-tpls" id="taskPromptTpls" role="group" aria-label="指令模板"></div>
+ </div>
+ <textarea id="taskPrompt" class="task-prompt-ta" rows="5" placeholder="例：用中文汇总今天重要待办，简洁回复。&#10;也可点上方模板一键填入。"></textarea>
+ </section>
+ <section class="kb-form-section">
+ <div class="kb-sec-head">
+ <span class="kb-step">3</span>
+ <div>
+ <div class="kb-form-section-title">多久跑一次</div>
+ <p class="kb-sec-desc" id="taskSchedHint">点选一种即可，不必全填</p>
+ </div>
+ </div>
+ <div class="task-sched-chips" id="taskSchedChips" role="group" aria-label="调度方式"></div>
+ <div id="taskSchedFields" class="task-sched-fields"></div>
+ </section>
+ <section class="kb-form-section">
+ <div class="kb-sec-head">
+ <span class="kb-step">4</span>
+ <div>
+ <div class="kb-form-section-title">结果发到哪个对话</div>
+ <p class="kb-sec-desc" id="taskSessionHint">任务跑完后，AI 回复会出现在选定的聊天里</p>
+ </div>
+ </div>
+ <div class="task-session-chips" id="taskSessionChips" role="group" aria-label="目标对话"></div>
+ <div id="taskSessionFields" class="task-session-fields"></div>
+ </section>
+ <label class="kb-check-line task-enabled-line">
+ <input id="taskEnabled" type="checkbox" checked /> 创建后立即启用
+ </label>
+ </div>
+ </div>
+ <footer class="kb-form-footer kb-page-modal-footer">
+ <span class="form-msg" id="msgTaskEditor"></span>
+ <div class="kb-form-footer-btns">
+ <button type="button" class="btn" id="btnCancelTask">取消</button>
+ <button type="button" class="btn primary icon-inline" id="btnSaveTask">
+ <span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存任务
+ </button>
+ </div>
+ </footer>
+ </div>
+ </div>
+
+ <!-- 工作流编辑弹窗（分步新建 + 友好编辑） -->
+ <div class="modal-backdrop kb-page-backdrop hidden" id="wfPageModal" role="dialog" aria-modal="true" aria-labelledby="wfEditorTitle">
+ <div class="modal kb-page-modal wf-page-modal">
+ <header class="modal-header kb-page-modal-header">
+ <div class="kb-editor-head-main">
+ <h2 class="icon-inline" id="wfEditorTitle"><span data-ipk="network-tree" data-ipk-class="ipk-sm"></span> 新建流程</h2>
+ <p class="hint kb-editor-lead" id="wfEditorLead">先选一个起点，再改名字和步骤</p>
+ <div class="wf-create-steps" id="wfCreateSteps" hidden>
+ <span class="wf-create-step is-active" data-wf-phase-ind="1">1 选模板</span>
+ <span class="wf-create-steps-sep" aria-hidden="true">→</span>
+ <span class="wf-create-step" data-wf-phase-ind="2">2 编辑保存</span>
+ </div>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnCloseWfPage" title="关闭">
+ <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ </button>
+ </header>
+ <div class="modal-body kb-page-modal-body">
+ <input type="hidden" id="wfId" value="" />
+
+ <!-- 阶段 1：只在新建时显示 —— 选模板 -->
+ <div id="wfPhasePick" class="wf-phase wf-phase-pick">
+ <div class="wf-pick-hero">
+ <div class="wf-pick-hero-title">你想从哪开始？</div>
+ <p class="wf-pick-hero-desc">点一张卡片即可套用示例，之后随时改。不会写步骤也没关系。</p>
+ </div>
+ <div class="wf-tpl-filters" id="wfTplFilters" role="tablist">
+ <button type="button" class="btn ghost-sm is-active" data-wf-tpl-group="all">全部</button>
+ <button type="button" class="btn ghost-sm" data-wf-tpl-group="simple">简单上手</button>
+ <button type="button" class="btn ghost-sm" data-wf-tpl-group="commercial">商业内容</button>
+ <button type="button" class="btn ghost-sm" data-wf-tpl-group="blank">空白</button>
+ </div>
+ <div class="wf-tpl-grid" id="wfTemplateGrid"></div>
+ <p class="field-hint wf-pick-tip">推荐从「看文件夹并留言」试手；做产品内容选「商业内容流水线」。</p>
+ </div>
+
+ <!-- 阶段 2：编辑（新建选完模板 / 改已有流程） -->
+ <div id="wfPhaseEdit" class="wf-phase wf-phase-edit hidden">
+ <div class="wf-form">
+ <div class="wf-edit-toolbar" id="wfEditToolbar">
+ <div class="wf-edit-toolbar-left">
+ <span class="wf-tpl-chip" id="wfTplChip" hidden>
+ <span class="wf-tpl-chip-emoji" id="wfTplChipEmoji">📋</span>
+ <span id="wfTplChipLabel">当前模板</span>
+ </span>
+ <span class="wf-edit-stats" id="wfEditStats">0 步</span>
+ </div>
+ <div class="wf-edit-toolbar-right">
+ <button type="button" class="btn ghost-sm" id="btnWfChangeTemplate" hidden title="换一个起点模板">
+ 换模板
+ </button>
+ </div>
+ </div>
+
+ <section class="wf-block" id="wfSectionBasics">
+ <div class="wf-block-label">名称</div>
+ <input id="wfName" class="wf-name-input" type="text" placeholder="给流程起个好认的名字" autocomplete="off" maxlength="80" />
+ <div class="wf-name-meta">
+ <span class="field-hint" id="wfNameHint">会出现在流程列表里</span>
+ <span class="field-hint" id="wfNameCount">0/80</span>
+ </div>
+ <details class="wf-more-basics">
+ <summary>说明与开关（可选）</summary>
+ <label class="kb-label" style="margin-top:10px">一句话说明
+ <textarea id="wfDesc" class="task-prompt-ta" rows="2" placeholder="别人点运行时能看懂它干什么" maxlength="300"></textarea>
+ </label>
+ <label class="kb-check-line" style="margin-top:10px">
+ <input id="wfEnabled" type="checkbox" checked /> 启用（关掉后不会被误点运行）
+ </label>
+ </details>
+ </section>
+
+ <section class="wf-block" id="wfSectionSteps">
+ <div class="wf-block-head">
+ <div class="wf-block-label">步骤</div>
+ <span class="field-hint" id="wfStepsHint">从上到下依次执行</span>
+ </div>
+
+ <div class="wf-add-block">
+ <div class="wf-add-actions" id="wfAddActionBar">
+ <button type="button" class="wf-chip-btn" data-wf-action="list_files">📁 看文件夹</button>
+ <button type="button" class="wf-chip-btn" data-wf-action="write_file">📝 写文件</button>
+ <button type="button" class="wf-chip-btn" data-wf-action="read_file">📖 读文件</button>
+ <button type="button" class="wf-chip-btn" data-wf-action="search_kb">📚 查知识库</button>
+ <button type="button" class="wf-chip-btn" data-wf-action="agent">🤖 AI 想一步</button>
+ <button type="button" class="wf-chip-btn" data-wf-action="note" id="btnWfAddNote">💬 说明</button>
+ <button type="button" class="wf-chip-btn" data-wf-action="gate" id="btnWfAddGate">✋ 问我一声</button>
+ <button type="button" class="wf-chip-btn is-muted" data-wf-action="get_time">⏰ 时间</button>
+ <button type="button" class="wf-chip-btn is-accent" id="btnWfOpenSkillPicker">+ 更多能力</button>
+ </div>
+ <div id="wfSkillPicker" class="wf-skill-picker hidden">
+ <div class="wf-skill-picker-head">
+ <input id="wfSkillSearch" class="task-field-input" type="search" placeholder="搜索能力…" autocomplete="off" />
+ <div class="wf-skill-tabs" id="wfSkillTabs">
+ <button type="button" class="btn ghost-sm is-active" data-wf-src="all">全部</button>
+ <button type="button" class="btn ghost-sm" data-wf-src="skill">技能</button>
+ <button type="button" class="btn ghost-sm" data-wf-src="builtin">内置</button>
+ <button type="button" class="btn ghost-sm" data-wf-src="mcp">MCP</button>
+ </div>
+ <button type="button" class="btn ghost-sm" id="btnCloseWfSkillPicker">收起</button>
+ </div>
+ <p class="field-hint" id="wfSkillPickerHint" style="margin:6px 0 8px">点一项加到步骤末尾</p>
+ <div id="wfSkillPickerList" class="wf-skill-picker-list"></div>
+ </div>
+ </div>
+
+ <div id="wfStepsBuilder" class="wf-steps-builder"></div>
+ <button type="button" class="hidden" id="btnWfAddTool" data-wf-action="custom"></button>
+ <button type="button" class="hidden" id="btnWfAddCustom" data-wf-action="custom"></button>
+ <button type="button" class="hidden" id="btnWfAddList" data-wf-action="list_files"></button>
+ </section>
+
+ <details class="wf-soft-details" id="wfSectionInputs">
+ <summary>
+ <span>运行时要问你什么</span>
+ <span class="wf-soft-details-meta" id="wfInputsSummary">可选 · 无</span>
+ </summary>
+ <p class="field-hint" style="margin:0 0 10px">例如备注、关键词。步骤里可用 <code>{{inputs.xxx}}</code> 引用。</p>
+ <div id="wfInputsBuilder" class="wf-inputs-builder"></div>
+ <button type="button" class="btn ghost-sm" id="btnWfAddInput">+ 加一项</button>
+ </details>
+
+ <details class="wf-soft-details wf-advanced-block">
+ <summary>
+ <span>高级 · JSON</span>
+ <span class="wf-soft-details-meta">一般不用</span>
+ </summary>
+ <p class="field-hint" style="margin:0 0 10px">改完可点「同步到上方」刷新卡片。</p>
+ <label class="kb-label">运行参数
+ <textarea id="wfInputs" class="task-prompt-ta" rows="3" placeholder="{}"></textarea>
+ </label>
+ <label class="kb-label" style="margin-top:8px">步骤
+ <textarea id="wfSteps" class="task-prompt-ta" rows="6"></textarea>
+ </label>
+ <button type="button" class="btn ghost-sm" id="btnWfSyncFromJson" style="margin-top:8px">从 JSON 同步到上方</button>
+ </details>
+ </div>
+ </div>
+ </div>
+ <footer class="kb-form-footer kb-page-modal-footer" id="wfPageFooter">
+ <span class="form-msg" id="msgWfEdit"></span>
+ <div class="kb-form-footer-btns" id="wfFooterPick" hidden>
+ <button type="button" class="btn" id="btnCancelWorkflowPick">取消</button>
+ <button type="button" class="btn primary" id="btnWfSkipToBlank" title="不选模板，从空白开始">
+ 从空白开始 →
+ </button>
+ </div>
+ <div class="kb-form-footer-btns" id="wfFooterEdit">
+ <button type="button" class="btn" id="btnCancelWorkflow">取消</button>
+ <button type="button" class="btn icon-inline" id="btnRunWorkflowFromEdit" title="保存后马上试跑">
+ <span data-ipk="play" data-ipk-class="ipk-xs"></span> 保存并试跑
+ </button>
+ <button type="button" class="btn primary icon-inline" id="btnSaveWorkflow">
+ <span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存
+ </button>
+ </div>
+ </footer>
+ </div>
+ </div>
+
+ <!-- 工作流直接运行弹窗 -->
+ <div class="modal-backdrop kb-page-backdrop hidden" id="wfRunModal" role="dialog" aria-modal="true" aria-labelledby="wfRunTitle">
+ <div class="modal task-page-modal" style="width:min(720px,96vw)">
+ <header class="modal-header kb-page-modal-header">
+ <div class="kb-editor-head-main">
+ <h2 class="icon-inline" id="wfRunTitle"><span data-ipk="play" data-ipk-class="ipk-sm"></span> 开始跑流程</h2>
+ <p class="hint kb-editor-lead" id="wfRunLead">填好下面内容，点开始即可（不用跟 AI 对话）</p>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnCloseWfRun" title="关闭">
+ <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ </button>
+ </header>
+ <div class="modal-body task-page-modal-body">
+ <input type="hidden" id="wfRunId" value="" />
+ <div id="wfRunInputsHost" class="wf-run-inputs"></div>
+ <div class="wf-run-result-wrap">
+ <div class="kb-form-section-title" style="margin:12px 0 6px">执行进度</div>
+ <div id="wfRunTimeline" class="wf-run-timeline">
+ <div class="wf-empty-hint">点「开始」后，这里会逐步显示做了什么。</div>
+ </div>
+ <details class="wf-advanced" style="margin-top:8px">
+ <summary>技术详情（可忽略）</summary>
+ <pre class="agent-fixed-pre" id="wfRunResult" style="max-height:200px;overflow:auto;margin:8px 0 0"></pre>
+ </details>
+ </div>
+ <div id="wfRunGateBar" class="wf-gate-bar hidden">
+ <p class="field-hint" id="wfRunGateMsg" style="margin:0 0 8px"></p>
+ <div class="row-actions" style="margin:0">
+ <button type="button" class="btn primary" id="btnWfResume">好的，继续</button>
+ <button type="button" class="btn danger" id="btnWfReject">先停在这里</button>
+ </div>
+ </div>
+ </div>
+ <footer class="kb-form-footer kb-page-modal-footer">
+ <span class="form-msg" id="msgWfRun"></span>
+ <div class="kb-form-footer-btns">
+ <button type="button" class="btn" id="btnCancelWfRun">关闭</button>
+ <button type="button" class="btn primary icon-inline" id="btnDoWfRun">
+ <span data-ipk="play" data-ipk-class="ipk-xs"></span> 开始
+ </button>
+ </div>
+ </footer>
+ </div>
+ </div>
+
+ <!-- 运行详情弹窗 -->
+ <div class="modal-backdrop kb-page-backdrop hidden" id="wfRunDetailModal" role="dialog" aria-modal="true">
+ <div class="modal task-page-modal" style="width:min(760px,96vw)">
+ <header class="modal-header kb-page-modal-header">
+ <div class="kb-editor-head-main">
+ <h2 class="icon-inline" id="wfRunDetailTitle">这次跑得怎么样</h2>
+ <p class="hint kb-editor-lead" id="wfRunDetailLead"></p>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnCloseWfRunDetail">
+ <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ </button>
+ </header>
+ <div class="modal-body task-page-modal-body">
+ <div id="wfRunDetailSteps"></div>
+ <details class="wf-advanced" style="margin-top:12px">
+ <summary>技术详情（可忽略）</summary>
+ <pre class="agent-fixed-pre" id="wfRunDetailRaw" style="max-height:200px;overflow:auto;margin:8px 0 0"></pre>
+ </details>
+ </div>
+ </div>
+ </div>
+
+ <!-- 骨架屏模板（隐藏） -->
+ 

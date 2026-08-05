@@ -1,0 +1,7 @@
+{
+  "id": "list_api_models",
+  "name": "List Api Models",
+  "description": "查詢 OpenAI 兼容 API 中轉站點可用嘅模型列表",
+  "version": "0.1.0",
+  "tools": []
+}

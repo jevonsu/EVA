@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Env & secrets
+.env
+.env.local
+*.pem
+
+# Runtime data (keep structure, ignore volatile state)
+data/sessions/
+data/memory/
+data/tasks/
+data/*.db
+data/*.sqlite
+data/webhooks.json
+data/webhook_sessions.json
+data/tool_meta_dynamic.json
+!data/.gitkeep
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs & local junk
+*.log
+logs/
+Users/
+.agents/
+
+# Agent workspace (volatile / user runtime)
+workspace/scratch/
+workspace/temp/
+workspace/new_folder/
+workspace/uploads/
+workspace/images/generated/
+workspace/videos/generated/
+
+# Editor backups
+*.bak
+*.tmp
+*~
+*.orig

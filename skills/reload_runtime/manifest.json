@@ -1,0 +1,7 @@
+{
+  "id": "reload_runtime",
+  "name": "Reload Runtime",
+  "description": "Reload all tools, skills, MCP, and LLM from disk. Call after manually modifying handler.py files. No parameters needed.",
+  "version": "0.1.0",
+  "tools": []
+}

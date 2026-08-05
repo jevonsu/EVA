@@ -1,0 +1,640 @@
+/* ============================================
+ Lily / AgentOS — 手机浏览器适配
+ Midnight 主题 · ≤900px 抽屉 · ≤640px 紧凑
+ ============================================ */
+
+/* —— 全局防横向溢出 + 触摸 —— */
+html {
+ -webkit-text-size-adjust: 100%;
+ text-size-adjust: 100%;
+}
+
+body {
+ overscroll-behavior: none;
+ -webkit-tap-highlight-color: rgba(63, 185, 80, 0.12);
+}
+
+.app {
+ max-width: 100%;
+ height: var(--app-height, 100vh);
+ min-height: var(--app-height, 100vh);
+}
+
+/* —— 平板 / 手机共用：侧栏抽屉（与 modals.css 对齐并补强） —— */
+@media (max-width: 900px) {
+ .app {
+ grid-template-columns: 1fr;
+ grid-template-rows: minmax(0, 1fr);
+ width: 100%;
+ max-width: 100vw;
+ height: var(--app-height, 100vh);
+ min-height: var(--app-height, 100vh);
+ max-height: var(--app-height, 100vh);
+ }
+
+ .main {
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+  height: 100%;
+ }
+
+ /* 空状态图形：手机略降透明度，不锁死 opacity/transform（否则 anime 入场失效） */
+ .empty-anime-home .empty-shapes {
+  pointer-events: none;
+ }
+ /* 动画失败回退时仍保证文案可见（仅 no-anime） */
+ .empty-anime-home.no-anime .empty-title-line,
+ .empty-anime-home.no-anime .empty-home-lead,
+ .empty-anime-home.no-anime .empty-chip {
+  opacity: 1;
+  transform: none;
+ }
+
+ /* 菜单按钮始终可点 */
+ .btn.icon-btn {
+ display: inline-grid !important;
+ place-items: center;
+ min-width: 44px;
+ min-height: 44px;
+ touch-action: manipulation;
+ }
+
+ .sidebar {
+ position: fixed;
+ left: 0;
+ top: 0;
+ bottom: 0;
+ width: min(var(--sidebar-w), 88vw);
+ max-width: 320px;
+ transform: translateX(-105%);
+ transition: transform 0.22s ease, box-shadow 0.22s ease;
+ z-index: var(--z-sidebar-drawer);
+ background: var(--sidebar-bg, #0d1117);
+ padding-top: max(14px, env(safe-area-inset-top));
+ padding-bottom: max(12px, env(safe-area-inset-bottom));
+ padding-left: max(12px, env(safe-area-inset-left));
+ box-shadow: none;
+ }
+
+ body.sidebar-open .sidebar {
+ transform: translateX(0);
+ box-shadow: 8px 0 32px rgba(0, 0, 0, 0.5);
+ }
+
+ .sidebar-scrim {
+ /* 仅移动端侧栏打开时可见，由 .hidden 控制 */
+ padding: 0;
+ }
+
+ .topbar {
+ padding: 10px 12px;
+ padding-top: max(10px, env(safe-area-inset-top));
+ gap: 8px;
+ }
+
+ .topbar h1 {
+ max-width: min(46vw, 220px);
+ font-size: 15px;
+ }
+
+ .topbar .hint {
+ display: none; /* 省高度：副标题隐藏 */
+ }
+
+ .top-actions {
+ gap: 4px;
+ max-width: min(52vw, 240px);
+ flex-wrap: wrap;
+ justify-content: flex-end;
+ }
+
+ .top-actions .top-hint-chip,
+ .top-actions .hint-chip {
+ font-size: 10px;
+ padding: 4px 8px;
+ max-width: 100%;
+ }
+
+ /* 窄屏顶栏：模式芯片过长易被裁切，缩写显示 */
+ .top-actions #modeHint {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+ }
+
+ .messages {
+ padding: 12px 12px 16px;
+ gap: 12px;
+ -webkit-overflow-scrolling: touch;
+ }
+
+ .composer {
+ padding: 8px 10px max(10px, env(safe-area-inset-bottom));
+ position: sticky;
+ bottom: 0;
+ z-index: 6;
+ }
+
+ .scroll-bottom {
+ right: 12px;
+ bottom: 12px;
+ min-height: 40px;
+ padding: 8px 12px;
+ }
+}
+
+/* —— 手机紧凑布局 —— */
+@media (max-width: 640px) {
+ /* 根字号与输入：≥16px 避免 iOS 聚焦放大 */
+ textarea#input,
+ .session-search,
+ .form-grid input,
+ .form-grid select,
+ .form-grid textarea,
+ #memSearch,
+ #memContent {
+ font-size: 16px !important;
+ }
+
+ /* —— 顶栏更紧 —— */
+ .topbar {
+ padding: 8px 10px;
+ padding-top: max(8px, env(safe-area-inset-top));
+ }
+
+ .topbar-left {
+ gap: 8px;
+ flex: 1;
+ min-width: 0;
+ }
+
+ .topbar h1 {
+ max-width: none;
+ flex: 1;
+ font-size: 14.5px;
+ }
+
+ /* 顶栏：语音 / 模式芯片 —— 手机只保留语音态，模式进 title */
+ .top-actions #modeHint {
+  display: none;
+ }
+ .top-actions .top-hint-chip,
+ .top-actions .hint-chip {
+ font-size: 10px;
+ padding: 4px 7px;
+ border-radius: 10px;
+ }
+
+ /* —— 消息区 —— */
+ .messages {
+ padding: 12px 10px 18px;
+ gap: 14px;
+ }
+
+ .msg {
+ max-width: 100%;
+ }
+
+ .msg.user,
+ .msg.assistant {
+ max-width: 100%;
+ width: fit-content;
+ }
+ .msg.user {
+ max-width: 90%;
+ }
+ .msg.assistant {
+ max-width: 94%;
+ }
+ .msg.assistant .bubble {
+ max-width: 100%;
+ }
+
+ .msg-avatar {
+ width: 28px;
+ height: 28px;
+ border-radius: 8px;
+ font-size: 11px;
+ }
+
+ .msg-main {
+ gap: 8px;
+ }
+
+ .bubble {
+ font-size: 15px;
+ padding: 10px 13px;
+ border-radius: 14px;
+ line-height: 1.55;
+ word-break: break-word;
+ overflow-wrap: anywhere;
+ }
+
+ .role-row {
+ gap: 6px;
+ flex-wrap: wrap;
+ }
+
+ /* 手机：操作按钮常显，便于点按 */
+ .msg-actions {
+ opacity: 1 !important;
+ pointer-events: auto !important;
+ }
+
+ /* 消息级小按钮：不要强制 44px 撑破布局 */
+ .role-row .btn-copy,
+ .role-row .btn-retry,
+ .role-row .btn-speak,
+ .role-row .btn-cancel,
+ .role-row .speak-wrap,
+ .speak-lang {
+ min-height: 28px !important;
+ height: auto;
+ font-size: 11px;
+ padding: 2px 8px;
+ }
+
+ .speak-lang {
+ max-width: 72px;
+ height: 28px;
+ min-height: 28px !important;
+ }
+
+ .msg-foot {
+ font-size: 11px;
+ }
+
+ /* 代码块：手机可读 + 横向滚动不撑破页面 */
+ .md-code-block {
+ max-width: 100%;
+ border-radius: 8px;
+ }
+
+ .md-code-toolbar {
+ padding: 5px 8px;
+ position: sticky;
+ top: 0;
+ z-index: 1;
+ }
+
+ .btn-copy-block {
+ min-height: 32px;
+ padding: 4px 10px;
+ touch-action: manipulation;
+ }
+
+ .md-code-block pre,
+ .bubble.md > pre {
+ max-height: 280px;
+ padding: 8px 10px;
+ -webkit-overflow-scrolling: touch;
+ }
+
+ .bubble.md pre code,
+ .md-code-block pre code {
+ font-size: 12.5px;
+ }
+
+ .bubble.md table {
+ display: block;
+ max-width: 100%;
+ overflow-x: auto;
+ -webkit-overflow-scrolling: touch;
+ }
+
+ .tools,
+ .tool-activity,
+ .status-strip {
+ max-width: 100%;
+ font-size: 12px;
+ }
+
+ .msg-media-card {
+ max-width: min(100%, 280px);
+ }
+
+ .empty {
+ padding: 28px 12px;
+ max-width: 100%;
+ }
+ .empty h2 { font-size: 18px; }
+ .empty p { font-size: 13.5px; }
+ .empty-chips {
+ gap: 8px;
+ margin-top: 14px;
+ }
+ .empty-chip {
+ font-size: 13px;
+ padding: 10px 12px;
+ min-height: 42px;
+ max-width: 100%;
+ }
+
+ /* —— 输入区 —— */
+ .composer {
+ padding: 8px 10px max(10px, env(safe-area-inset-bottom));
+ background: linear-gradient(
+  180deg,
+  transparent 0%,
+  rgba(13, 17, 23, 0.75) 40%,
+  rgba(13, 17, 23, 0.96) 100%
+ );
+ }
+
+ .composer-shell {
+ width: 100%;
+ }
+
+ .composer-box {
+ border-radius: 22px;
+ padding: 10px 10px 8px;
+ gap: 4px;
+ }
+
+ .composer-toolbar {
+ min-height: 36px;
+ }
+
+ .composer-icon-btn {
+ width: 34px;
+ height: 34px;
+ min-width: 34px;
+ border-radius: 50%;
+ touch-action: manipulation;
+ }
+
+ .voice-group {
+ gap: 2px;
+ }
+
+ /* 手机：会议模式开关仅剩 checkbox 方块，易误触；改到 ≤380 再藏，此处直接隐藏 */
+ .voice-meet-wrap {
+ display: none !important;
+ }
+ .voice-meet-label { display: none; }
+
+ .btn.primary.btn-send {
+ width: 34px;
+ min-width: 34px;
+ min-height: 34px;
+ height: 34px;
+ padding: 0;
+ border-radius: 50%;
+ touch-action: manipulation;
+ }
+ .btn.primary.btn-send .btn-send-label { display: none; }
+
+ textarea#input {
+ min-height: 24px;
+ max-height: 160px;
+ padding: 2px 4px 4px;
+ line-height: 1.45;
+ font-size: 16px !important;
+ }
+
+ .composer-meta {
+ margin-top: 4px;
+ min-height: 0;
+ flex-wrap: wrap;
+ gap: 2px 8px;
+ }
+ /* 输入框下方旧提示已迁到顶栏；勿再隐藏 .top-actions 里的芯片 */
+ .composer-hints {
+ display: none !important;
+ }
+ .status {
+ font-size: 11px;
+ min-height: 14px;
+ }
+
+ .attach-bar {
+ padding: 4px 2px 6px;
+ }
+ .attach-chip {
+ max-width: min(100%, 280px);
+ }
+
+ /* —— 侧栏 —— */
+ .sidebar {
+ width: min(300px, 90vw);
+ padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+ gap: 8px;
+ }
+
+ .brand {
+ padding-bottom: 10px;
+ gap: 10px;
+ }
+ .logo {
+ width: 38px;
+ height: 38px;
+ border-radius: 10px;
+ }
+ .brand-title { font-size: 15px; }
+ .brand-sub {
+ font-size: 11px;
+ display: -webkit-box;
+ -webkit-line-clamp: 2;
+ -webkit-box-orient: vertical;
+ overflow: hidden;
+ }
+
+ /* 任务 / 记忆 保持两列，不要单列拉长 */
+ .quick-row {
+ grid-template-columns: 1fr 1fr;
+ gap: 8px;
+ }
+
+ .sidebar .btn.full {
+ min-height: 44px;
+ padding: 11px 12px;
+ touch-action: manipulation;
+ }
+
+ .btn.ghost-sm {
+ min-height: 40px;
+ padding: 9px 10px;
+ }
+
+ .session-search {
+ min-height: 40px;
+ padding: 10px 12px;
+ border-radius: 10px;
+ }
+
+ .session-item {
+ padding: 10px 8px;
+ min-height: 48px;
+ }
+
+ .session-del,
+ .session-rename {
+ width: 40px;
+ height: 40px;
+ opacity: 0.75; /* 移动端常驻可见一点 */
+ }
+
+ .sidebar-footer {
+ flex-wrap: wrap;
+ gap: 10px;
+ padding-bottom: 4px;
+ }
+
+ /* —— 设定弹窗全屏 —— */
+ .modal-backdrop {
+ padding: 0;
+ align-items: stretch;
+ justify-content: stretch;
+ }
+
+ .modal {
+ width: 100%;
+ height: var(--app-height, 100vh);
+ max-height: var(--app-height, 100vh);
+ border-radius: 0;
+ margin: 0;
+ border: none;
+ padding-top: env(safe-area-inset-top);
+ padding-bottom: env(safe-area-inset-bottom);
+ }
+
+ .modal-header {
+ padding: 10px 12px;
+ gap: 8px;
+ align-items: center;
+ }
+ .modal-header h2 {
+ font-size: 16px;
+ }
+ .modal-header .hint {
+ display: none;
+ }
+ #btnCloseConfig {
+ min-height: 40px;
+ padding: 8px 12px;
+ flex-shrink: 0;
+ }
+
+ .tabs {
+ padding: 8px 10px;
+ gap: 6px;
+ overflow-x: auto;
+ -webkit-overflow-scrolling: touch;
+ scrollbar-width: none;
+ flex-wrap: nowrap;
+ }
+ .tabs::-webkit-scrollbar { display: none; }
+
+ .tab {
+ flex: 0 0 auto;
+ min-height: 36px;
+ padding: 7px 12px;
+ font-size: 12.5px;
+ white-space: nowrap;
+ }
+
+ .modal-body {
+ padding: 10px 12px 24px;
+ -webkit-overflow-scrolling: touch;
+ }
+
+ .form-grid {
+ grid-template-columns: 1fr;
+ gap: 10px;
+ }
+
+ .panel-banner {
+ flex-direction: column;
+ align-items: stretch;
+ gap: 8px;
+ }
+
+ .card {
+ border-radius: 12px;
+ }
+ .card-actions {
+ flex-wrap: wrap;
+ }
+
+ /* Toast */
+ .toast-container {
+ top: max(10px, env(safe-area-inset-top));
+ left: 10px;
+ right: 10px;
+ max-width: none;
+ width: auto;
+ align-items: stretch;
+ }
+ .toast {
+ max-width: none;
+ width: 100%;
+ }
+
+ /* 主按钮触控，但不波及气泡内小按钮 */
+ .btn.primary,
+ .btn.full,
+ #btnSend,
+ #btnNewChat,
+ #btnOpenConfig,
+ #btnMenu {
+ touch-action: manipulation;
+ }
+
+ /* 滚动条更细，少占宽 */
+ ::-webkit-scrollbar {
+ width: 3px;
+ height: 3px;
+ }
+}
+
+/* —— 超窄屏（小手机 / 竖屏很窄） —— */
+@media (max-width: 380px) {
+ .top-actions .toggle {
+ padding: 5px;
+ }
+ /* 会议模式：超窄时隐藏会议开关，只留语音键 */
+ .voice-meet-wrap {
+ display: none;
+ }
+ .md-code-lang {
+ max-width: 40%;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ }
+}
+
+/* —— 横屏手机：压缩上下边距 —— */
+@media (max-width: 900px) and (max-height: 480px) and (orientation: landscape) {
+ .topbar {
+ padding-top: 4px;
+ padding-bottom: 4px;
+ }
+ .topbar .hint,
+ .composer-meta {
+ display: none;
+ }
+ .messages {
+ padding-top: 6px;
+ padding-bottom: 6px;
+ }
+ .composer {
+ padding-top: 4px;
+ padding-bottom: max(4px, env(safe-area-inset-bottom));
+ }
+ .modal {
+ height: var(--app-height, 100vh);
+ max-height: var(--app-height, 100vh);
+ }
+}
+
+/* —— 键盘弹出时：由 JS 设置 --kb-open —— */
+body.kb-open .composer {
+ box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.35);
+}
+
+body.kb-open .scroll-bottom {
+ display: none !important;
+}
