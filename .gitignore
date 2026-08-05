@@ -58,3 +58,8 @@ workspace/videos/generated/
 *.tmp
 *~
 *.orig
+
+# Auth runtime
+data/auth/
+*.db
+
