@@ -93,20 +93,11 @@ Windows 建议用 `.venv\Scripts\python.exe run.py`（会转到 `pythonw.exe`，
 
 同一台机器可以开多份 Eva，每份用自己的目录和端口。
 
-### 4. 发布到私有 GitHub / 旧版升级
+### 4. 升级
 
-默认仓库：`jevonsu/EVA`（私有）。**不会自动上传。**
+启动器左侧「更新」：检查 GitHub 是否有新版本，停止服务后点「更新」。只替换程序，不改 `data/`、工作区、`.env`。私有仓库可在「更多设定」填写 Token，或使用环境变量 `GITHUB_TOKEN`。
 
-```powershell
-python scripts\publish_github.py                 # 只预览：文件、版本、不会推送
-.\publish-github.bat --publish                   # PowerShell 必须加 .\
-python scripts\publish_github.py --publish       # 交互输入 YES 后才 commit / tag / push / Release
-```
-
-资源管理器里可双击 `publish-github.bat`。PowerShell 里不要直接打文件名，要用 `.\publish-github.bat`。  
-`.env`、`data/`（会话、卡密、数据库、设定）、`workspace/`、`.venv` 不会进仓库，旧目录升级时也不会被覆盖。
-
-旧版检查更新：启动器「检查 / 更新」，或网页 **设定 → 更新**。私有仓库需要本机 git 凭据，或在该页填写 Token / 环境变量 `GITHUB_TOKEN`。
+把 Eva 源码上传到 GitHub 的工具在 **Eva 项目外面**：`OPC/发布EVA`（不随项目上传）。
 
 ---
 

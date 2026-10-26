@@ -54,3 +54,6 @@ node_modules/
 # Local DBs (anywhere)
 *.db
 
+# Tests live with the publisher (OPC/发布EVA), not in the Eva tree
+tests/
+

@@ -740,6 +740,8 @@ class EvaLauncher:
             self._debug_chk,
             self._office_hub_entry,
             self._office_mode_combo,
+            self._upd_repo_entry,
+            self._upd_token_entry,
             self._ws_path_entry,
             self._ws_browse_btn,
             self._db_backend_combo,
@@ -838,6 +840,31 @@ class EvaLauncher:
             anchor="w",
         )
         self._pair_hint.pack(fill="x", padx=4, pady=(0, 4))
+
+        self._sec(more, "程序更新")
+        try:
+            from app.services.online_update import configured_repo, load_channel
+
+            ch = load_channel()
+            repo_now = str(ch.get("repo") or "").strip() or configured_repo()
+        except Exception:
+            repo_now = "jevonsu/EVA"
+        self._upd_repo_var = tk.StringVar(value=repo_now)
+        self._upd_repo_entry = self._mk_entry(self._slot(more, "仓库"), self._upd_repo_var)
+        self._upd_token_var = tk.StringVar(value="")
+        self._upd_token_entry = self._mk_entry(
+            self._slot(more, "Token"), self._upd_token_var, show="•"
+        )
+        tk.Label(
+            more,
+            text="私有仓库检查更新用。已保存则 Token 留空。点「保存配置」写入。",
+            bg=BG2,
+            fg=MUTED,
+            font=FONT_UI_SM,
+            wraplength=300,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=4, pady=(0, 4))
 
         self._sec(more, "工作区路径")
         self._ws_path_var = tk.StringVar(value=str(office.get("root") or ""))
@@ -1287,6 +1314,18 @@ class EvaLauncher:
                     disable_startup()
             except Exception as extra:
                 self._emit(f"[X] 开机启动同步失败：{extra}")
+        try:
+            from app.services.online_update import save_channel
+
+            tok = (self._upd_token_var.get() or "").strip()
+            save_channel(
+                repo=(self._upd_repo_var.get() or "").strip() or None,
+                token=tok or None,
+            )
+            if tok:
+                self._upd_token_var.set("")
+        except Exception as extra:
+            self._emit(f"[X] 更新仓库保存失败：{extra}")
 
     def _on_save(self) -> None:
         try:

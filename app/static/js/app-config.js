@@ -166,7 +166,6 @@
   webhooks: "system",
   storage: "system",
   office: "system",
-  update: "system",
  };
  const _cfgGroupTab = {
   daily: "agent",
@@ -243,7 +242,6 @@
  if (tab === "mcp") loadMcp({ soft });
  if (tab === "integrations") loadIntegrations({ soft });
  if (tab === "office") loadOfficePairing({ soft });
- if (tab === "update") loadAppUpdate({ soft });
  const activeTab = root.querySelector(
   `#configTabs .tab[data-tab="${tab}"]`
  );
@@ -5277,117 +5275,6 @@
   }
  }
 
- function renderUpdatePanel(d) {
-  const local = (d && d.local) || {};
-  const remote = (d && d.remote) || {};
-  const ch = (d && d.channel) || {};
-  const repo = ch.repo || local.repo || "";
-  if ($("updRepo") && !$("updRepo").value) $("updRepo").value = repo;
-  const ver = local.version ? "v" + String(local.version).replace(/^v/i, "") : "";
-  const tag = local.tag ? " 已应用 " + local.tag : "";
-  const bits = ["当前 " + (ver || "未知") + tag];
-  if (repo) bits.push("仓库 " + repo);
-  if (ch.has_token) bits.push("已保存 Token");
-  if (d && d.pending) bits.push("已下载更新包，待启动器应用");
-  if (d && d.newer) {
-    bits.push("有新版本 " + (remote.tag || remote.version || ""));
-  } else if (d && d.ok) {
-    bits.push("已是最新");
-  }
-  if ($("updSummary")) $("updSummary").textContent = bits.join(" · ");
-  const notes = $("updNotes");
-  if (notes) {
-    const body = [];
-    if (d && d.error) body.push(String(d.error));
-    if (remote.name) body.push(String(remote.name));
-    if (remote.published_at) body.push("发布于 " + String(remote.published_at));
-    if (remote.notes) body.push(String(remote.notes));
-    notes.textContent = body.join("\n");
-  }
- }
-
- function bindUpdateUi() {
-  const saveBtn = $("btnSaveUpdChannel");
-  if (saveBtn && !saveBtn._updBound) {
-   saveBtn._updBound = true;
-   saveBtn.addEventListener("click", async () => {
-    setMsg("msgUpdate", "保存中…");
-    try {
-     const payload = { repo: ($("updRepo") && $("updRepo").value.trim()) || "" };
-     const tok = ($("updToken") && $("updToken").value.trim()) || "";
-     if (tok) payload.token = tok;
-     const res = await api("/api/system/update/channel", {
-      method: "PUT",
-      body: JSON.stringify(payload),
-     });
-     if ($("updToken")) $("updToken").value = "";
-     setMsg(
-      "msgUpdate",
-      "已保存仓库" + (res && res.channel && res.channel.has_token ? "和 Token" : ""),
-      "ok"
-     );
-    } catch (e) {
-     setMsg("msgUpdate", "保存失败：" + (e.message || e), "err");
-    }
-   });
-  }
-  const checkBtn = $("btnCheckUpdate");
-  if (checkBtn && !checkBtn._updBound) {
-   checkBtn._updBound = true;
-   checkBtn.addEventListener("click", () => loadAppUpdate({ force: true }));
-  }
-  const applyBtn = $("btnApplyUpdate");
-  if (applyBtn && !applyBtn._updBound) {
-   applyBtn._updBound = true;
-   applyBtn.addEventListener("click", async () => {
-    setMsg("msgUpdate", "正在下载并应用…");
-    try {
-     const res = await api("/api/system/update/apply", { method: "POST", body: "{}" });
-     renderUpdatePanel(res || {});
-     if (res && res.ok && (res.replaced || res.pending)) {
-      setMsg("msgUpdate", res.message || "已处理", "ok");
-      showToast(res.replaced ? "程序已更新，请重启 Eva" : "更新包已下载", "success");
-     } else {
-      setMsg(
-       "msgUpdate",
-       (res && (res.error || res.message)) || "没有可应用的更新",
-       res && res.ok ? "ok" : "err"
-      );
-     }
-    } catch (e) {
-     setMsg("msgUpdate", "更新失败：" + (e.message || e), "err");
-    }
-   });
-  }
- }
-
- async function loadAppUpdate(opts = {}) {
-  const soft = !!opts.soft;
-  const force = !!opts.force;
-  try {
-   bindUpdateUi();
-   if (!soft) setMsg("msgUpdate", "检查中…");
-   const path = force ? "/api/system/update/check" : "/api/system/update";
-   const d = force
-    ? await api(path, { method: "POST", body: "{}" })
-    : await api(path);
-   renderUpdatePanel(d || {});
-   if (d && d.ok) {
-    setMsg(
-     "msgUpdate",
-     d.newer
-      ? "发现新版本 " + ((d.remote && (d.remote.tag || d.remote.version)) || "")
-      : "已是最新",
-     "ok"
-    );
-   } else {
-    setMsg("msgUpdate", (d && d.error) || "检查失败", "err");
-   }
-  } catch (e) {
-   setMsg("msgUpdate", "检查失败：" + (e.message || e), "err");
-  }
- }
-
  L.loadConfig = loadConfig;
  L.renderAgentForm = renderAgentForm;
  L.collectAgentFormPayload = collectAgentFormPayload;
@@ -5401,7 +5288,6 @@
  L.loadMcp = loadMcp;
  L.loadIntegrations = loadIntegrations;
  L.loadStorage = loadStorage;
- L.loadAppUpdate = loadAppUpdate;
  L.openIntegrationEditor = openIntegrationEditor;
  L.openLlmEditor = openLlmEditor;
  L.openCustomToolEditor = openCustomToolEditor;

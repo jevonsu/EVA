@@ -39,7 +39,6 @@
  <button type="button" class="tab icon-inline" data-tab="webhooks" data-group="system"><span data-ipk="link" data-ipk-class="ipk-xs"></span> Webhook</button>
  <button type="button" class="tab icon-inline" data-tab="storage" data-group="system"><span data-ipk="folder-open" data-ipk-class="ipk-xs"></span> 数据库</button>
  <button type="button" class="tab icon-inline" data-tab="office" data-group="system"><span data-ipk="office-building" data-ipk-class="ipk-xs"></span> 办公室</button>
- <button type="button" class="tab icon-inline" data-tab="update" data-group="system"><span data-ipk="upload" data-ipk-class="ipk-xs"></span> 更新</button>
  </div>
  </div>
  </div>
@@ -672,42 +671,6 @@
  </div>
  </div>
  <span class="form-msg" id="msgOffice"></span>
- </section>
-
- <section class="tab-panel" data-panel="update">
- <div class="panel-banner">
- <div>
- <strong class="icon-inline"><span data-ipk="upload" data-ipk-class="ipk-sm"></span> 程序更新</strong>
- <p class="hint" style="margin:4px 0 0">
- 从私有 GitHub 检查新版本。升级只替换程序文件，<strong>不改</strong> <code>data/</code>、工作区、<code>.env</code>。
- 下载后请在启动器停止服务，再点「更新」，然后重新启动。
- </p>
- </div>
- </div>
- <p class="hint" id="updSummary" style="margin:10px 0 12px">当前版本：加载中…</p>
- <div class="form-grid" id="updForm">
- <label class="full">仓库
- <input type="text" id="updRepo" placeholder="jevonsu/EVA" autocomplete="off" />
- </label>
- <label class="full">GitHub Token（私有仓库，可选；已保存则留空）
- <input type="password" id="updToken" placeholder="ghp_… 或 github_pat_…" autocomplete="new-password" />
- </label>
- </div>
- <div class="cfg-toolbar" role="toolbar" aria-label="更新操作" style="margin-top:14px">
- <div class="cfg-tool-cluster">
- <button type="button" class="cfg-tool" id="btnSaveUpdChannel">
- <span data-ipk="save" data-ipk-class="ipk-xs"></span><span>保存仓库</span>
- </button>
- <button type="button" class="cfg-tool" id="btnCheckUpdate">
- <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>检查更新</span>
- </button>
- <button type="button" class="cfg-tool is-primary" id="btnApplyUpdate">
- <span data-ipk="upload" data-ipk-class="ipk-xs"></span><span>下载并应用</span>
- </button>
- </div>
- </div>
- <pre class="hint" id="updNotes" style="margin-top:12px;white-space:pre-wrap;max-height:220px;overflow:auto"></pre>
- <span class="form-msg" id="msgUpdate"></span>
  </section>
 
  </div>

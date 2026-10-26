@@ -22,6 +22,8 @@ DEFAULT_REPO = "jevonsu/EVA"
 UA = "Eva-updater"
 KEEP_DIRS = {"data", "workspace", ".venv", "venv", "env", ".git"}
 KEEP_FILES = {".env", ".env.local"}
+SKIP_COPY = {"tests", "scripts"}
+DROP_LEFTOVER = ("tests", "scripts", "publish-github.bat")
 ASSET_NAME = "EVA-update.zip"
 CREATE_NO_WINDOW = 0x08000000
 
@@ -541,7 +543,7 @@ def apply_source_tree(src: Path, dest: Path) -> list[str]:
     changed: list[str] = []
     for item in src.iterdir():
         name = item.name
-        if name in KEEP_DIRS or name in KEEP_FILES:
+        if name in KEEP_DIRS or name in KEEP_FILES or name in SKIP_COPY:
             continue
         if name.startswith(".git"):
             continue
@@ -573,6 +575,21 @@ def apply_source_tree(src: Path, dest: Path) -> list[str]:
     if app_dir.is_dir():
         for pyc in app_dir.rglob("__pycache__"):
             shutil.rmtree(pyc, ignore_errors=True)
+    src_names = {p.name for p in src.iterdir()}
+    for leftover in DROP_LEFTOVER:
+        p = dest / leftover
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+            changed.append(f"-{leftover}/")
+        elif p.is_file():
+            p.unlink(missing_ok=True)
+            changed.append(f"-{leftover}")
+    for bat in dest.glob("*.bat"):
+        if bat.name.lower() in {"run.bat", "start.bat"}:
+            continue
+        if bat.name not in src_names:
+            bat.unlink(missing_ok=True)
+            changed.append(f"-{bat.name}")
     return changed
 
 
