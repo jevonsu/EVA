@@ -26,6 +26,13 @@ SKIP_COPY = {"tests", "scripts"}
 DROP_LEFTOVER = ("tests", "scripts", "publish-github.bat")
 ASSET_NAME = "EVA-update.zip"
 CREATE_NO_WINDOW = 0x08000000
+DETACHED_PROCESS = 0x00000008
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+_GIT_CANDIDATES = (
+    r"C:\Program Files\Git\cmd\git.exe",
+    r"C:\Program Files\Git\bin\git.exe",
+    r"C:\Program Files (x86)\Git\cmd\git.exe",
+)
 
 
 def _runtime_root() -> Path:
@@ -84,10 +91,13 @@ def parse_github_repo(url: str) -> str:
 
 
 def _git_origin_repo(root: Path | None = None) -> str:
+    git = _git_executable()
+    if not git:
+        return ""
     cwd = str(root or _runtime_root())
     try:
         proc = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
+            [git, "remote", "get-url", "origin"],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -174,14 +184,61 @@ def _win_no_window() -> dict[str, Any]:
     return {"creationflags": CREATE_NO_WINDOW}
 
 
+def _git_executable() -> str:
+    found = shutil.which("git")
+    if found:
+        return found
+    for raw in _GIT_CANDIDATES:
+        p = Path(raw)
+        if p.is_file():
+            return str(p)
+    return ""
+
+
+def _dotenv_token(root: Path | None = None) -> str:
+    path = (root or _runtime_root()) / ".env"
+    if not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    keys = ("GITHUB_TOKEN", "GH_TOKEN", "EVA_GITHUB_TOKEN")
+    found: dict[str, str] = {}
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        key, val = s.split("=", 1)
+        key = key.strip()
+        val = val.strip().strip("'").strip('"')
+        if key in keys and val:
+            found[key] = val
+    for key in keys:
+        if found.get(key):
+            return found[key]
+    return ""
+
+
+def _httpx_client(**kwargs: Any):
+    import httpx
+
+    kwargs.setdefault("trust_env", False)
+    kwargs.setdefault("follow_redirects", True)
+    return httpx.Client(**kwargs)
+
+
 def _git_credential_token(*, allow_prompt: bool = False) -> str:
+    git = _git_executable()
+    if not git:
+        return ""
     env = os.environ.copy()
     if not allow_prompt:
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GCM_INTERACTIVE"] = "never"
     try:
         proc = subprocess.run(
-            ["git", "credential", "fill"],
+            [git, "credential", "fill"],
             input="protocol=https\nhost=github.com\n\n",
             capture_output=True,
             text=True,
@@ -230,6 +287,9 @@ def resolve_token(explicit: str = "", *, interactive: bool = True) -> str:
     tok = str(load_channel().get("token") or "").strip()
     if tok:
         return tok
+    tok = _dotenv_token()
+    if tok:
+        return tok
     tok = _gh_cli_token()
     if tok:
         return tok
@@ -239,6 +299,18 @@ def resolve_token(explicit: str = "", *, interactive: bool = True) -> str:
     if not interactive:
         return ""
     return _git_credential_token(allow_prompt=True)
+
+
+def _remember_token(tok: str) -> None:
+    tok = (tok or "").strip()
+    if not tok:
+        return
+    if str(load_channel().get("token") or "").strip():
+        return
+    try:
+        save_channel(token=tok)
+    except OSError:
+        pass
 
 
 def local_info() -> dict[str, Any]:
@@ -295,7 +367,7 @@ def _api(path: str, *, token: str = "", interactive: bool = True) -> tuple[int, 
 
     repo = configured_repo()
     url = path if path.startswith("http") else f"https://api.github.com/repos/{repo}{path}"
-    with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+    with _httpx_client(timeout=20.0) as client:
         r = client.get(url, headers=_headers(token=token, interactive=interactive))
     try:
         data = r.json()
@@ -399,10 +471,7 @@ def fetch_latest_release(*, token: str = "", interactive: bool = True) -> dict[s
     repo = configured_repo()
     status, data = _api("/releases/latest", token=token, interactive=interactive)
     if status == 404:
-        raise RuntimeError(
-            f"GitHub 上还没有便携包发布（{repo}）。"
-            "请用 OPC/发布EVA 上传打包后的 EVA-update.zip，不要发源码。"
-        )
+        raise RuntimeError(_auth_error(status, data))
     if status >= 400:
         raise RuntimeError(_auth_error(status, data))
     if not isinstance(data, dict):
@@ -442,6 +511,9 @@ def check(*, force: bool = False, token: str = "", interactive: bool = True) -> 
         remote = cached
     else:
         remote = fetch_latest_release(token=token, interactive=interactive)
+        got = resolve_token(token, interactive=False)
+        if got:
+            _remember_token(got)
         _write_state(
             {
                 "checked_at": now,
@@ -479,7 +551,7 @@ def download_to_pending(url: str, *, token: str = "") -> Path:
         headers["Accept"] = "application/vnd.github+json"
     else:
         headers["Accept"] = "application/octet-stream"
-    with httpx.Client(timeout=None, follow_redirects=True) as client:
+    with _httpx_client(timeout=None) as client:
         with client.stream("GET", url, headers=headers) as r:
             if r.status_code >= 400:
                 raise RuntimeError(f"下载失败 HTTP {r.status_code}")
@@ -621,6 +693,88 @@ def apply_source_tree(src: Path, dest: Path) -> list[str]:
     return changed
 
 
+def schedule_frozen_update(src: Path, dest: Path) -> None:
+    """Replace EVA.exe after this process exits (Windows frozen launcher)."""
+    exe = src / "EVA.exe"
+    internal = src / "_internal"
+    if not exe.is_file() or not internal.is_dir():
+        raise RuntimeError("更新包不完整（缺少 EVA.exe 或 _internal）")
+    payload = _pending_dir() / "payload"
+    if payload.exists():
+        shutil.rmtree(payload, ignore_errors=True)
+    payload.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(exe, payload / "EVA.exe")
+    shutil.copytree(internal, payload / "_internal")
+    src_skills = src / "skills"
+    if src_skills.is_dir():
+        shutil.copytree(src_skills, payload / "skills")
+    for name in ("version.json", "eva_build.txt", "使用说明.txt", "start.bat", ".env.example"):
+        p = src / name
+        if p.is_file():
+            shutil.copy2(p, payload / name)
+    ps1 = _pending_dir() / "apply_update.ps1"
+    dest_s = json.dumps(str(dest), ensure_ascii=False)
+    src_s = json.dumps(str(payload), ensure_ascii=False)
+    exe_s = json.dumps(str(dest / "EVA.exe"), ensure_ascii=False)
+    pid = os.getpid()
+    script = f"""$ErrorActionPreference = "Stop"
+$dest = {dest_s}
+$src = {src_s}
+$exe = {exe_s}
+$waitPid = {pid}
+Write-Host "Eva update: waiting for launcher to exit..."
+try {{ Wait-Process -Id $waitPid -Timeout 120 -ErrorAction SilentlyContinue }} catch {{}}
+Start-Sleep -Seconds 1
+Copy-Item -LiteralPath (Join-Path $src "EVA.exe") -Destination (Join-Path $dest "EVA.exe") -Force
+$internal = Join-Path $dest "_internal"
+$new = Join-Path $dest "_internal.new"
+$old = Join-Path $dest "_internal.old"
+if (Test-Path -LiteralPath $new) {{ Remove-Item -LiteralPath $new -Recurse -Force }}
+Copy-Item -LiteralPath (Join-Path $src "_internal") -Destination $new -Recurse -Force
+if (Test-Path -LiteralPath $old) {{ Remove-Item -LiteralPath $old -Recurse -Force }}
+if (Test-Path -LiteralPath $internal) {{ Rename-Item -LiteralPath $internal -NewName "_internal.old" }}
+Rename-Item -LiteralPath $new -NewName "_internal"
+if (Test-Path -LiteralPath $old) {{ Remove-Item -LiteralPath $old -Recurse -Force }}
+$skillSrc = Join-Path $src "skills"
+if (Test-Path -LiteralPath $skillSrc) {{
+  $keep = @("document","terminal","list_api_models","reload_runtime","server_health_check")
+  $skillDest = Join-Path $dest "skills"
+  New-Item -ItemType Directory -Force -Path $skillDest | Out-Null
+  foreach ($n in $keep) {{
+    $from = Join-Path $skillSrc $n
+    if (Test-Path -LiteralPath $from) {{
+      $to = Join-Path $skillDest $n
+      if (Test-Path -LiteralPath $to) {{ Remove-Item -LiteralPath $to -Recurse -Force }}
+      Copy-Item -LiteralPath $from -Destination $to -Recurse -Force
+    }}
+  }}
+}}
+foreach ($n in @("version.json","eva_build.txt","start.bat","使用说明.txt",".env.example")) {{
+  $p = Join-Path $src $n
+  if (Test-Path -LiteralPath $p) {{ Copy-Item -LiteralPath $p -Destination (Join-Path $dest $n) -Force }}
+}}
+Start-Process -FilePath $exe -WorkingDirectory $dest
+"""
+    ps1.write_text(script, encoding="utf-8-sig")
+    flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    subprocess.Popen(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ps1),
+        ],
+        cwd=str(dest),
+        creationflags=flags,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+
+
 def apply_extracted(src: Path, dest: Path) -> None:
     exe = src / "EVA.exe"
     internal = src / "_internal"
@@ -628,7 +782,7 @@ def apply_extracted(src: Path, dest: Path) -> None:
         raise RuntimeError("更新包不完整（缺少 EVA.exe 或 _internal）")
     dest_exe = dest / "EVA.exe"
     if _exe_locked(dest_exe):
-        raise RuntimeError("EVA.exe 正在运行。请先在启动器点「停止」，再更新。")
+        raise RuntimeError("EVA.exe 正在运行。请先关闭启动器，再更新。")
 
     shutil.copy2(exe, dest / "EVA.exe")
     dest_internal = dest / "_internal"
@@ -727,12 +881,20 @@ def apply_pending_zip() -> dict[str, Any]:
                 "请使用 OPC/员工/EVA.exe，或继续用 git 更新源码。"
             )
         if frozen_payload:
-            apply_extracted(src, dest)
-            changed = ["EVA.exe", "_internal/"]
-            kind = "frozen"
+            if frozen_install:
+                schedule_frozen_update(src, dest)
+                changed = ["EVA.exe", "_internal/"]
+                kind = "frozen"
+                restarting = True
+            else:
+                apply_extracted(src, dest)
+                changed = ["EVA.exe", "_internal/"]
+                kind = "frozen"
+                restarting = False
         else:
             changed = apply_source_tree(src, dest)
             kind = "source"
+            restarting = False
         pip_msg = _maybe_install_requirements(dest) if kind == "source" else ""
         zpath.unlink(missing_ok=True)
         info = local_info()
@@ -747,6 +909,7 @@ def apply_pending_zip() -> dict[str, Any]:
             "local": info,
             "changed": changed,
             "kind": kind,
+            "restarting": restarting,
             "pip": pip_msg,
             "kept": sorted(KEEP_DIRS | KEEP_FILES),
             "restart_required": True,

@@ -682,7 +682,7 @@ class EvaLauncher:
         upd_info.pack(side="left", fill="x", expand=True)
         self._upd_cur_lbl = tk.Label(
             upd_info,
-            text=f"当前  v{__version__}",
+            text=f"当前  {self._fmt_ver(self._local_version())}",
             bg=BG2,
             fg=FG,
             font=FONT_UI,
@@ -1373,6 +1373,14 @@ class EvaLauncher:
                 self._emit(f"[X] 开机启动快捷方式丢失，未能重建：{exc}")
         self._boot_var.set(on)
 
+    def _local_version(self) -> str:
+        try:
+            from app.services.online_update import local_info
+
+            return str(local_info().get("version") or __version__)
+        except Exception:
+            return str(__version__)
+
     @staticmethod
     def _fmt_ver(raw: str) -> str:
         s = str(raw or "").strip()
@@ -1420,7 +1428,7 @@ class EvaLauncher:
             status = check(force=True, interactive=False)
             local = status.get("local") or {}
             remote = status.get("remote") or {}
-            ver = str(local.get("version") or __version__)
+            ver = str(local.get("version") or self._local_version())
             tag = str(remote.get("tag") or remote.get("version") or "")
             newer = bool(status.get("newer"))
             if newer:
@@ -1467,7 +1475,7 @@ class EvaLauncher:
                 if not status.get("newer"):
                     local = status.get("local") or {}
                     remote = status.get("remote") or {}
-                    ver = str(local.get("version") or __version__)
+                    ver = str(local.get("version") or self._local_version())
                     tag = str(remote.get("tag") or remote.get("version") or "")
 
                     def _latest() -> None:
@@ -1482,6 +1490,15 @@ class EvaLauncher:
                     return
                 result = apply_now(force=True)
             tag = str(result.get("applied_tag") or "")
+            if result.get("restarting"):
+                def _restart() -> None:
+                    self._upd_busy = False
+                    self._busy = False
+                    self._emit("正在退出启动器并完成更新，完成后会自动打开…")
+                    self.after(400, lambda: os._exit(0))
+
+                self._ui(_restart)
+                return
             if not result.get("ok"):
                 msg = str(result.get("message") or result.get("error") or "没有可应用的更新")
             else:
@@ -1497,7 +1514,7 @@ class EvaLauncher:
                 try:
                     from app.services.online_update import local_info
 
-                    ver = str((local_info().get("version") or __version__))
+                    ver = str((local_info().get("version") or self._local_version()))
                     shown = tag or ver
                     self._set_update_versions(
                         ver, shown, latest_state="ok" if shown else "fail", newer=False

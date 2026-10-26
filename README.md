@@ -1,6 +1,6 @@
 # Eva
 
-Ruyi Studio 出品的本地 **AI 助手**（v0.1.2）。
+Ruyi Studio 出品的本地 **AI 助手**（v0.1.3）。
 
 对话、多模型、工具 / 技能、长期记忆、知识库、定时任务、工作流与 MCP。使用前需 **卡密登录**（卡密由管理员在 CardServer 发卡台发放）。
 
@@ -100,7 +100,7 @@ Windows 建议用 `.venv\Scripts\python.exe run.py`（会转到 `pythonw.exe`，
 
 启动器左侧「更新」：检查 GitHub Release 上的便携包（`EVA-update.zip`），停止服务后点「更新」。只替换 `EVA.exe` / `_internal`，不改 `data/`、工作区、`.env`。私有仓库可在「更多设定」填写 Token，或使用环境变量 `GITHUB_TOKEN`。
 
-打包与发布工具在 **Eva 项目外面**（不随项目上传）：`OPC/发布EVA` 一次 `--publish` 会推送源码备份，再打 `员工/EVA.exe` 并上传便携 zip。启动器「更新」只用 zip，不会覆盖 `data/` / `.env`。只打包不上 GitHub 用 `OPC/打包EVA`。
+打包与发布在 **Eva 项目外面**：双击 `OPC/发布EVA/启动.bat`。菜单 1 打包并发布、2 发布、3 打包；每次版本号 +1 并同步 GitHub。启动器「更新」下载 `EVA-update.zip`，不改 `data/` / `.env`。
 
 ---
 
