@@ -41,6 +41,7 @@
  const items = state.attachments || [];
  if (!items.length) {
  bar.classList.add("hidden");
+ if (typeof L.syncSendButtonState === "function") L.syncSendButtonState();
  return;
  }
  bar.classList.remove("hidden");
@@ -91,6 +92,7 @@
  chip.appendChild(rm);
  list.appendChild(chip);
  }
+ if (typeof L.syncSendButtonState === "function") L.syncSendButtonState();
  }
 
  function addAttachments(savedList) {
@@ -177,12 +179,18 @@
 
  function setUploadBusy(busy) {
  const btn = $("btnAttach");
+ const plus = $("btnComposerPlus");
  if (btn) {
  btn.disabled = !!busy;
  btn.classList.toggle("uploading", !!busy);
  btn.title = busy
  ? "上传中…"
  : "上传或选用已有文件（也可拖拽 / 粘贴）";
+ }
+ if (plus) {
+ plus.disabled = !!busy;
+ plus.classList.toggle("uploading", !!busy);
+ plus.title = busy ? "上传中…" : "添加";
  }
  }
 
@@ -192,6 +200,7 @@
  }
 
  function openUploadPicker() {
+ if (typeof L.closeComposerPlusMenu === "function") L.closeComposerPlusMenu();
  const p = $("uploadPicker");
  if (!p) {
  $("fileInput")?.click();
@@ -337,14 +346,14 @@
  if (!items.length) {
  return { textSuffix: "", attachments: [] };
  }
- // 路径仅作引用；UI 已在用户气泡预览。仅图无文 → 默认启动产品多轮（知识库阶段1）
+ // 路径仅作引用；UI 已在用户气泡预览。仅图无文 → 只识图，不自动开任何 SOP
  const onlyImages =
   items.length > 0 && items.every((a) => a && a.kind === "image");
  const lines = [""];
  if (onlyImages) {
   lines.push(
-   "【用户上传的产品图片】（workspace 相对路径；界面已在用户消息中预览）",
-   "用户本轮未打字：默认启动多轮产品流程。请按知识库「产品内容流水线SOP」（原产品辨识与咨询）从阶段1开始（识图 → 可确认/推测/需补充 → 阶段1.5 选择题），不要跳步直接写长文案；也不要在回复中重复粘贴这些上传图。"
+   "【用户上传的图片】（workspace 相对路径；界面已在用户消息中预览）",
+   "用户本轮未打字：用几句话描述这些图片后停止。不要检索知识库，不要分阶段，不要出选择题。"
   );
  } else {
   lines.push(
@@ -479,6 +488,8 @@
  L.uploadFiles = uploadFiles;
  L.addAttachments = addAttachments;
  L.renderAttachBar = renderAttachBar;
+ L.openUploadPicker = openUploadPicker;
+ L.closeUploadPicker = closeUploadPicker;
  L.consumeAttachmentsForSend = consumeAttachmentsForSend;
  L.clearAttachments = clearAttachments;
  L.bindUploadUI = bindUploadUI;

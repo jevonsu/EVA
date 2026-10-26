@@ -37,6 +37,8 @@ async def chat_async(body: ChatRequest) -> dict:
             use_tools=body.use_tools,
             use_memory=body.use_memory,
             model=body.model,
+            session_title=body.session_title,
+            metadata=body.metadata,
         )
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -143,6 +145,8 @@ async def chat(body: ChatRequest) -> StreamingResponse:
             use_tools=body.use_tools,
             use_memory=body.use_memory,
             model=body.model,
+            session_title=body.session_title,
+            metadata=body.metadata,
         )
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -192,6 +196,7 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
                 session_id=body.session_id,
                 use_memory=body.use_memory,
                 model=body.model,
+                session_title=body.session_title,
             ):
                 for line in chunk.split("\n"):
                     yield f"data: {line}\n"

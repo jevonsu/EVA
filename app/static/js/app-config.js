@@ -12,7 +12,7 @@
  const loadHealth = (...a) => L.loadHealth(...a);
  const loadTasks = (...a) => L.loadTasks(...a);
  const loadMemory = (...a) => L.loadMemory(...a);
- const setSidebarOpen = (...a) => L.setSidebarOpen(...a);
+ const closeMobileSidebar = (...a) => L.closeMobileSidebar(...a);
 
  function getConfigModal() {
  return document.getElementById("configModal") || els.configModal;
@@ -27,6 +27,7 @@
  "memoryAddModal",
  "webhookEditorModal",
  "wsFileModal",
+ "promptEditorModal",
  ];
 
  function openNestedEditor(modalId) {
@@ -72,6 +73,7 @@
    bindNestedBackdropClose("customToolEditorModal", closeCustomToolEditor);
    bindNestedBackdropClose("mcpEditorModal", closeMcpEditor);
    bindNestedBackdropClose("integrationEditorModal", closeIntegrationEditor);
+   bindNestedBackdropClose("promptEditorModal", closePromptEditor);
   } catch (_) {}
  }
 
@@ -104,7 +106,7 @@
  }
 
  async function openConfig(tab) {
- setSidebarOpen(false);
+ closeMobileSidebar();
  const modal = await ensureConfigModal();
  if (!modal) {
  showToast("设定面板加载失败，请刷新页面", "error");
@@ -117,7 +119,7 @@
 
  const target =
   tab ||
-  document.querySelector(".tab.active")?.dataset.tab ||
+  document.querySelector("#configTabs .tab.active")?.dataset.tab ||
   "agent";
 
  // 有缓存：立刻画界面并切到目标页，避免对话生成中还卡在「载入中…」
@@ -149,28 +151,109 @@
  loadHealth();
  }
 
+ const CFG_TAB_GROUP = {
+  agent: "daily",
+  llm: "daily",
+  integrations: "daily",
+  skills: "capability",
+  tools: "system",
+  tasks: "capability",
+  memory: "capability",
+  kb: "capability",
+  workspace: "capability",
+  workflows: "capability",
+  mcp: "system",
+  webhooks: "system",
+  storage: "system",
+  office: "system",
+  update: "system",
+ };
+ const _cfgGroupTab = {
+  daily: "agent",
+  capability: "skills",
+  system: "mcp",
+ };
+
+ function groupForTab(name) {
+  return CFG_TAB_GROUP[name] || "daily";
+ }
+
+ function applyConfigGroup(group, root) {
+  const el = root || getConfigModal() || document;
+  el.querySelectorAll("#configGroups .cfg-group").forEach((b) => {
+   const on = b.dataset.group === group;
+   b.classList.toggle("active", on);
+   b.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  el.querySelectorAll("#configTabs .tab").forEach((t) => {
+   t.hidden = false;
+   t.removeAttribute("hidden");
+   t.setAttribute("aria-hidden", "false");
+  });
+  el.querySelectorAll(".cfg-side-block").forEach((b) => {
+   b.classList.toggle("is-active", b.dataset.sideGroup === group);
+  });
+ }
+
+ function switchConfigGroup(group) {
+  const g = group || "daily";
+  const root = getConfigModal() || document;
+  const current = root.querySelector("#configTabs .tab.active")?.dataset.tab;
+  if (current && groupForTab(current) === g) {
+   applyConfigGroup(g, root);
+   return;
+  }
+  switchTab(_cfgGroupTab[g] || "agent");
+ }
+
  function switchTab(name, opts = {}) {
  const soft = !!opts.soft;
- document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
- document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.dataset.panel === name));
+ const tab = name || "agent";
+ const group = groupForTab(tab);
+ _cfgGroupTab[group] = tab;
+ // 只操作设定窗内的 tab，避免和页面其它 .tab 冲突
+ const root = getConfigModal() || document;
+ applyConfigGroup(group, root);
+ root.querySelectorAll("#configTabs .tab").forEach((t) =>
+  t.classList.toggle("active", t.dataset.tab === tab)
+ );
+ root.querySelectorAll(".tab-panel").forEach((p) =>
+  p.classList.toggle("active", p.dataset.panel === tab)
+ );
  // soft：有内容时不先清空再 skeleton，对话生成中也能立刻看到上次数据
- if (name === "tasks") loadTasks({ soft });
- if (name === "memory") loadMemory($("memSearch")?.value || "", { soft });
- if (name === "kb") typeof L.loadKb === "function" && L.loadKb($("kbSearch")?.value || "", { soft });
- if (name === "workflows")
+ if (tab === "tasks") loadTasks({ soft });
+ if (tab === "memory") loadMemory($("memSearch")?.value || "", { soft });
+ if (tab === "kb") typeof L.loadKb === "function" && L.loadKb($("kbSearch")?.value || "", { soft });
+ if (tab === "workflows")
   typeof L.loadWorkflows === "function" && L.loadWorkflows({ soft });
- if (name === "workspace")
+ if (tab === "workspace")
   typeof L.loadWorkspace === "function" && L.loadWorkspace(undefined, { soft });
- if (name === "webhooks")
+ if (tab === "webhooks")
   typeof L.loadWebhooks === "function" && L.loadWebhooks({ soft });
- if (name === "llm") loadLlms({ soft });
- if (name === "tools") loadToolsPanel({ soft });
- if (name === "skills") loadSkills({ soft });
- if (name === "mcp") loadMcp({ soft });
- if (name === "integrations") loadIntegrations({ soft });
- const activeTab = document.querySelector(`.tab[data-tab="${name}"]`);
- if (activeTab) activeTab.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
- const body = document.querySelector(".modal-body");
+ if (tab === "storage") {
+  try {
+   loadStorage({ soft });
+  } catch (e) {
+   console.warn("loadStorage", e);
+  }
+ }
+ if (tab === "llm") loadLlms({ soft });
+ if (tab === "tools") loadToolsPanel({ soft });
+ if (tab === "skills") loadSkills({ soft });
+ if (tab === "mcp") loadMcp({ soft });
+ if (tab === "integrations") loadIntegrations({ soft });
+ if (tab === "office") loadOfficePairing({ soft });
+ if (tab === "update") loadAppUpdate({ soft });
+ const activeTab = root.querySelector(
+  `#configTabs .tab[data-tab="${tab}"]`
+ );
+ if (activeTab)
+  activeTab.scrollIntoView({
+   behavior: "smooth",
+   block: "nearest",
+   inline: "nearest",
+  });
+ const body = root.querySelector(".modal-body");
  if (body) body.scrollTop = 0;
  }
 
@@ -201,7 +284,7 @@
  if (!loadPanels) return;
  // 只刷新当前可见 tab，避免启动/打开设定时并行打 5 个重接口
  const active =
-  document.querySelector(".tab.active")?.dataset.tab || "agent";
+  document.querySelector("#configTabs .tab.active")?.dataset.tab || "agent";
  const softOpt = { soft };
  if (active === "llm") await loadLlms(softOpt);
  else if (active === "tools") await loadToolsPanel(softOpt);
@@ -212,6 +295,7 @@
   await L.loadTasks({ soft: true });
  else if (active === "memory" && typeof L.loadMemory === "function")
   await L.loadMemory($("memSearch")?.value || "", { soft: true });
+ else if (active === "storage") await loadStorage(softOpt);
  } catch (e) {
  setMsg("msgAgent", "读取配置失败: " + e.message, "error");
  // 有旧缓存时不弹致命 toast 打扰生成中的操作
@@ -640,6 +724,7 @@
   _setText("cfgSpeechPatterns", a.speech_patterns || "");
   _setText("cfgExampleDialogue", a.example_dialogue || "");
   _setText("cfgOocRules", a.ooc_rules || "");
+  loadEvolutionPanel();
   // 已启用扮演时展开折叠，便于查看/改人设
   const rpOn = !!$("cfgRoleplayEnabled")?.checked;
   syncRoleplayFieldsUi({ openDetails: rpOn });
@@ -647,11 +732,6 @@
    const d = $("roleplayDetails");
    if (d) d.open = true;
   }
-  _setText("cfgDecisionTree", a.decision_tree || "");
-  _setText("cfgLanguageCalibrator", a.language_calibrator || "");
-  _setText("cfgSop", a.sop || "");
-  _setText("cfgHardBoundaries", a.hard_boundaries || "");
-  _setText("cfgGreeting", a.greeting || "");
   $("cfgMaxRounds").value = a.max_tool_rounds ?? 8;
   $("cfgMaxHistory").value =
    a.max_history_messages ?? a.max_history ?? 40;
@@ -733,6 +813,77 @@
   setMsg("msgAgent", "已删除选项（保存人设后持久化）", "ok");
  }
 
+ function _fmtEvoTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getMonth() + 1}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+ }
+
+ function renderEvolutionPanel(data) {
+  const body = $("evoPersonaBody");
+  const meta = $("evoPersonaMeta");
+  if (!body) return;
+  const empty = !data || data.empty;
+  const entries = (data && data.entries) || [];
+  const bits = [];
+  if (data && data.session_title) bits.push(data.session_title);
+  else if (data && data.session_id)
+   bits.push("会话 " + String(data.session_id).slice(0, 8));
+  if (data && data.version) bits.push("第 " + data.version + " 次演化");
+  if (data && data.updated_at) bits.push(_fmtEvoTime(data.updated_at));
+  if (meta) meta.textContent = bits.join(" · ");
+  if (empty) {
+   body.innerHTML =
+    '<p class="evo-persona-empty">当前会话还没演化。对话达到「演化触发条数」后，压缩出的人格与要点会出现在这里。</p>';
+   return;
+  }
+  const rows = entries
+   .map((e) => {
+    const kind = escapeHtml(e.kind_label || e.kind || "要点");
+    const isPersona = e.kind === "preference";
+    return (
+     `<div class="evo-persona-item${isPersona ? " is-persona" : ""}">` +
+     `<span class="evo-kind">${kind}</span>` +
+     `<p>${escapeHtml(e.content || "")}</p>` +
+     `</div>`
+    );
+   })
+   .join("");
+  const prose =
+   !entries.length && data.text
+    ? `<p class="evo-persona-text">${escapeHtml(data.text)}</p>`
+    : "";
+  body.innerHTML = rows + prose ||
+   '<p class="evo-persona-empty">演化结果为空。</p>';
+ }
+
+ async function loadEvolutionPanel() {
+  const body = $("evoPersonaBody");
+  const meta = $("evoPersonaMeta");
+  if (!body) return;
+  const sid = (state && state.sessionId) || "";
+  if (!sid) {
+   if (meta) meta.textContent = "";
+   body.innerHTML =
+    '<p class="evo-persona-empty">新对话还没有演化。聊到触发条数后，这里会显示压缩后的人格要点。</p>';
+   return;
+  }
+  try {
+   const data = await api(
+    "/api/sessions/" + encodeURIComponent(sid) + "/evolution"
+   );
+   renderEvolutionPanel(data);
+  } catch (e) {
+   if (meta) meta.textContent = "";
+   body.innerHTML =
+    '<p class="evo-persona-empty">无法读取演化结果：' +
+    escapeHtml(e.message || e) +
+    "</p>";
+  }
+ }
+
  function collectAgentFormPayload() {
   const persona_options = {};
   MS_KEYS.forEach((k) => {
@@ -753,11 +904,6 @@
    speech_patterns: $("cfgSpeechPatterns")?.value || "",
    example_dialogue: $("cfgExampleDialogue")?.value || "",
    ooc_rules: $("cfgOocRules")?.value || "",
-   decision_tree: $("cfgDecisionTree")?.value || "",
-   language_calibrator: $("cfgLanguageCalibrator")?.value || "",
-   sop: $("cfgSop")?.value || "",
-   hard_boundaries: $("cfgHardBoundaries")?.value || "",
-   greeting: $("cfgGreeting")?.value || "",
    persona_options,
    max_tool_rounds: parseInt($("cfgMaxRounds")?.value, 10) || 8,
    max_history_messages: parseInt($("cfgMaxHistory")?.value, 10) || 40,
@@ -784,9 +930,9 @@
  if (!Array.isArray(llms)) llms = llms.items || [];
  // 默认模型置顶，更醒目
  llms = llms.slice().sort((a, b) => {
- const da = a && (a.is_default || a.default) ? 0 : 1;
- const db = b && (b.is_default || b.default) ? 0 : 1;
- return da - db;
+ const rank = (x) =>
+  x && (x.is_default || x.default) ? 0 : x && x.is_deputy ? 1 : 2;
+ return rank(a) - rank(b);
  });
  list.innerHTML = "";
  if (!llms.length) {
@@ -798,10 +944,12 @@
  for (const llm of llms) {
  const card = document.createElement("div");
  const isDefault = !!(llm.is_default || llm.default);
+ const isDeputy = !!llm.is_deputy && !isDefault;
  const enabled = llm.enabled !== false;
  card.className =
  "card llm-card" +
  (isDefault ? " is-default" : "") +
+ (isDeputy ? " is-deputy" : "") +
  (enabled ? "" : " is-disabled");
  const mod = llm.modality || "";
  const modLabel = llm.modality_label || modalityLabelLocal(llm.model, llm.name);
@@ -826,17 +974,33 @@
  )} 默认</span>`
  : ""
  }
+ ${
+ isDeputy
+ ? `<span class="pill llm-deputy-badge" title="这一轮要调技能时自动用，日常聊天仍走默认">副模型</span>`
+ : ""
+ }
  <span class="pill ${modClass}" title="${escapeHtml(
  modHint || modLabel
  )}">${escapeHtml(modLabel)}</span>
+ ${
+ llm.use_proxy
+ ? `<span class="pill llm-proxy-badge" title="该模型走代理">代理</span>`
+ : ""
+ }
  </div>
- <div class="card-sub">${escapeHtml(llm.provider || "—")} · <code>${escapeHtml(
- llm.model || "—"
+ <div class="card-sub">${escapeHtml(
+ isLlmCli(llm) ? "CLI" : llm.provider || "—"
+ )} · <code>${escapeHtml(
+ llm.model || (isLlmCli(llm) ? llm.cli_command || "cli" : "—")
  )}</code>${enabled ? "" : " · " + _ipkLabel("forbid", "停用", "ipk-xs")}</div>
- <div class="card-sub muted-line">${escapeHtml(llm.base_url || "")}</div>
+ <div class="card-sub muted-line">${escapeHtml(
+ isLlmCli(llm)
+ ? [llm.cli_command, llm.cli_args].filter(Boolean).join(" ")
+ : llm.base_url || ""
+ )}</div>
  <div class="card-sub llm-balance-line" data-llm-balance="${escapeHtml(lid)}">
  <span class="llm-balance-label">余额</span>
- <span class="llm-balance-value is-loading">查询中…</span>
+ <span class="llm-balance-value">${isLlmCli(llm) ? "CLI" : "未查询"}</span>
  </div>
  </div>
  <div class="card-actions">
@@ -848,9 +1012,21 @@
  )}</button>`
  : ""
  }
- <button type="button" class="btn llm-balance-refresh icon-btn" title="刷新余额" data-llm-id="${escapeHtml(
+ ${
+ !isDeputy && llms.length > 1
+ ? `<button type="button" class="btn btn-set-deputy icon-btn" title="设为副模型（调技能时自动用这一轮）">${_ipk(
+ "lightning",
+ "ipk-sm"
+ )}</button>`
+ : ""
+ }
+ ${
+ isLlmCli(llm)
+ ? ""
+ : `<button type="button" class="btn llm-balance-refresh icon-btn" title="刷新余额" data-llm-id="${escapeHtml(
  lid
- )}">${_ipk("refresh", "ipk-sm")}</button>
+ )}">${_ipk("refresh", "ipk-sm")}</button>`
+ }
  <button type="button" class="btn edit-llm icon-btn" title="编辑">${_ipk("edit", "ipk-sm")}</button>
  <button type="button" class="btn danger delete-llm icon-btn" title="删除">${_ipk("delete", "ipk-sm")}</button>
  </div>`;
@@ -879,9 +1055,24 @@
  }
  });
  }
+ const depBtn = card.querySelector(".btn-set-deputy");
+ if (depBtn) {
+ depBtn.addEventListener("click", async () => {
+ try {
+ await api(`/api/config/llms/${encodeURIComponent(llm.id)}/deputy`, {
+ method: "POST",
+ });
+ setMsg("msgLlm", `已设 ${llm.name || llm.id} 为副模型`, "ok");
+ showToast("已设为副模型（不改默认）", "success");
+ loadLlms();
+ loadHealth();
+ } catch (e) {
+ setMsg("msgLlm", e.message, "error");
+ showToast("设置副模型失败", "error");
+ }
+ });
+ }
  list.appendChild(card);
- // 异步拉余额，不阻塞列表
- if (lid) refreshLlmBalance(lid, false);
  }
  setMsg("msgLlm", `共 ${llms.length} 个 LLM`, "ok");
  if (typeof L.hydrateIconPark === "function") L.hydrateIconPark(list);
@@ -909,32 +1100,49 @@
  else el.removeAttribute("title");
  }
 
+ function formatBalanceClient(res) {
+ if (!res) return "—";
+ if (res.display && String(res.display).trim()) return String(res.display).trim();
+ const n = res.amount;
+ if (n == null || n === "") return "—";
+ const u = String(res.unit || "").toUpperCase();
+ const num = Number(n);
+ if (!Number.isFinite(num)) return String(n);
+ if (u === "CNY" || u === "RMB" || u === "¥") return "¥" + num.toFixed(2);
+ if (u === "USD" || u === "$") return "$" + num.toFixed(2);
+ return num.toFixed(2) + (u ? " " + u : "");
+ }
+
  async function refreshLlmBalance(llmId, forceRefresh) {
  if (!llmId) return;
  setLlmBalanceEl(llmId, "is-loading", "查询中…", "");
  try {
+ // Always bypass short negative cache when user clicks refresh;
+ // auto-load still uses server cache for successes.
  const q = forceRefresh ? "?refresh=true" : "";
  const res = await api(
  `/api/config/llms/${encodeURIComponent(llmId)}/balance${q}`
  );
  if (res && res.ok) {
+ const text = formatBalanceClient(res);
  const note = [res.note, res.source ? "来源: " + res.source : ""]
  .filter(Boolean)
  .join(" · ");
  setLlmBalanceEl(
  llmId,
  res.local ? "is-miss" : "is-ok",
- res.display || String(res.amount ?? "—"),
+ text,
  note || "账户余额（尽力查询，因服务商而异）"
  );
  } else {
  const why = [res && res.error, res && res.hint]
  .filter(Boolean)
  .join(" — ");
+ const isAuth = !!(res && res.auth_error);
  setLlmBalanceEl(
  llmId,
- "is-miss",
- (res && res.display) || "暂不可查",
+ isAuth ? "is-err" : "is-miss",
+ (res && res.display) || (isAuth ? "密钥无效" : "暂不可查"),
  why ||
  "该服务商未开放余额 API（仅 DeepSeek 等少数有官方余额接口）"
  );
@@ -1028,8 +1236,14 @@
  }
 
  async function fetchLlmModels() {
+ if (($("llmTransport")?.value || "api") === "cli") {
+ setMsg("msgLlmEditor", "CLI 模式没有 /models 接口，请直接填写 model 或留空", "error");
+ return;
+ }
  const base_url = ($("llmBaseUrl")?.value || "").trim();
- const api_key = ($("llmApiKey")?.value || "").trim();
+ // strip paste noise (spaces / zero-width) — mirrors backend clean
+ let api_key = ($("llmApiKey")?.value || "").trim();
+ api_key = api_key.replace(/[\u200b\u200c\u200d\ufeff\u00a0]/g, "").replace(/\s+/g, "");
  const id = ($("llmId")?.value || "").trim();
  if (!base_url) {
  setMsg("msgLlmEditor", "请先填写 Base URL", "error");
@@ -1041,32 +1255,160 @@
  showToast("请先填 API Key", "error");
  return;
  }
- setMsg("msgLlmEditor", "拉取模型列表中…");
- try {
- const res = await api("/api/config/llms/models", {
- method: "POST",
- body: JSON.stringify({ base_url, api_key, id: id || null }),
- });
- if (!res.ok) {
+ const usingSaved = !api_key && !!id;
  setMsg(
  "msgLlmEditor",
- "拉取失败: " + (res.error || res.detail || "unknown"),
- "error"
+ usingSaved ? "拉取模型列表中…（使用已保存的 Key）" : "拉取模型列表中…"
  );
- showToast("拉取模型失败", "error");
+ try {
+ const use_proxy = !!$("llmUseProxy")?.checked;
+ const res = await api("/api/config/llms/models", {
+ method: "POST",
+ body: JSON.stringify({
+ base_url,
+ api_key,
+ id: id || null,
+ use_proxy,
+ }),
+ });
+ if (!res.ok) {
+ const msg =
+ "拉取失败: " +
+ (res.error || res.detail || "unknown") +
+ (res.auth_error
+ ? " — 请重新粘贴完整 API Key，点「保存」后再拉。"
+ : "");
+ setMsg("msgLlmEditor", msg, "error");
+ showToast(res.auth_error ? "API Key 无效" : "拉取模型失败", "error");
  return;
  }
  const models = res.models || [];
- fillLlmModelSelect(models, $("llmModel")?.value);
+ const cur = ($("llmModel")?.value || "").trim();
+ fillLlmModelSelect(models, cur);
+ // 若尚未填写 model，自动选第一个
+ if (!cur && models.length) {
+ const first = typeof models[0] === "string" ? models[0] : models[0].id;
+ if (first && $("llmModel")) {
+ $("llmModel").value = first;
+ const sel = $("llmModelSelect");
+ if (sel) sel.value = first;
+ updateLlmModalityHint();
+ }
+ }
  setMsg(
  "msgLlmEditor",
- `已拉取 ${res.count ?? models.length} 个模型，请下拉选择`,
+ `已拉取 ${res.count ?? models.length} 个模型，请下拉选择` +
+ (res.source_url ? `（${res.source_url}）` : ""),
  "ok"
  );
  showToast(`已拉取 ${res.count ?? models.length} 个模型`, "success");
  } catch (e) {
- setMsg("msgLlmEditor", e.message, "error");
+ setMsg("msgLlmEditor", e.message || String(e), "error");
  showToast("拉取失败", "error");
+ }
+ }
+
+ const LLM_CLI_PRESETS = {
+ grok_build: {
+ name: "Grok Build",
+ command: "grok",
+ args: "--prompt-file {prompt_file} --output-format plain --max-turns 32 --always-approve",
+ model: "grok-4.6",
+ },
+ };
+
+ function isLlmCli(llm) {
+ if (!llm) return false;
+ const t = String(llm.transport || "").toLowerCase();
+ if (t === "cli") return true;
+ if (String(llm.provider || "").toLowerCase() === "cli") return true;
+ if (t === "api") return false;
+ if ((llm.cli_command || "").trim()) return true;
+ const name = String(llm.name || "").toLowerCase();
+ const key = String(llm.api_key || "").trim();
+ const url = String(llm.base_url || "").trim();
+ if ((name.includes("grok build") || name === "grok") && !key && !url) return true;
+ return false;
+ }
+
+ function collectLlmFormPayload(opts) {
+ opts = opts || {};
+ let model = ($("llmModel")?.value || "").trim();
+ const sel = $("llmModelSelect");
+ if (!model && sel && sel.value) {
+ model = (sel.value || "").trim();
+ if (model && $("llmModel")) $("llmModel").value = model;
+ }
+ const selectEl = $("llmTransport");
+ let transport = String(selectEl?.value || "").trim().toLowerCase();
+ const cli_command = ($("llmCliCommand")?.value || "").trim();
+ const cli_args = ($("llmCliArgs")?.value || "").trim();
+ const cli_cwd = ($("llmCliCwd")?.value || "").trim();
+ if (transport !== "api" && transport !== "cli") {
+ transport = cli_command ? "cli" : "api";
+ }
+ const data = {
+ id: ($("llmId")?.value || "").trim() || undefined,
+ name: ($("llmName")?.value || "").trim() || "LLM",
+ provider: transport === "cli" ? "cli" : ($("llmProvider")?.value || "openai"),
+ base_url: ($("llmBaseUrl")?.value || "").trim(),
+ model,
+ enabled: !!$("llmEnabled")?.checked,
+ is_default: !!$("llmDefault")?.checked,
+ is_deputy: !!$("llmDeputy")?.checked && !$("llmDefault")?.checked,
+ use_proxy: !!$("llmUseProxy")?.checked,
+ transport,
+ };
+ if (transport === "cli") {
+ data.cli_command = cli_command;
+ data.cli_args = cli_args;
+ data.cli_cwd = cli_cwd;
+ } else {
+ data.cli_command = "";
+ data.cli_args = "";
+ data.cli_cwd = "";
+ }
+ let key = ($("llmApiKey")?.value || "").trim();
+ key = key.replace(/[\u200b\u200c\u200d\ufeff\u00a0]/g, "").replace(/\s+/g, "");
+ if (opts.includeApiKey || key) data.api_key = key;
+ return data;
+ }
+
+ function syncLlmTransportUi() {
+ const cli = ($("llmTransport")?.value || "api") === "cli";
+ document.querySelectorAll("#llmEditorModal .llm-api-only").forEach((el) => {
+ el.hidden = cli;
+ });
+ document.querySelectorAll("#llmEditorModal .llm-cli-only").forEach((el) => {
+ el.hidden = !cli;
+ });
+ const model = $("llmModel");
+ if (model) {
+ model.placeholder = cli
+ ? "可选，传给 CLI 的 -m，如 grok-4.6"
+ : "或手动输入 model id，如 grok-4.5";
+ }
+ const hint = $("llmModalityHint");
+ if (hint) {
+ if (cli) {
+ hint.textContent = "CLI 把对话交给本机命令（如 grok）。Eva 不解析 tool_calls；本机 CLI 自己干活。";
+ } else if (typeof updateLlmModalityHint === "function") {
+ updateLlmModalityHint();
+ }
+ }
+ }
+
+ function applyLlmCliPreset() {
+ const key = ($("llmCliPreset")?.value || "").trim();
+ const preset = LLM_CLI_PRESETS[key];
+ if (!preset) return;
+ if ($("llmCliCommand")) $("llmCliCommand").value = preset.command;
+ if ($("llmCliArgs")) $("llmCliArgs").value = preset.args;
+ if (preset.model && $("llmModel") && !($("llmModel").value || "").trim()) {
+ $("llmModel").value = preset.model;
+ }
+ if (preset.name && $("llmName") && !($("llmName").value || "").trim()) {
+ $("llmName").value = preset.name;
  }
  }
 
@@ -1074,16 +1416,42 @@
  const editingLlmId = llm.id || "";
  $("llmId").value = editingLlmId;
  $("llmName").value = llm.name || "";
- $("llmProvider").value = llm.provider || "openai";
+ $("llmProvider").value = llm.provider && llm.provider !== "cli" ? llm.provider : "openai";
  $("llmBaseUrl").value = llm.base_url || "";
  $("llmApiKey").value = "";
  $("llmModel").value = llm.model || "";
+ if ($("llmTransport")) $("llmTransport").value = isLlmCli(llm) ? "cli" : "api";
+ if ($("llmCliCommand")) $("llmCliCommand").value = llm.cli_command || "";
+ if ($("llmCliArgs")) $("llmCliArgs").value = llm.cli_args || "";
+ if ($("llmCliCwd")) $("llmCliCwd").value = llm.cli_cwd || "";
+ if ($("llmCliPreset")) $("llmCliPreset").value = "";
+ if (isLlmCli(llm) && !($("llmCliCommand")?.value || "").trim()) {
+ const n = String(llm.name || llm.model || "");
+ if (/grok/i.test(n) && $("llmCliPreset")) {
+ $("llmCliPreset").value = "grok_build";
+ applyLlmCliPreset();
+ }
+ }
+ syncLlmTransportUi();
  fillLlmModelSelect(
  llm.model ? [{ id: llm.model, modality_label: llm.modality_label || modalityLabelLocal(llm.model, llm.name) }] : [],
  llm.model || ""
  );
  $("llmEnabled").checked = llm.enabled !== false;
  $("llmDefault").checked = !!(llm.is_default || llm.default);
+ if ($("llmDeputy")) $("llmDeputy").checked = !!llm.is_deputy && !llm.is_default;
+ if ($("llmUseProxy")) $("llmUseProxy").checked = !!llm.use_proxy;
+ const defEl = $("llmDefault");
+ const depEl = $("llmDeputy");
+ if (defEl && depEl && !defEl.dataset.deputyExclusive) {
+  defEl.dataset.deputyExclusive = "1";
+  defEl.addEventListener("change", () => {
+   if (defEl.checked && depEl.checked) depEl.checked = false;
+  });
+  depEl.addEventListener("change", () => {
+   if (depEl.checked && defEl.checked) defEl.checked = false;
+  });
+ }
  const titleEl = $("llmEditorTitle");
  if (titleEl)
  titleEl.innerHTML = editingLlmId
@@ -1148,7 +1516,7 @@
 
  // --- P0: 展示元数据（仅 UI 分组/角标，不改 tool 名与调用） ---
  // icon 名对应 IconPark 官方图标 key（见 static/js/icons.js）
- const CAPABILITY_GROUPS = [
+ const DEFAULT_CAPABILITY_GROUPS = [
  { id: "vision", label: "识图分析", icon: "picture" },
  { id: "media", label: "生图 / 视频", icon: "video" },
  { id: "memory", label: "记忆 / 偏好", icon: "brain" },
@@ -1162,6 +1530,147 @@
  { id: "dev", label: "开发 / 运维", icon: "code" },
  { id: "other", label: "其它", icon: "all-application" },
  ];
+ let CAPABILITY_GROUPS = DEFAULT_CAPABILITY_GROUPS.slice();
+
+ async function loadCapabilityGroups() {
+  try {
+   const data = await api("/api/config/capability-groups");
+   const items = Array.isArray(data?.groups)
+    ? data.groups
+    : Array.isArray(data)
+    ? data
+    : [];
+   const mapped = items
+    .map((g) => ({
+     id: String(g.id || "").trim(),
+     label: String(g.label || g.id || "").trim(),
+     icon: String(g.icon || "all-application"),
+     builtin: !!g.builtin,
+    }))
+    .filter((g) => g.id);
+   if (mapped.length) {
+    CAPABILITY_GROUPS = mapped;
+    return CAPABILITY_GROUPS;
+   }
+  } catch (_) {}
+  CAPABILITY_GROUPS = DEFAULT_CAPABILITY_GROUPS.slice();
+  return CAPABILITY_GROUPS;
+ }
+
+ function groupDef(groupId) {
+  const id = (groupId || "other").toString();
+  return (
+   CAPABILITY_GROUPS.find((x) => x.id === id) || {
+    id,
+    label: id,
+    icon: "all-application",
+    builtin: false,
+   }
+  );
+ }
+
+ function groupSelectHtml(currentId) {
+  const cur = (currentId || "other").toString();
+  const opts = CAPABILITY_GROUPS.map((g) => {
+   const sel = g.id === cur ? " selected" : "";
+   return (
+    '<option value="' +
+    escapeHtml(g.id) +
+    '"' +
+    sel +
+    ">" +
+    escapeHtml(g.label) +
+    "</option>"
+   );
+  }).join("");
+  return (
+   '<select class="group-pick" title="分类">' + opts + "</select>"
+  );
+ }
+
+ function bindGroupPick(selectEl, kind, id, currentId) {
+  if (!selectEl || !id) return;
+  selectEl.addEventListener("change", async () => {
+   const next = (selectEl.value || "").trim();
+   if (!next || next === currentId) return;
+   try {
+    const path =
+     kind === "skill"
+      ? "/api/config/skills/" + encodeURIComponent(id) + "/group"
+      : "/api/config/tools/" + encodeURIComponent(id) + "/group";
+    await api(path, {
+     method: "PUT",
+     body: JSON.stringify({ group: next }),
+    });
+    showToast("已移到「" + (groupDef(next).label || next) + "」", "success");
+    loadSkills({ soft: true });
+    if (typeof loadToolsPanel === "function") loadToolsPanel({ soft: true });
+   } catch (err) {
+    selectEl.value = currentId || "other";
+    showToast((err && err.message) || "改分类失败", "error");
+   }
+  });
+ }
+
+ async function promptAddCapabilityGroup() {
+  const label = (prompt("新分组名称") || "").trim();
+  if (!label) return;
+  try {
+   await api("/api/config/capability-groups", {
+    method: "POST",
+    body: JSON.stringify({ label }),
+   });
+   await loadCapabilityGroups();
+   showToast("已添加分组「" + label + "」", "success");
+   loadSkills({ soft: true });
+   if (typeof loadToolsPanel === "function") loadToolsPanel({ soft: true });
+  } catch (err) {
+   showToast((err && err.message) || "添加分组失败", "error");
+  }
+ }
+
+ async function renameCapabilityGroup(groupId, currentLabel) {
+  const next = prompt("分组名称", currentLabel || "");
+  if (next == null) return;
+  const label = String(next).trim();
+  if (!label || label === currentLabel) return;
+  try {
+   await api(
+    "/api/config/capability-groups/" + encodeURIComponent(groupId),
+    { method: "PATCH", body: JSON.stringify({ label }) }
+   );
+   await loadCapabilityGroups();
+   showToast("已重命名为「" + label + "」", "success");
+   loadSkills({ soft: true });
+   if (typeof loadToolsPanel === "function") loadToolsPanel({ soft: true });
+  } catch (err) {
+   showToast((err && err.message) || "重命名失败", "error");
+  }
+ }
+
+ async function deleteCapabilityGroup(groupId, label) {
+  if (groupId === "other") return;
+  if (
+   !confirm(
+    "删除分组「" +
+     (label || groupId) +
+     "」？里面的技能和工具会移到「其它」。"
+   )
+  )
+   return;
+  try {
+   await api(
+    "/api/config/capability-groups/" + encodeURIComponent(groupId),
+    { method: "DELETE" }
+   );
+   await loadCapabilityGroups();
+   showToast("已删除分组", "success");
+   loadSkills({ soft: true });
+   if (typeof loadToolsPanel === "function") loadToolsPanel({ soft: true });
+  } catch (err) {
+   showToast((err && err.message) || "删除失败", "error");
+  }
+ }
 
  function ipk(name, cls) {
  try {
@@ -1179,7 +1688,7 @@
  if (!groupEl) return;
  const isCollapsed = !!collapsed;
  groupEl.classList.toggle("is-collapsed", isCollapsed);
- const btn = groupEl.querySelector(".panel-group-header");
+ const btn = groupEl.querySelector(".panel-group-toggle") || groupEl.querySelector(".panel-group-header");
  if (btn) btn.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
  const body = groupEl.querySelector(".panel-group-body");
  if (body) body.hidden = isCollapsed;
@@ -1218,60 +1727,38 @@
 
  /** @type {Record<string, { group: string, role?: string, note?: string }>} */
  const TOOL_META = {
- // 每类唯一主入口（等价工具已合并移除）
- analyze_image_auto: { group: "vision", role: "primary", note: "产品识图唯一入口" },
- grok_media: { group: "media", role: "primary", note: "生图/改图/图生视频" },
  memory: { group: "memory", role: "primary", note: "长期记忆" },
  kb: { group: "memory", role: "primary", note: "知识库 Wiki" },
  workflow: { group: "schedule", role: "primary", note: "工作流" },
- product_multi_platform_publisher: { group: "content", role: "primary" },
- workspace: { group: "workspace", role: "primary", note: "本地文件唯一入口" },
- http: { group: "network", role: "primary", note: "HTTP 唯一入口" },
- office: { group: "office", role: "primary", note: "Excel/PDF/PPT/Word" },
+ workspace: { group: "workspace", role: "primary", note: "本地文件" },
  scheduled_task: {
   group: "schedule",
   role: "primary",
   note: "与「设定→任务」同一数据源",
  },
- reminders: {
-  group: "schedule",
-  role: "legacy",
-  note: "已停用·请用定时任务",
- },
- search_ai_news: { group: "news", role: "primary", note: "AI/科技资讯" },
- nas: { group: "infra", role: "primary" },
- nocodb: { group: "infra", role: "primary" },
- qb_manager: { group: "infra", role: "primary" },
  get_current_time: { group: "dev", role: "primary" },
  calculator: { group: "dev", role: "primary" },
  system_info: { group: "dev", role: "primary" },
  create_tool: { group: "dev", role: "primary", note: "运行时创建 skill" },
+ capability_groups: { group: "dev", role: "primary", note: "技能/工具分类" },
  read_skill: { group: "dev", role: "primary" },
  delete_tool: { group: "dev", role: "primary" },
  reload_runtime: { group: "dev", role: "primary" },
- run_py: { group: "dev", role: "primary", note: "跑脚本 + pip 装包" },
  list_api_models: { group: "dev", role: "primary" },
  server_health_check: { group: "dev", role: "primary" },
+ terminal: { group: "dev", role: "primary" },
+ document: { group: "office", role: "primary" },
+ llms: { group: "dev", role: "primary" },
+ integrations: { group: "infra", role: "primary" },
  };
 
- /** skill 包 id → 分组/角标（与 TOOL_META 对齐，仅展示） */
+ /** skill 包 id → 分组/角标（仅默认运行时技能） */
  const SKILL_META = {
- analyze_image_auto: { group: "vision", role: "primary" },
- grok_media: { group: "media", role: "primary" },
- product_multi_platform_publisher: { group: "content", role: "primary" },
- http: { group: "network", role: "primary" },
- office: { group: "office", role: "primary" },
- Tasks: { group: "schedule", role: "primary" },
- tasks: { group: "schedule", role: "primary" },
- reminders: { group: "schedule", role: "primary" },
- search_ai_news: { group: "news", role: "primary" },
- nas: { group: "infra", role: "primary" },
- nocodb: { group: "infra", role: "primary" },
- qb_manager: { group: "infra", role: "primary" },
- run_py: { group: "dev", role: "primary" },
  reload_runtime: { group: "dev", role: "primary" },
  list_api_models: { group: "dev", role: "primary" },
  server_health_check: { group: "dev", role: "primary" },
+ terminal: { group: "dev", role: "primary" },
+ document: { group: "office", role: "primary" },
  };
 
  const ROLE_LABEL = {
@@ -1285,27 +1772,11 @@
  function resolveGroupMeta(name, table, itemMeta) {
  const staticM = (table && table[name]) || {};
  const itemM = itemMeta || {};
- // item 覆盖 static，但 group=other 不覆盖更好的 static 分组
  const m = Object.assign({}, staticM, itemM);
- let groupId = (m.group || "").toString().toLowerCase() || "other";
- if (!groupId || groupId === "other") {
- groupId =
- (itemM.group && itemM.group !== "other" && itemM.group) ||
- staticM.group ||
- "other";
- }
- if (
- (groupId === "other" || !groupId) &&
- staticM.group &&
- staticM.group !== "other"
- ) {
- groupId = staticM.group;
- }
+ let groupId = (m.group || "").toString().trim() || "";
+ if (!groupId) groupId = staticM.group || "other";
  const isDynamic = m.dynamic === true || m.dynamic === "true";
- if (!groupId) groupId = "other";
- const g =
- CAPABILITY_GROUPS.find((x) => x.id === groupId) ||
- CAPABILITY_GROUPS[CAPABILITY_GROUPS.length - 1];
+ const g = groupDef(groupId);
  let note = m.note || m.description_hint || m.tag || "";
  const ver = m.version ? "v" + m.version : "";
  if (isDynamic && !note) note = "动态创建（create_tool）" + (ver ? " · " + ver : "");
@@ -1314,8 +1785,7 @@
  else if (ver && note && !String(note).includes(ver)) note = note + " · " + ver;
  return {
  groupId: g.id,
- groupLabel:
- isDynamic && g.id === "other" ? "其它 / 动态创建" : g.label,
+ groupLabel: g.label,
  role: m.role || (isDynamic ? "primary" : ""),
  note,
  dynamic: isDynamic,
@@ -1342,34 +1812,62 @@
  /**
  * 创建可折叠分组（默认折叠）。返回 body 容器，卡片应 append 到 body。
  */
- function appendCollapsibleGroup(listEl, groupId, label, count, iconName) {
+ function appendCollapsibleGroup(listEl, groupId, label, count, iconName, opts) {
+ const options = opts || {};
  const group = document.createElement("div");
  group.className = "panel-group is-collapsed";
  group.dataset.groupId = groupId || "";
 
- const header = document.createElement("button");
- header.type = "button";
+ const header = document.createElement("div");
  header.className = "panel-group-header";
- header.setAttribute("aria-expanded", "false");
- header.title = "点击展开 / 折叠";
+ const toggle = document.createElement("button");
+ toggle.type = "button";
+ toggle.className = "panel-group-toggle";
+ toggle.setAttribute("aria-expanded", "false");
+ toggle.title = "点击展开 / 折叠";
  const chevron = ipk("right", "ipk-xs group-chevron-icon") || "›";
  const gicon = iconName ? ipk(iconName, "ipk-sm group-type-icon") : "";
- header.innerHTML =
+ toggle.innerHTML =
  '<span class="group-chevron" aria-hidden="true">' +
  chevron +
  "</span>" +
  (gicon ? '<span class="group-type-icon-wrap">' + gicon + "</span>" : "") +
- '<h4 class="panel-title">' +
+ '<span class="panel-title">' +
  escapeHtml(label) +
- '</h4><span class="group-count">' +
+ '</span><span class="group-count">' +
  count +
  " 项</span>";
+ header.appendChild(toggle);
+ if (!options.locked) {
+  const actions = document.createElement("div");
+  actions.className = "panel-group-actions";
+  actions.innerHTML =
+   '<button type="button" class="btn icon-btn btn-rename-group" title="重命名分组">' +
+   ipk("edit", "ipk-xs") +
+   "</button>" +
+   (groupId === "other"
+    ? ""
+    : '<button type="button" class="btn icon-btn btn-delete-group" title="删除分组，技能会移到其它">' +
+      ipk("delete", "ipk-xs") +
+      "</button>");
+  actions.querySelector(".btn-rename-group")?.addEventListener("click", (e) => {
+   e.preventDefault();
+   e.stopPropagation();
+   renameCapabilityGroup(groupId, label);
+  });
+  actions.querySelector(".btn-delete-group")?.addEventListener("click", (e) => {
+   e.preventDefault();
+   e.stopPropagation();
+   deleteCapabilityGroup(groupId, label);
+  });
+  header.appendChild(actions);
+ }
 
  const body = document.createElement("div");
  body.className = "panel-group-body";
  body.hidden = true;
 
- header.addEventListener("click", () => {
+ toggle.addEventListener("click", () => {
  const collapsed = group.classList.contains("is-collapsed");
  setGroupCollapsed(group, !collapsed);
  });
@@ -1403,6 +1901,24 @@
  return buckets;
  }
 
+ function orderedGroupsFor(bucketsMap) {
+  const order = CAPABILITY_GROUPS.slice();
+  const seen = new Set(order.map((g) => g.id));
+  for (const id of bucketsMap.keys()) {
+   if (!seen.has(id)) {
+    order.push(groupDef(id));
+    seen.add(id);
+   }
+  }
+  return order;
+ }
+
+ function shouldShowGroup(g, rows) {
+  if (rows && rows.length) return true;
+  if (!g.builtin && g.id !== "other") return true;
+  return false;
+ }
+
  // --- Tools ---
  async function loadToolsPanel(opts = {}) {
  const soft = !!opts.soft;
@@ -1415,6 +1931,7 @@
   setMsg("msgTools", "载入中…");
  }
  try {
+ await loadCapabilityGroups();
  const data = await api("/api/config/tools");
  const catalog = Array.isArray(data.catalog)
  ? data.catalog
@@ -1434,9 +1951,9 @@
  injectPanelToolbar(list, "tools");
  const buckets = groupItemsByMeta(catalog, "name", TOOL_META);
  let primaryCount = 0;
- for (const g of CAPABILITY_GROUPS) {
+ for (const g of orderedGroupsFor(buckets)) {
  const rows = buckets.get(g.id) || [];
- if (!rows.length) continue;
+ if (!shouldShowGroup(g, rows)) continue;
  const body = appendCollapsibleGroup(
  list,
  g.id,
@@ -1447,9 +1964,19 @@
  for (const { item: t, meta, name } of rows) {
  if (meta.role === "primary") primaryCount += 1;
  const enabled = t.enabled !== false;
- const desc = t.description || "";
+ const desc =
+ (t.prompt_meta && t.prompt_meta.description) ||
+ t.base_description ||
+ t.description ||
+ "";
  const src = t.source || "builtin";
  const label = t.display_name || meta.note || name;
+ const how = (t.how_to_call || "").trim();
+ const howLine = how
+ ? '<div class="card-sub muted-line">下次这样说：' +
+ escapeHtml(how) +
+ "</div>"
+ : "";
  const noteLine = meta.note
  ? '<div class="card-sub muted-line">' + escapeHtml(meta.note) + "</div>"
  : "";
@@ -1469,7 +1996,7 @@
  ? '<div class="card-sub muted-line">已关闭 — 勾选可重新开启</div>'
  : "";
  const ovBadge = t.has_prompt_override
- ? ' <span class="pill" title="已自定义提示词">自定义提示</span>'
+ ? ' <span class="pill" title="已自定义描述或触发方式">已自定义</span>'
  : "";
  card.innerHTML = [
  '<div class="card-body">',
@@ -1489,11 +2016,13 @@
  escapeHtml(desc.slice(0, 160)) +
  (desc.length > 160 ? "…" : "") +
  "</div>",
+ howLine,
  noteLine,
  offNote,
  "</div>",
  '<div class="card-actions">',
- ' <button type="button" class="btn btn-edit-prompt icon-btn" title="编辑提示词">' +
+ groupSelectHtml(meta.groupId),
+ ' <button type="button" class="btn btn-edit-prompt icon-btn" title="编辑描述与触发">' +
  _ipk("edit", "ipk-sm") +
  "</button>",
  ' <label class="toggle tool-toggle-label" title="开关工具">',
@@ -1506,13 +2035,19 @@
  " </label>",
  "</div>",
  ].join("\n");
+ bindGroupPick(card.querySelector(".group-pick"), "tool", name, meta.groupId);
  card.querySelector(".btn-edit-prompt")?.addEventListener("click", () => {
  openPromptEditor({
  kind: "tool",
  id: name,
  label: label + " (" + name + ")",
  baseDescription: t.base_description || "",
- override: t.prompt_override || "",
+ override: (t.prompt_meta && t.prompt_meta.description) || t.prompt_override || "",
+ howToCall: (t.prompt_meta && t.prompt_meta.how_to_call) || "",
+ baseHowToCall: t.base_how_to_call || "",
+ sceneKeywords: (t.prompt_meta && t.prompt_meta.scene_keywords) || t.scene_keywords || [],
+ baseSceneKeywords: t.base_scene_keywords || [],
+ group: meta.groupId,
  });
  });
  const cb = card.querySelector(".toggle-tool");
@@ -1613,6 +2148,114 @@
  }
  }
 
+ async function appendBuiltinCapabilities(list, skills) {
+  let catalog = [];
+  try {
+   const data = await api("/api/config/tools");
+   catalog = Array.isArray(data.catalog)
+    ? data.catalog
+    : Array.isArray(data)
+    ? data
+    : [];
+  } catch (_) {
+   return;
+  }
+  const skillKeys = new Set();
+  for (const s of skills || []) {
+   for (const k of [s.id, s.name, s.display_name]) {
+    if (k) skillKeys.add(String(k).toLowerCase());
+   }
+  }
+  const builtins = catalog.filter((t) => {
+   const src = t.source || "builtin";
+   if (src === "skill") return false;
+   const n = String(t.name || "").toLowerCase();
+   const sid = String(t.skill_id || "").toLowerCase();
+   if (skillKeys.has(n) || (sid && skillKeys.has(sid))) return false;
+   return true;
+  });
+  if (!builtins.length) return;
+  const buckets = groupItemsByMeta(builtins, "name", TOOL_META);
+  const body = appendCollapsibleGroup(
+   list,
+   "builtin-core",
+   "系统内置",
+   builtins.length,
+   "box",
+   { locked: true }
+  );
+  for (const g of orderedGroupsFor(buckets)) {
+   const rows = buckets.get(g.id) || [];
+   for (const { item: t, meta, name } of rows) {
+    const enabled = t.enabled !== false;
+    const label = t.display_name || meta.note || name;
+    const desc = (t.base_description || t.description || "").slice(0, 120);
+    const card = document.createElement("div");
+    card.className = "card" + (enabled ? "" : " card-disabled");
+    card.innerHTML = [
+     '<div class="card-body">',
+     ' <div class="card-title">' +
+      escapeHtml(label) +
+      ' <span class="pill">内置</span></div>',
+     desc
+      ? ' <div class="card-sub">' +
+        escapeHtml(desc) +
+        (desc.length >= 120 ? "…" : "") +
+        "</div>"
+      : "",
+     "</div>",
+     '<div class="card-actions">',
+     groupSelectHtml(meta.groupId),
+     ' <button type="button" class="btn btn-edit-prompt icon-btn" title="编辑描述与触发">' +
+      _ipk("edit", "ipk-sm") +
+      "</button>",
+     ' <label class="toggle tool-toggle-label" title="开关">',
+     ' <input type="checkbox" class="toggle-tool"' +
+      (enabled ? " checked" : "") +
+      " />",
+     ' <span class="toggle-txt">' + (enabled ? "开" : "关") + "</span>",
+     " </label>",
+     "</div>",
+    ].join("\n");
+    bindGroupPick(card.querySelector(".group-pick"), "tool", name, meta.groupId);
+    card.querySelector(".btn-edit-prompt")?.addEventListener("click", () => {
+     openPromptEditor({
+      kind: "tool",
+      id: name,
+      label: label + " (" + name + ")",
+      baseDescription: t.base_description || "",
+      override:
+       (t.prompt_meta && t.prompt_meta.description) || t.prompt_override || "",
+      howToCall: (t.prompt_meta && t.prompt_meta.how_to_call) || "",
+      baseHowToCall: t.base_how_to_call || "",
+      sceneKeywords:
+       (t.prompt_meta && t.prompt_meta.scene_keywords) || t.scene_keywords || [],
+      baseSceneKeywords: t.base_scene_keywords || [],
+      group: meta.groupId,
+     });
+    });
+    const cb = card.querySelector(".toggle-tool");
+    const txt = card.querySelector(".toggle-txt");
+    cb.addEventListener("change", async (e) => {
+     try {
+      await api("/api/config/tools/toggle", {
+       method: "POST",
+       body: JSON.stringify({ name, enabled: e.target.checked }),
+      });
+      txt.textContent = e.target.checked ? "开" : "关";
+      card.classList.toggle("card-disabled", !e.target.checked);
+      showToast(label + " 已" + (e.target.checked ? "开启" : "关闭"), "success");
+      if (typeof loadToolsPanel === "function") loadToolsPanel({ soft: true });
+     } catch (err) {
+      e.target.checked = !e.target.checked;
+      showToast("切换失败", "error");
+     }
+    });
+    body.appendChild(card);
+   }
+  }
+ }
+
  // --- Skills ---
  async function loadSkills(opts = {}) {
  const soft = !!opts.soft;
@@ -1625,13 +2268,18 @@
   setMsg("msgSkills", "载入中…");
  }
  try {
+ await loadCapabilityGroups();
  let skills = await api("/api/config/skills");
  if (!Array.isArray(skills)) skills = skills.items || [];
  list.innerHTML = "";
  if (!skills.length) {
- list.innerHTML =
- '<div class="card"><div class="card-body"><div class="card-sub">未有 skill</div></div></div>';
- setMsg("msgSkills", "0 个能力包", "ok");
+ injectPanelToolbar(list, "skills");
+ await appendBuiltinCapabilities(list, []);
+ if (!list.querySelector(".card")) {
+  list.innerHTML =
+   '<div class="card"><div class="card-body"><div class="card-sub">还没有业务能力。可导入 .evaskill，或用系统内置。</div></div></div>';
+ }
+ setMsg("msgSkills", "还没有业务能力包", "ok");
  return;
  }
 
@@ -1645,9 +2293,9 @@
  let primaryCount = 0;
  let enabledCount = 0;
 
- for (const g of CAPABILITY_GROUPS) {
+ for (const g of orderedGroupsFor(buckets)) {
  const rows = buckets.get(g.id) || [];
- if (!rows.length) continue;
+ if (!shouldShowGroup(g, rows)) continue;
  const body = appendCollapsibleGroup(
  list,
  g.id,
@@ -1660,16 +2308,29 @@
  const enabled = s.enabled !== false;
  if (enabled) enabledCount += 1;
  const displayName = s.display_name || s.name || s.id;
+ const how = (s.how_to_call || (s.spec && s.spec.trigger) || "").trim();
+ const howLine = how
+  ? `<div class="card-sub muted-line">下次这样说：${escapeHtml(how)}</div>`
+  : "";
+ const ready = s.integration_id
+  ? s.integration_status === "ready"
+  : true;
+ const readyBadge = s.has_handler || s.tool_count
+  ? ready
+   ? ' <span class="pill integ-ok">可用</span>'
+   : ' <span class="pill integ-warn">缺配置</span>'
+  : "";
  const noteLine = meta.note
  ? `<div class="card-sub muted-line">${escapeHtml(meta.note)}</div>`
  : "";
+ const protectedSkill = !!s.protected;
  const card = document.createElement("div");
  card.className =
  "card" +
  (meta.role === "primary" ? " card-role-primary" : "") +
  (enabled ? "" : " card-disabled");
  const ovBadge = s.has_prompt_override
- ? ' <span class="pill" title="已自定义提示词">自定义提示</span>'
+ ? ' <span class="pill" title="已自定义描述或触发方式">已自定义</span>'
  : "";
  const integId = s.integration_id || "";
  const integSt = s.integration_status || "";
@@ -1692,36 +2353,37 @@
  )}">${escapeHtml(stLabel)}</span>`;
  }
  card.innerHTML = `
+ ${
+  protectedSkill
+   ? ""
+   : `<label class="skill-pick" title="选择后可导出"><input type="checkbox" class="skill-export-pick" data-skill-id="${escapeHtml(
+      s.id || s.name || ""
+     )}" /></label>`
+ }
  <div class="card-body">
- <div class="card-title">${escapeHtml(displayName)} ${rolePillHtml(
- meta.role,
- meta.dynamic
- )} <span class="pill source-pill">v${escapeHtml(
- s.version || "?"
- )}</span>${ovBadge}${integBadge}</div>
- <div class="card-sub muted-line">包 id: <code class="tool-call-name">${escapeHtml(
- s.id || ""
- )}</code></div>
+ <div class="card-title">${escapeHtml(displayName)}${
+  protectedSkill ? ' <span class="pill">系统</span>' : ""
+ }${ovBadge}${integBadge}${readyBadge}</div>
  <div class="card-sub">${escapeHtml(
- (s.description || "").slice(0, 180)
- )}</div>
- <div class="card-sub muted-line">${
- s.has_handler ? "handler" : "no-handler"
- }${
- s.tool_count ? ` · 注册 tools ${s.tool_count}` : " · 见 handler 注册"
- }${
- integId
- ? ` · 集成 <code>${escapeHtml(integId)}</code>`
- : ""
- }</div>
+ (s.description || "").slice(0, 140)
+ )}${(s.description || "").length > 140 ? "…" : ""}</div>
+ ${howLine}
  ${
  enabled
  ? ""
- : '<div class="card-sub muted-line">已关闭 — 勾选可重新开启（刷新后仍会显示）</div>'
+ : '<div class="card-sub muted-line">已关闭</div>'
  }
- ${noteLine}
  </div>
  <div class="card-actions">
+ ${groupSelectHtml(meta.groupId)}
+ ${
+ how
+  ? `<button type="button" class="btn btn-try-skill icon-btn" title="填入调用说法">${_ipk(
+   "play",
+   "ipk-sm"
+  )}</button>`
+  : ""
+ }
  ${
  integId
  ? `<button type="button" class="btn btn-open-integ icon-btn" title="配置集成">${_ipk(
@@ -1730,10 +2392,17 @@
  )}</button>`
  : ""
  }
- <button type="button" class="btn btn-edit-prompt icon-btn" title="编辑提示词">${_ipk(
+ <button type="button" class="btn btn-edit-prompt icon-btn" title="编辑描述与触发">${_ipk(
  "edit",
  "ipk-sm"
  )}</button>
+ ${
+  protectedSkill
+   ? ""
+   : `<button type="button" class="btn btn-uninstall-skill icon-btn" title="${
+      enabled ? "先关闭此技能" : "卸载此技能"
+     }">${_ipk("delete", "ipk-sm")}</button>`
+ }
  <label class="toggle tool-toggle-label">
  <input type="checkbox" class="toggle-skill" ${
  enabled ? "checked" : ""
@@ -1741,6 +2410,22 @@
  <span class="toggle-txt">${enabled ? "开" : "关"}</span>
  </label>
  </div>`;
+ bindGroupPick(
+  card.querySelector(".group-pick"),
+  "skill",
+  s.id || s.name || "",
+  meta.groupId
+ );
+ card.querySelector(".btn-try-skill")?.addEventListener("click", () => {
+  const input = document.getElementById("input");
+  if (input && how) {
+   input.value = how;
+   input.dispatchEvent(new Event("input", { bubbles: true }));
+   try { input.focus(); } catch (_) {}
+  }
+  if (typeof closeConfig === "function") closeConfig();
+  showToast("已填入调用说法，直接发送即可试跑", "ok");
+ });
  card.querySelector(".btn-open-integ")?.addEventListener("click", () => {
  switchTab("integrations");
  openIntegrationEditor(integId);
@@ -1751,8 +2436,44 @@
  id: s.id || "",
  label: displayName + " (" + (s.id || "") + ")",
  baseDescription: s.base_description || s.description || "",
- override: s.prompt_override || "",
+ override: (s.prompt_meta && s.prompt_meta.description) || s.prompt_override || "",
+ howToCall: (s.prompt_meta && s.prompt_meta.how_to_call) || "",
+ baseHowToCall: s.base_how_to_call || "",
+ sceneKeywords: (s.prompt_meta && s.prompt_meta.scene_keywords) || s.scene_keywords || [],
+ baseSceneKeywords: s.base_scene_keywords || [],
+ group: meta.groupId,
  });
+ });
+ card.querySelector(".btn-uninstall-skill")?.addEventListener("click", async () => {
+  const skillId = s.id || s.name;
+  if (enabled) {
+   try {
+    await api("/api/config/skills/toggle", {
+     method: "POST",
+     body: JSON.stringify({ id: skillId, enabled: false }),
+    });
+    showToast(`${displayName} 已关闭。再点一次卸载才会从本机删除。`, "info", 4200);
+    loadSkills();
+    if (typeof loadToolsPanel === "function") loadToolsPanel();
+    if (typeof loadHealth === "function") loadHealth();
+   } catch (err) {
+    setMsg("msgSkills", err.message, "error");
+    showToast("关闭失败", "error");
+   }
+   return;
+  }
+  if (!confirm(`卸载「${displayName}」？文件将从本机 skills/ 删除，可再导入。`)) return;
+  try {
+   await api("/api/config/skills/" + encodeURIComponent(skillId), {
+    method: "DELETE",
+   });
+   showToast(`${displayName} 已卸载`, "success");
+   loadSkills();
+   if (typeof loadToolsPanel === "function") loadToolsPanel();
+  } catch (err) {
+   setMsg("msgSkills", err.message, "error");
+   showToast("卸载失败", "error");
+  }
  });
  const cb = card.querySelector(".toggle-skill");
  const txt = card.querySelector(".toggle-txt");
@@ -1782,9 +2503,10 @@
  }
  }
 
+ await appendBuiltinCapabilities(list, skills);
  setMsg(
  "msgSkills",
- `能力包 ${skills.length} · 已启用 ${enabledCount} · 主入口约 ${primaryCount}（与 Tools 不叠加 · 分组默认折叠）`,
+ `能力 ${skills.length} · 开着 ${enabledCount}。缺配置的点插头去填。`,
  "ok"
  );
  } catch (e) {
@@ -2006,17 +2728,12 @@
 
  // --- LLM editor ---
  async function saveLlmFromForm() {
- const data = {
- id: $("llmId").value || undefined,
- name: $("llmName").value,
- provider: $("llmProvider").value,
- base_url: $("llmBaseUrl").value,
- model: $("llmModel").value,
- enabled: $("llmEnabled").checked,
- is_default: $("llmDefault").checked,
- };
- const key = ($("llmApiKey").value || "").trim();
- if (key) data.api_key = key;
+ const data = collectLlmFormPayload();
+ if (data.transport === "cli" && !data.cli_command) {
+ setMsg("msgLlmEditor", "CLI 模式请填写命令，例如 grok", "error");
+ showToast("请填写 CLI 命令", "error");
+ return;
+ }
  try {
  await api("/api/config/llms", {
  method: "POST",
@@ -2026,7 +2743,7 @@
  showToast("LLM 已保存", "success");
  closeLlmEditor();
  loadLlms();
- loadHealth();
+ await loadHealth();
  } catch (e) {
  setMsg("msgLlm", e.message, "error");
  showToast("保存失败", "error");
@@ -2034,35 +2751,28 @@
  }
 
  async function testLlmFromForm() {
- const id = $("llmId").value;
+ const data = collectLlmFormPayload({ includeApiKey: true });
+ if (data.transport === "cli" && !data.cli_command) {
+ setMsg("msgLlmEditor", "CLI 模式请填写命令，例如 grok", "error");
+ showToast("请填写 CLI 命令", "error");
+ return;
+ }
  try {
+ setMsg("msgLlmEditor", "测试中…");
  setMsg("msgLlm", "测试中…");
- if (id) {
- const res = await api(`/api/config/llms/${encodeURIComponent(id)}/test`, {
- method: "POST",
- });
- const ok = res.ok !== false && !res.error;
- setMsg("msgLlm", ok ? "连接成功" : "" + (res.error || res.detail || "失败"), ok ? "ok" : "error");
- if (ok) showToast("连接成功", "success");
- else showToast("连接失败", "error");
- } else {
- const data = {
- name: $("llmName").value || "test",
- provider: $("llmProvider").value,
- base_url: $("llmBaseUrl").value,
- api_key: $("llmApiKey").value || "",
- model: $("llmModel").value,
- };
+ // Always POST form body so unsaved key/base_url/model are tested
  const res = await api("/api/config/llms/test", {
  method: "POST",
  body: JSON.stringify(data),
  });
  const ok = res.ok !== false && !res.error;
- setMsg("msgLlm", ok ? "连接成功" : "" + (res.error || res.detail || "失败"), ok ? "ok" : "error");
+ const msg = ok ? "连接成功" : "" + (res.error || res.detail || "失败");
+ setMsg("msgLlmEditor", msg, ok ? "ok" : "error");
+ setMsg("msgLlm", msg, ok ? "ok" : "error");
  if (ok) showToast("连接成功", "success");
  else showToast("连接失败", "error");
- }
  } catch (e) {
+ setMsg("msgLlmEditor", "" + e.message, "error");
  setMsg("msgLlm", "" + e.message, "error");
  showToast("测试失败", "error");
  }
@@ -2076,7 +2786,7 @@
  setMsg("msgLlm", "已删除", "ok");
  showToast("LLM 已删除", "success");
  loadLlms();
- loadHealth();
+ await loadHealth();
  } catch (e) {
  setMsg("msgLlm", e.message, "error");
  showToast("删除失败", "error");
@@ -2279,6 +2989,206 @@
  }
  }
 
+ function settingsExportFilename() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+   "eva-settings-" +
+   d.getFullYear() +
+   pad(d.getMonth() + 1) +
+   pad(d.getDate()) +
+   ".json"
+  );
+ }
+
+ function selectedSkillExportIds() {
+  return Array.from(document.querySelectorAll(".skill-export-pick:checked"))
+   .map((el) => el.getAttribute("data-skill-id") || "")
+   .filter(Boolean);
+ }
+
+ function toggleSelectAllSkills() {
+  const boxes = Array.from(document.querySelectorAll(".skill-export-pick"));
+  if (!boxes.length) {
+   showToast("没有可导出的业务技能", "error");
+   return;
+  }
+  const allOn = boxes.every((el) => el.checked);
+  boxes.forEach((el) => {
+   el.checked = !allOn;
+  });
+  const n = boxes.filter((el) => el.checked).length;
+  setMsg("msgSkills", n ? `已选 ${n} 个业务技能` : "已取消全选", "ok");
+ }
+
+ async function exportSkillPack() {
+  try {
+   const ids = selectedSkillExportIds();
+   if (!ids.length) {
+    setMsg("msgSkills", "请先勾选要导出的技能", "error");
+    showToast("请先勾选要导出的技能", "error");
+    return;
+   }
+   const q = "?ids=" + encodeURIComponent(ids.join(","));
+   setMsg("msgSkills", "导出中…");
+   const res = await fetch("/api/config/skills/export" + q, {
+    credentials: "same-origin",
+   });
+   if (!res.ok) {
+    let detail = "导出失败";
+    try {
+     const j = await res.json();
+     detail = j.detail || detail;
+    } catch (_) {}
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+   }
+   const blob = await res.blob();
+   const cd = res.headers.get("content-disposition") || "";
+   let fname = "eva-skills.evaskill";
+   const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+   const plain = /filename="?([^";]+)"?/i.exec(cd);
+   if (star && star[1]) {
+    try {
+     fname = decodeURIComponent(star[1]);
+    } catch (_) {}
+   } else if (plain && plain[1]) {
+    fname = plain[1];
+   }
+   const a = document.createElement("a");
+   a.href = URL.createObjectURL(blob);
+   a.download = fname;
+   document.body.appendChild(a);
+   a.click();
+   a.remove();
+   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+   setMsg("msgSkills", `已导出 ${ids.length} 个技能`, "ok");
+   showToast(`已导出 ${ids.length} 个技能`, "success");
+  } catch (e) {
+   setMsg("msgSkills", e.message || String(e), "error");
+   showToast("导出失败", "error");
+  }
+ }
+
+ async function importSkillPack(file) {
+  const overwrite = confirm(
+   "导入「" + file.name + "」\n\n确定覆盖已安装的同名技能？\n选「取消」则跳过已存在的包。"
+  );
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+   setMsg("msgSkills", "导入中…");
+   const res = await fetch(
+    "/api/config/skills/import?overwrite=" + (overwrite ? "true" : "false"),
+    { method: "POST", body: fd, credentials: "same-origin" }
+   );
+   const data = await res.json().catch(() => ({}));
+   if (!res.ok) {
+    throw new Error(data.detail || data.error || "导入失败");
+   }
+   const n = (data.installed || []).length;
+   const skip = (data.skipped || []).length;
+   const fail = (data.failed || []).length;
+   const setup = Array.isArray(data.need_setup) ? data.need_setup : [];
+   const bits = [`安装 ${n}`];
+   if (skip) bits.push(`跳过 ${skip}`);
+   if (fail) bits.push(`失败 ${fail}`);
+   if (setup.length) bits.push(`${setup.length} 个集成待填写`);
+   setMsg("msgSkills", bits.join(" · "), fail ? "error" : "ok");
+   showToast(
+    setup.length
+     ? "已安装。账号密码不会随包导入，请填写集成。"
+     : fail
+     ? "导入完成（有失败项）"
+     : "导入完成",
+    fail ? "error" : setup.length ? "warn" : "success"
+   );
+   loadSkills();
+   if (typeof loadToolsPanel === "function") loadToolsPanel();
+   if (typeof loadIntegrations === "function") loadIntegrations({ soft: true });
+   if (setup.length) {
+    const names = setup.map((x) => x.name || x.id).join("、");
+    const go = confirm(
+     "技能已导入。以下连接需要到「设定→集成」填写地址/账号（密钥不会随包导入）：\n\n" +
+      names +
+      "\n\n现在去填写？"
+    );
+    if (go && typeof switchTab === "function") {
+     switchTab("integrations");
+     if (typeof loadIntegrations === "function") {
+      loadIntegrations().then(() => {
+       if (setup[0] && setup[0].id && typeof openIntegrationEditor === "function") {
+        openIntegrationEditor(setup[0].id);
+       }
+      });
+     }
+    }
+   }
+  } catch (e) {
+   setMsg("msgSkills", e.message || String(e), "error");
+   showToast("导入失败", "error");
+  }
+ }
+
+ async function exportSettings() {
+  try {
+   setMsg("msgAgent", "导出中…");
+   const data = await api("/api/config/export");
+   const blob = new Blob([JSON.stringify(data, null, 2)], {
+    type: "application/json;charset=utf-8",
+   });
+   const a = document.createElement("a");
+   a.href = URL.createObjectURL(blob);
+   a.download = settingsExportFilename();
+   document.body.appendChild(a);
+   a.click();
+   a.remove();
+   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+   setMsg("msgAgent", "已导出设定", "ok");
+   showToast("设定已导出", "success");
+  } catch (e) {
+   setMsg("msgAgent", e.message || String(e), "error");
+   showToast("导出失败", "error");
+  }
+ }
+
+ async function importSettingsFile(file) {
+  if (!file) return;
+  let parsed;
+  try {
+   parsed = JSON.parse(await file.text());
+  } catch (_) {
+   setMsg("msgAgent", "不是有效的 JSON 文件", "error");
+   showToast("导入失败：文件格式不对", "error");
+   return;
+  }
+  const ok = window.confirm(
+   "导入将覆盖当前设定（人设、LLM、集成、工具、MCP）。\n知识库、工作流、对话记录不会改动。\n确定导入？"
+  );
+  if (!ok) return;
+  try {
+   setMsg("msgAgent", "导入中…");
+   const res = await api("/api/config/import", {
+    method: "POST",
+    body: JSON.stringify(parsed),
+   });
+   if (res?.config) state.config = res.config;
+   L.renderAgentForm?.(res.config || state.config);
+   if (typeof L.refreshVoiceLangFromPersona === "function") {
+    L.refreshVoiceLangFromPersona();
+   }
+   loadLlms({ soft: true });
+   loadToolsPanel({ soft: true });
+   loadMcp({ soft: true });
+   loadIntegrations({ soft: true });
+   loadHealth();
+   setMsg("msgAgent", "设定已导入", "ok");
+   showToast("设定已导入", "success");
+  } catch (e) {
+   setMsg("msgAgent", e.message || String(e), "error");
+   showToast("导入失败", "error");
+  }
+ }
+
  /**
   * 设定弹窗 HTML 异步注入后才存在的按钮：统一事件委托。
   * 避免远程服务器上 config-modal.html 慢于 JS 执行时 addEventListener 绑空。
@@ -2288,6 +3198,12 @@
  bindConfigDelegatedUi._done = true;
 
  bindNestedBackdropClose("llmEditorModal", closeLlmEditor);
+ document.addEventListener("change", (ev) => {
+  const el = ev.target;
+  if (!(el instanceof Element)) return;
+  if (el.id === "llmTransport") syncLlmTransportUi();
+  if (el.id === "llmCliPreset") applyLlmCliPreset();
+ });
  bindNestedBackdropClose("customToolEditorModal", closeCustomToolEditor);
  bindNestedBackdropClose("mcpEditorModal", closeMcpEditor);
 
@@ -2325,6 +3241,10 @@
    case "btnAddCustomTool":
     openCustomToolEditor({});
     break;
+   case "btnAddToolGroup":
+   case "btnAddSkillGroup":
+    promptAddCapabilityGroup();
+    break;
    case "btnCancelCustomTool":
    case "btnCloseCustomToolEditor":
     closeCustomToolEditor();
@@ -2345,14 +3265,52 @@
    case "btnReloadMcp":
     reloadMcpServers();
     break;
-   case "btnAgentGoKb":
-    switchTab("kb");
+   case "btnRefreshEvolution":
+    loadEvolutionPanel();
     break;
-   case "btnAgentGoWf":
-    switchTab("workflows");
+   case "btnExportSettings":
+    exportSettings();
+    break;
+   case "btnImportSettings":
+    $("cfgImportInput")?.click();
+    break;
+   case "btnSelectAllSkills":
+    toggleSelectAllSkills();
+    break;
+   case "btnExportSkills":
+    exportSkillPack();
+    break;
+   case "btnImportSkills":
+    $("cfgSkillImportInput")?.click();
+    break;
+   case "btnCancelPrompt":
+   case "btnClosePromptEditor":
+    closePromptEditor();
+    break;
+   case "btnSavePrompt":
+    savePromptFromForm();
+    break;
+   case "btnResetPrompt":
+    resetPromptFromForm();
     break;
    default:
     break;
+  }
+ });
+
+ document.addEventListener("change", (e) => {
+  const t = e.target;
+  if (!(t instanceof Element)) return;
+  if (t.id === "cfgSkillImportInput") {
+   const file = t.files && t.files[0];
+   t.value = "";
+   if (file) importSkillPack(file);
+   return;
+  }
+  if (t.id === "cfgImportInput") {
+   const file = t.files && t.files[0];
+   t.value = "";
+   if (file) importSettingsFile(file);
   }
  });
  }
@@ -2361,7 +3319,74 @@
  bindConfigDelegatedUi();
 
  // Export
+ async function loadOfficePairing() {
+  bindOfficePairingOnce();
+  const codeEl = $("officePairCode");
+  const meta = $("officePairMeta");
+  const msg = $("msgOffice");
+  if (!codeEl) return;
+  try {
+    let data = await api("/api/auth/hub/pairing");
+    if (!(data.active && data.pairing_code)) {
+      try {
+        data = await api("/api/auth/hub/pairing/refresh", { method: "POST" });
+      } catch (_) {}
+    }
+    if (data.active && data.pairing_code) {
+      codeEl.value = data.pairing_code;
+      const min = Math.max(1, Math.ceil((data.remaining_sec || 0) / 60));
+      if (meta) meta.textContent = `约 ${min} 分钟内有效，一次性使用。`;
+    } else {
+      codeEl.value = "";
+      if (meta) meta.textContent = "没有有效连接码，点「刷新连接码」。";
+    }
+    if (msg) msg.textContent = "";
+  } catch (e) {
+    codeEl.value = "";
+    if (meta) meta.textContent = "请先登录。";
+    if (msg) msg.textContent = e.message || "无法读取连接码";
+  }
+ }
+
+ function bindOfficePairingOnce() {
+  if (bindOfficePairingOnce.done) return;
+  bindOfficePairingOnce.done = true;
+  document.addEventListener("click", async (e) => {
+    const t = e.target;
+    if (!(t instanceof Element)) return;
+    if (t.closest("#btnOfficeCopy")) {
+      const v = ($("officePairCode")?.value || "").trim();
+      const msg = $("msgOffice");
+      if (!v) {
+        if (msg) msg.textContent = "没有可复制的连接码";
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(v);
+        if (msg) msg.textContent = "已复制";
+      } catch (_) {
+        if (msg) msg.textContent = "复制失败，请手动选中";
+      }
+      return;
+    }
+    if (t.closest("#btnOfficeRefresh")) {
+      const msg = $("msgOffice");
+      try {
+        const data = await api("/api/auth/hub/pairing/refresh", { method: "POST" });
+        if ($("officePairCode")) $("officePairCode").value = data.pairing_code || "";
+        if ($("officePairMeta")) $("officePairMeta").textContent = "已刷新，30 分钟内有效。";
+        if (msg) msg.textContent = "已生成新连接码";
+      } catch (err) {
+        if (msg) msg.textContent = err.message || "刷新失败";
+      }
+    }
+  });
+ }
+ bindOfficePairingOnce();
+
  L.switchTab = switchTab;
+ L.switchConfigGroup = switchConfigGroup;
+ L.loadOfficePairing = loadOfficePairing;
  L.openConfig = openConfig;
  L.bindConfigDelegatedUi = bindConfigDelegatedUi;
  L.openNestedEditor = openNestedEditor;
@@ -2371,38 +3396,93 @@
  L.closeMcpEditor = closeMcpEditor;
  L.closeIntegrationEditor = closeIntegrationEditor;
  L.closeConfig = closeConfig;
- // --- Prompt override editor (tool / skill) ---
+ // --- Prompt override editor (tool / skill): 描述 + 触发方式 ---
+ function parseSceneKeywordsInput(raw) {
+ return String(raw || "")
+ .split(/[,，、;；\n]+/)
+ .map((s) => s.trim())
+ .filter(Boolean)
+ .filter((s, i, arr) => arr.findIndex((x) => x.toLowerCase() === s.toLowerCase()) === i)
+ .slice(0, 24);
+ }
+
+ function closePromptEditor() {
+ closeNestedEditor("promptEditorModal");
+ }
+
  function openPromptEditor(opts) {
  const kind = opts.kind === "skill" ? "skill" : "tool";
  const id = opts.id || "";
  if (!id) return;
+ const baseDesc = opts.baseDescription || "";
+ const baseHow = opts.baseHowToCall || "";
+ const baseKw = Array.isArray(opts.baseSceneKeywords) ? opts.baseSceneKeywords : [];
+ const ovDesc = opts.override || "";
+ const ovHow = opts.howToCall || "";
+ const ovKw = Array.isArray(opts.sceneKeywords) ? opts.sceneKeywords : [];
  $("promptTargetKind").value = kind;
  $("promptTargetId").value = id;
  $("promptTargetLabel").value = opts.label || id;
- $("promptBaseDesc").value = opts.baseDescription || "";
- $("promptCustomDesc").value =
- opts.override || opts.baseDescription || "";
- $("promptEditorTitle").innerHTML =
+ $("promptBaseDesc").value = baseDesc;
+ $("promptCustomDesc").value = ovDesc || baseDesc;
+ $("promptHowToCall").value = ovHow || baseHow;
+ $("promptSceneKeywords").value = ovKw.join(", ");
+ const groupSel = $("promptGroup");
+ const groupCur = (opts.group || "").toString() || "other";
+ if ($("promptTargetGroup")) $("promptTargetGroup").value = groupCur;
+ if (groupSel) {
+  groupSel.innerHTML = CAPABILITY_GROUPS.map((g) => {
+   const sel = g.id === groupCur ? " selected" : "";
+   return (
+    '<option value="' +
+    escapeHtml(g.id) +
+    '"' +
+    sel +
+    ">" +
+    escapeHtml(g.label) +
+    "</option>"
+   );
+  }).join("");
+  groupSel.value = groupCur;
+ }
+ const howHint = $("promptHowHint");
+ if (howHint) {
+ howHint.dataset.base = baseHow;
+ howHint.textContent = baseHow
+ ? "代码默认：" + baseHow
+ : "用户以后怎么喊它，会出现在卡片「下次这样说」。";
+ }
+ const kwHint = $("promptKwHint");
+ if (kwHint) {
+ kwHint.textContent = baseKw.length
+ ? "代码默认：" + baseKw.join("、") + "。这里只填额外的词。"
+ : "没有代码默认关键词。逗号分隔，用于模型选工具。";
+ }
+ const titleEl = $("promptEditorTitle");
+ if (titleEl) {
+ titleEl.innerHTML =
  (typeof _ipk === "function" ? _ipk("edit", "ipk-sm") + " " : "") +
- (kind === "skill" ? "编辑 Skill 提示词" : "编辑 Tool 提示词");
- $("promptEditorHint").textContent =
+ (kind === "skill" ? "编辑 Skill 描述与触发" : "编辑 Tool 描述与触发");
+ }
+ const hintEl = $("promptEditorHint");
+ if (hintEl) {
+ hintEl.textContent =
  kind === "skill"
- ? "Skill 包说明；若存在与包同名的 Tool，也会作为该 Tool 的后备提示词。保存到配置，不改代码。"
- : "Tool 的 function description（模型选工具时看到的说明）。保存到配置，不改代码。";
+ ? "Skill 包说明和触发方式。保存到配置，不改代码；与包同名的 Tool 会把这里当后备。"
+ : "Tool 的说明（模型选工具时看到）和触发方式。保存到配置，不改代码。";
+ }
  setMsg("msgPrompt", "");
- $("promptEditor").classList.remove("hidden");
- $("promptEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
+ if (typeof L.hydrateIconPark === "function") {
+ L.hydrateIconPark($("promptEditorModal"));
+ }
+ openNestedEditor("promptEditorModal");
  }
 
- $("btnCancelPrompt")?.addEventListener("click", () => {
- $("promptEditor")?.classList.add("hidden");
- });
-
- $("btnResetPrompt")?.addEventListener("click", async () => {
+ async function resetPromptFromForm() {
  const kind = $("promptTargetKind")?.value || "tool";
  const id = $("promptTargetId")?.value || "";
  if (!id) return;
- if (!confirm("清除自定义提示词，恢复代码默认？")) return;
+ if (!confirm("清除自定义描述和触发方式，恢复代码默认？")) return;
  try {
  const path =
  kind === "skill"
@@ -2410,48 +3490,83 @@
  : `/api/config/tools/${encodeURIComponent(id)}/prompt`;
  await api(path, {
  method: "PUT",
- body: JSON.stringify({ description: "" }),
+ body: JSON.stringify({
+ description: "",
+ how_to_call: "",
+ scene_keywords: [],
+ }),
  });
  $("promptCustomDesc").value = $("promptBaseDesc").value || "";
+ $("promptHowToCall").value = $("promptHowHint")?.dataset.base || "";
+ $("promptSceneKeywords").value = "";
  setMsg("msgPrompt", "已恢复默认", "ok");
- showToast("已恢复默认提示词", "success");
- $("promptEditor").classList.add("hidden");
+ showToast("已恢复默认", "success");
+ closePromptEditor();
  if (kind === "skill") loadSkills();
  else loadToolsPanel();
  } catch (e) {
  setMsg("msgPrompt", e.message, "error");
  showToast("恢复失败", "error");
  }
- });
+ }
 
- $("btnSavePrompt")?.addEventListener("click", async () => {
+ async function savePromptFromForm() {
  const kind = $("promptTargetKind")?.value || "tool";
  const id = $("promptTargetId")?.value || "";
- const text = ($("promptCustomDesc")?.value || "").trim();
  if (!id) return;
- if (!text) {
- setMsg("msgPrompt", "内容为空将清除覆盖；请用「恢复默认」或填写内容", "error");
+ const baseDesc = ($("promptBaseDesc")?.value || "").trim();
+ const baseHow = ($("promptHowHint")?.dataset.base || "").trim();
+ const desc = ($("promptCustomDesc")?.value || "").trim();
+ const how = ($("promptHowToCall")?.value || "").trim();
+ const kws = parseSceneKeywordsInput($("promptSceneKeywords")?.value || "");
+ const description = desc === baseDesc ? "" : desc;
+ const how_to_call = how === baseHow ? "" : how;
+ const group = ($("promptGroup")?.value || "").trim();
+ const prevGroup = ($("promptTargetGroup")?.value || "").trim();
+ const groupChanged = !!(group && group !== prevGroup);
+ if (!description && !how_to_call && !kws.length && !groupChanged) {
+ setMsg(
+ "msgPrompt",
+ "没有相对代码默认的改动。要清空覆盖请点「恢复默认」。",
+ "error"
+ );
  return;
  }
  try {
- const path =
- kind === "skill"
- ? `/api/config/skills/${encodeURIComponent(id)}/prompt`
- : `/api/config/tools/${encodeURIComponent(id)}/prompt`;
- await api(path, {
- method: "PUT",
- body: JSON.stringify({ description: text }),
- });
+ if (description || how_to_call || kws.length) {
+  const path =
+   kind === "skill"
+    ? `/api/config/skills/${encodeURIComponent(id)}/prompt`
+    : `/api/config/tools/${encodeURIComponent(id)}/prompt`;
+  await api(path, {
+   method: "PUT",
+   body: JSON.stringify({
+    description,
+    how_to_call,
+    scene_keywords: kws,
+   }),
+  });
+ }
+ if (groupChanged) {
+  const gpath =
+   kind === "skill"
+    ? `/api/config/skills/${encodeURIComponent(id)}/group`
+    : `/api/config/tools/${encodeURIComponent(id)}/group`;
+  await api(gpath, {
+   method: "PUT",
+   body: JSON.stringify({ group }),
+  });
+ }
  setMsg("msgPrompt", "已保存", "ok");
- showToast("提示词已保存", "success");
- $("promptEditor").classList.add("hidden");
+ showToast(groupChanged && !description && !how_to_call && !kws.length ? "分类已保存" : "描述与触发方式已保存", "success");
+ closePromptEditor();
  if (kind === "skill") loadSkills();
  else loadToolsPanel();
  } catch (e) {
  setMsg("msgPrompt", e.message, "error");
  showToast("保存失败", "error");
  }
- });
+ }
 
  // --- Integrations (skill connection configs) ---
  let _integCache = [];
@@ -2488,7 +3603,11 @@
  const st = it.status || "empty";
  card.className =
  "card" + (st === "empty" ? " card-disabled" : "");
+ const missingSkills = Array.isArray(it.skills_missing) ? it.skills_missing : [];
  const skills = (it.skills || []).join(", ") || "—";
+ const skillNote = missingSkills.length
+  ? ` · 技能未安装: ${missingSkills.join(", ")}`
+  : "";
  const cfg = it.config || {};
  const summaryBits = [];
  if (cfg.base_url) summaryBits.push(cfg.base_url);
@@ -2497,6 +3616,7 @@
  `${cfg.user || ""}@${cfg.host}${cfg.port ? ":" + cfg.port : ""}`
  );
  if (cfg.proxy_url) summaryBits.push("proxy " + cfg.proxy_url);
+ if (cfg.llm_id) summaryBits.push("识图模型 " + cfg.llm_id);
  if (cfg.hosts && typeof cfg.hosts === "object" && !Array.isArray(cfg.hosts)) {
  const names = Object.keys(cfg.hosts);
  if (names.length) {
@@ -2506,6 +3626,19 @@
  }`
  );
  }
+ }
+ if (cfg.url) summaryBits.push(cfg.url);
+ if (cfg.items && typeof cfg.items === "object") {
+  const inames = Array.isArray(cfg.items)
+   ? cfg.items.map((r) => r && r.name).filter(Boolean)
+   : Object.keys(cfg.items);
+  if (inames.length) {
+   summaryBits.push(
+    `${inames.length} 条明细: ${inames.slice(0, 4).join(", ")}${
+     inames.length > 4 ? "…" : ""
+    }`
+   );
+  }
  }
  const secrets = it.secrets || {};
  const secHint = Object.keys(secrets)
@@ -2518,12 +3651,18 @@
  <span class="pill integ-${
  st === "ready" ? "ok" : st === "partial" ? "warn" : "miss"
  }">${escapeHtml(integStatusLabel(st))}</span>
- ${it.builtin ? "" : ' <span class="pill">自定义</span>'}
+ ${it.builtin ? "" : ' <span class="pill">自定义</span>'}${
+  it.layout === "content"
+   ? ' <span class="pill">内容式</span>'
+   : it.layout === "single"
+    ? ' <span class="pill">单一</span>'
+    : ""
+ }
  </div>
  <div class="card-sub">${escapeHtml(it.description || "")}</div>
  <div class="card-sub muted-line">id: <code>${escapeHtml(
  it.id
- )}</code> · 技能: ${escapeHtml(skills)}</div>
+ )}</code> · 技能: ${escapeHtml(skills)}${escapeHtml(skillNote)}</div>
  <div class="card-sub muted-line">${escapeHtml(
  summaryBits.join(" · ") || "（无连接摘要）"
  )}${
@@ -2565,8 +3704,47 @@
 
  function closeIntegrationEditor() {
  closeNestedEditor("integrationEditorModal");
- const modalEl = $("integrationEditorModal")?.querySelector(".modal");
- if (modalEl) modalEl.classList.remove("cfg-editor-modal-lg");
+ }
+
+ function integFieldHintHtml(f) {
+ return f && f.hint
+ ? `<span class="field-hint integ-field-hint">${escapeHtml(f.hint)}</span>`
+ : "";
+ }
+
+ function integFieldIsFull(f, key, type) {
+ const span = f && f.span;
+ const k = String(key || "").toLowerCase();
+ if (
+ f &&
+ (f.full === true || span === "full" || span === 2 || span === "2")
+ )
+ return true;
+ if (
+ type === "url" ||
+ type === "textarea" ||
+ type === "json" ||
+ type === "llm"
+ )
+ return true;
+ if (k.includes("url") || k.includes("token")) return true;
+ if (
+ k === "api_key" ||
+ k === "key" ||
+ k.endsWith("_secret") ||
+ k.endsWith("_key")
+ )
+ return true;
+ return false;
+ }
+
+ function integFieldLabel(isFull, extraClass) {
+ const lab = document.createElement("label");
+ lab.className =
+ "integ-field" +
+ (isFull ? " is-full full" : "") +
+ (extraClass ? " " + extraClass : "");
+ return lab;
  }
 
  /** 自定义集成与通用连接的默认字段（与编辑态同一套渲染） */
@@ -2583,13 +3761,13 @@
  label: "主机",
  type: "text",
  placeholder: "192.168.1.100",
- hint: "可选；NAS / 单机服务常用",
+ hint: "可选；无 URL 的主机 / 局域网服务常用",
  },
  {
  key: "port",
  label: "端口",
  type: "number",
- placeholder: "445",
+ placeholder: "80",
  },
  {
  key: "user",
@@ -2619,8 +3797,140 @@
  key: "hosts",
  label: "主机列表",
  type: "hosts_table",
- hint: "配置名用于技能参数（如 host=nas）；检测端口用于批量体检。",
+ hint: "配置名用于技能参数；检测端口用于批量体检。",
  };
+
+ const INTEG_FIELD_TYPES = [
+  { value: "text", label: "文本" },
+  { value: "url", label: "地址" },
+  { value: "password", label: "密码" },
+  { value: "number", label: "数字" },
+ ];
+ const INTEG_KEY_ALIAS = {
+  地址: "url",
+  链接: "url",
+  网址: "url",
+  账号: "user",
+  用户名: "user",
+  密码: "password",
+  Token: "token",
+  token: "token",
+  令牌: "token",
+  名称: "name",
+  内容: "content",
+  备注: "note",
+ };
+ const DEFAULT_CONN_FIELDS = [
+  {
+   key: "url",
+   label: "地址",
+   type: "url",
+   placeholder: "https://… 或主机:端口",
+   hint: "服务地址、Webhook、RPC 都可以写在这里",
+  },
+  { key: "user", label: "账号", type: "text", placeholder: "可选" },
+  {
+   key: "password",
+   label: "密码",
+   type: "password",
+   secret: true,
+   placeholder: "可选",
+   hint: "留空表示不修改已有密码",
+  },
+  {
+   key: "token",
+   label: "Token",
+   type: "password",
+   secret: true,
+   placeholder: "可选",
+  },
+ ];
+ const DEFAULT_ITEM_COLUMNS = [
+  { key: "name", label: "名称", type: "text" },
+  { key: "content", label: "内容", type: "text" },
+  { key: "note", label: "备注", type: "text" },
+ ];
+
+ function slugIntegFieldKey(label, used) {
+  const taken = used instanceof Set ? used : new Set();
+  const raw = String(label || "").trim();
+  let base = INTEG_KEY_ALIAS[raw] || "";
+  if (!base) {
+   base = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+  }
+  if (!base || !/^[a-z]/.test(base)) base = "field";
+  base = base.slice(0, 32);
+  let cand = base;
+  let i = 2;
+  while (taken.has(cand)) {
+   cand = (base + "_" + i).slice(0, 40);
+   i += 1;
+  }
+  taken.add(cand);
+  return cand;
+ }
+
+ function integTypeSelectHtml(current) {
+  const cur = String(current || "text");
+  return (
+   '<select data-integ-ftype>' +
+   INTEG_FIELD_TYPES.map((t) => {
+    const sel = t.value === cur ? " selected" : "";
+    return (
+     '<option value="' +
+     t.value +
+     '"' +
+     sel +
+     ">" +
+     t.label +
+     "</option>"
+    );
+   }).join("") +
+   "</select>"
+  );
+ }
+
+ function integLayoutOf(it) {
+  if (!it) return "single";
+  if (it.layout === "content" || it.layout === "single") return it.layout;
+  const fields = Array.isArray(it.fields) ? it.fields : [];
+  if (
+   fields.some(
+    (f) =>
+     f &&
+     (f.type === "items_table" ||
+      f.key === "items" ||
+      integIsRecordKey(f.key))
+   )
+  )
+   return "content";
+  if (it.config && it.config.items && typeof it.config.items === "object") {
+   const blob = it.config.items;
+   const n = Array.isArray(blob) ? blob.length : Object.keys(blob).length;
+   if (n) return "content";
+  }
+  return "single";
+ }
+
+ function integUseBuilder(it, isNewCustom) {
+  if (isNewCustom) return true;
+  if (!it || it.builtin || it.catalog) return false;
+  const fields = Array.isArray(it.fields) ? it.fields : [];
+  if (
+   fields.some(
+    (f) =>
+     f &&
+     (f.type === "hosts_table" || f.key === "hosts" || f.key === "hosts_json")
+   )
+  )
+   return false;
+  const hosts = it.config && it.config.hosts;
+  if (hosts && typeof hosts === "object" && Object.keys(hosts).length) return false;
+  return true;
+ }
 
  /**
  * 统一渲染集成字段（新建 / 编辑共用）。
@@ -2660,35 +3970,713 @@
  );
  continue;
  }
- const lab = document.createElement("label");
- const isSecret = !!(f.secret || f.type === "password");
- const isFull =
- f.type === "url" ||
- f.type === "password" ||
- (key && (key.includes("url") || key.includes("token"))) ||
- f.full === true;
- lab.className = isFull ? "full" : "";
+ if (f.type === "items_table" || key === "items") {
+ fieldsHost.appendChild(
+ buildIntegItemsTable(config.items || {}, sec, f, { editableCols: false })
+ );
+ continue;
+ }
+ if (f.type === "llm") {
+  const lab = integFieldLabel(true);
+  lab.innerHTML = `<span class="integ-field-name">${escapeHtml(
+   f.label || key
+  )}</span>${
+   f.hint
+    ? `<span class="field-hint integ-field-hint">${escapeHtml(f.hint)}</span>`
+    : ""
+  }<select data-integ-key="${escapeHtml(key)}">
+   <option value="">请选择设定→模型里的一条</option>
+  </select>`;
+  const sel = lab.querySelector("select");
+  const current = config[key] != null ? String(config[key]) : "";
+  fieldsHost.appendChild(lab);
+  (async () => {
+   try {
+    let llms = await api("/api/config/llms");
+    if (!Array.isArray(llms)) llms = llms.items || [];
+    for (const x of llms) {
+     if (!x || x.enabled === false) continue;
+     const o = document.createElement("option");
+     o.value = String(x.id || "");
+     const nm = String(x.name || x.model || x.id || "未命名");
+     const md = String(x.model || "");
+     o.textContent = md && md !== nm ? `${nm} · ${md}` : nm;
+     if (o.value && o.value === current) o.selected = true;
+     sel.appendChild(o);
+    }
+    if (current && !sel.value) {
+     const o = document.createElement("option");
+     o.value = current;
+     o.textContent = current + "（当前）";
+     o.selected = true;
+     sel.appendChild(o);
+    }
+   } catch (_) {}
+  })();
+  continue;
+ }
+ const type = String(f.type || "text").toLowerCase();
+ const isSecret = !!(f.secret || type === "password");
+ const isFull = integFieldIsFull(f, key, type);
+ const hintHtml = integFieldHintHtml(f);
  const setFlag = sec[key + "_set"];
  const ph = isSecret
  ? setFlag
  ? "已设置 · 留空不修改"
  : f.placeholder || "输入密钥"
  : f.placeholder || "";
- const inputType =
- isSecret ? "password" : f.type === "number" ? "number" : "text";
- lab.innerHTML = `${escapeHtml(f.label || key)}${
- f.hint
- ? ` <span class="field-hint">${escapeHtml(f.hint)}</span>`
+ const current =
+ config[key] != null && config[key] !== "" ? String(config[key]) : "";
+ if (
+ type === "bool" ||
+ type === "boolean" ||
+ type === "checkbox"
+ ) {
+ const lab = integFieldLabel(isFull, "is-check check");
+ const on =
+ config[key] === true ||
+ config[key] === 1 ||
+ config[key] === "1" ||
+ config[key] === "true";
+ lab.innerHTML = `<input data-integ-key="${escapeHtml(
+ key
+ )}" type="checkbox"${on ? " checked" : ""} /><span class="integ-field-copy"><span class="integ-field-name">${escapeHtml(
+ f.label || key
+ )}</span>${hintHtml}</span>`;
+ fieldsHost.appendChild(lab);
+ continue;
+ }
+ const options = Array.isArray(f.options) ? f.options : [];
+ const nameHtml = `<span class="integ-field-name">${escapeHtml(
+ f.label || key
+ )}</span>${hintHtml}`;
+ if (type === "select" || (options.length && type !== "llm")) {
+ const lab = integFieldLabel(isFull);
+ const optsHtml = options
+ .map((opt) => {
+ const val =
+ opt && typeof opt === "object"
+ ? opt.value != null
+ ? String(opt.value)
+ : String(opt.label || "")
+ : String(opt ?? "");
+ const labText =
+ opt && typeof opt === "object"
+ ? String(opt.label || val)
+ : val;
+ return `<option value="${escapeHtml(val)}">${escapeHtml(labText)}</option>`;
+ })
+ .join("");
+ lab.innerHTML = `${nameHtml}<select data-integ-key="${escapeHtml(
+ key
+ )}">${
+ f.placeholder
+ ? `<option value="">${escapeHtml(f.placeholder)}</option>`
  : ""
- }<input data-integ-key="${escapeHtml(key)}" type="${inputType}" placeholder="${escapeHtml(
+ }${optsHtml}</select>`;
+ const sel = lab.querySelector("select");
+ if (current) sel.value = current;
+ if (current && sel.value !== current) {
+ const o = document.createElement("option");
+ o.value = current;
+ o.textContent = current;
+ o.selected = true;
+ sel.appendChild(o);
+ }
+ fieldsHost.appendChild(lab);
+ continue;
+ }
+ if (type === "textarea" || type === "json") {
+ const lab = integFieldLabel(true);
+ let rows = parseInt(f.rows, 10);
+ if (!Number.isFinite(rows) || rows < 2) rows = 3;
+ if (rows > 12) rows = 12;
+ lab.innerHTML = `${nameHtml}<textarea data-integ-key="${escapeHtml(
+ key
+ )}" rows="${rows}" placeholder="${escapeHtml(ph)}"></textarea>`;
+ const ta = lab.querySelector("textarea");
+ if (!isSecret && current) ta.value = current;
+ fieldsHost.appendChild(lab);
+ continue;
+ }
+ const lab = integFieldLabel(isFull);
+ const inputType =
+ isSecret ? "password" : type === "number" ? "number" : "text";
+ lab.innerHTML = `${nameHtml}<input data-integ-key="${escapeHtml(
+ key
+ )}" type="${inputType}" placeholder="${escapeHtml(
  ph
  )}" autocomplete="${isSecret ? "new-password" : "off"}" />`;
  const input = lab.querySelector("input");
- if (!isSecret && config[key] != null && config[key] !== "") {
- input.value = String(config[key]);
+ if (!isSecret && current) {
+ input.value = current;
  }
  fieldsHost.appendChild(lab);
  }
+ }
+
+ function integIsRecordKey(k) {
+  const key = String(k || "");
+  if (
+   key === "items" ||
+   key === "groups" ||
+   key === "members" ||
+   key === "hosts" ||
+   key === "hosts_json"
+  )
+   return true;
+  return /^(group|member|bot)\d*_/i.test(key);
+ }
+
+ function integConnFieldsFromSchema(fields, cfg) {
+  const list = [];
+  const seen = new Set();
+  (Array.isArray(fields) ? fields : []).forEach((f) => {
+   if (!f || !f.key) return;
+   if (
+    f.type === "items_table" ||
+    f.type === "hosts_table" ||
+    integIsRecordKey(f.key)
+   )
+    return;
+   list.push({
+    key: f.key,
+    label: f.label || f.key,
+    type: f.type || "text",
+    secret: !!f.secret,
+    placeholder: f.placeholder || "",
+    hint: f.hint || "",
+   });
+   seen.add(f.key);
+  });
+  if (!list.length) {
+   DEFAULT_CONN_FIELDS.forEach((f) => {
+    list.push({ ...f });
+    seen.add(f.key);
+   });
+  }
+  Object.keys(cfg || {}).forEach((k) => {
+   if (seen.has(k) || k.startsWith("_") || integIsRecordKey(k)) return;
+   list.push({
+    key: k,
+    label: k,
+    type: /pass|token|secret/i.test(k) ? "password" : "text",
+    secret: /pass|token|secret/i.test(k),
+   });
+  });
+  return list;
+ }
+
+ function integItemColumnsFromSchema(fields, items) {
+  const f = (Array.isArray(fields) ? fields : []).find(
+   (x) => x && (x.type === "items_table" || x.key === "items")
+  );
+  if (f && Array.isArray(f.columns) && f.columns.length) {
+   return f.columns.map((c) => ({
+    key: c.key,
+    label: c.label || c.key,
+    type: c.type || "text",
+    secret: !!c.secret,
+   }));
+  }
+  const blob = items && typeof items === "object" ? items : {};
+  const rows = Array.isArray(blob) ? blob : Object.values(blob);
+  const keys = [];
+  rows.forEach((row) => {
+   if (!row || typeof row !== "object") return;
+   Object.keys(row).forEach((k) => {
+    if (k && !keys.includes(k)) keys.push(k);
+   });
+  });
+  if (!keys.length) return DEFAULT_ITEM_COLUMNS.map((c) => ({ ...c }));
+  if (!keys.includes("name")) keys.unshift("name");
+  return keys.map((k) => ({
+   key: k,
+   label: k === "name" ? "名称" : k === "content" ? "内容" : k === "note" ? "备注" : k,
+   type: /pass|token|secret/i.test(k) ? "password" : "text",
+   secret: /pass|token|secret/i.test(k),
+  }));
+ }
+
+ function buildIntegConnBuilder(fields, cfg, secrets) {
+  const wrap = document.createElement("div");
+  wrap.className = "integ-conn-builder";
+  wrap.setAttribute("data-integ-conn-builder", "1");
+  wrap.innerHTML =
+   '<div class="integ-builder-head"><span class="integ-builder-title">连接字段</span>' +
+   '<span class="field-hint">可增删、改名。技能用键名读取，例如 url / token。</span>' +
+   '<div class="cfg-tool-cluster"><button type="button" class="cfg-tool" data-integ-add-conn>' +
+   '<span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>添加字段</span></button></div></div>' +
+   '<div class="integ-conn-cols"><span>显示名</span><span>键名</span><span>类型</span><span>值</span><span></span></div>' +
+   '<div class="integ-builder-rows" data-integ-conn-rows></div>';
+  const rows = wrap.querySelector("[data-integ-conn-rows]");
+  const list = integConnFieldsFromSchema(fields, cfg);
+  list.forEach((f) => appendIntegConnRow(rows, f, cfg, secrets));
+  wrap.querySelector("[data-integ-add-conn]")?.addEventListener("click", () => {
+   appendIntegConnRow(
+    rows,
+    { key: "", label: "", type: "text", secret: false },
+    {},
+    {}
+   );
+   const last = rows.querySelector(".integ-conn-row:last-child [data-integ-flabel]");
+   last?.focus();
+  });
+  return wrap;
+ }
+
+ function appendIntegConnRow(host, field, cfg, secrets) {
+  if (!host) return;
+  const f = field || {};
+  const key = String(f.key || "");
+  const type = String(f.type || "text");
+  const isSecret = !!(f.secret || type === "password");
+  const setFlag = secrets && key && secrets[key + "_set"];
+  const ph = isSecret
+   ? setFlag
+    ? "已设置 · 留空不修改"
+    : f.placeholder || "可选"
+   : f.placeholder || "";
+  const current =
+   !isSecret && cfg && cfg[key] != null && cfg[key] !== ""
+    ? String(cfg[key])
+    : "";
+  const row = document.createElement("div");
+  row.className = "integ-conn-row";
+  row.innerHTML =
+   '<input data-integ-flabel type="text" placeholder="字段名，如 地址" value="' +
+   escapeHtml(f.label || "") +
+   '" autocomplete="off" />' +
+   '<input data-integ-fkey type="text" placeholder="键名" value="' +
+   escapeHtml(key) +
+   '" autocomplete="off" />' +
+   integTypeSelectHtml(isSecret ? "password" : type) +
+   '<input data-integ-fval type="' +
+   (isSecret ? "password" : type === "number" ? "number" : "text") +
+   '" placeholder="' +
+   escapeHtml(ph) +
+   '" value="' +
+   escapeHtml(current) +
+   '" autocomplete="' +
+   (isSecret ? "new-password" : "off") +
+   '" />' +
+   '<button type="button" class="btn icon-btn integ-conn-del" title="删除字段">' +
+   (typeof L.ipk === "function" ? L.ipk("delete", "ipk-xs") : "×") +
+   "</button>";
+  const labelEl = row.querySelector("[data-integ-flabel]");
+  const keyEl = row.querySelector("[data-integ-fkey]");
+  const typeEl = row.querySelector("[data-integ-ftype]");
+  const valEl = row.querySelector("[data-integ-fval]");
+  if (keyEl && !key) keyEl.dataset.auto = "1";
+  labelEl?.addEventListener("input", () => {
+   if (!keyEl || keyEl.dataset.auto !== "1") return;
+   const used = new Set();
+   host.querySelectorAll("[data-integ-fkey]").forEach((el) => {
+    if (el !== keyEl && el.value) used.add(el.value.trim());
+   });
+   keyEl.value = slugIntegFieldKey(labelEl.value, used);
+  });
+  keyEl?.addEventListener("input", () => {
+   keyEl.dataset.auto = "0";
+  });
+  typeEl?.addEventListener("change", () => {
+   if (!valEl) return;
+   const t = typeEl.value;
+   valEl.type = t === "password" ? "password" : t === "number" ? "number" : "text";
+  });
+  row.querySelector(".integ-conn-del")?.addEventListener("click", () => {
+   row.remove();
+  });
+  host.appendChild(row);
+ }
+
+ function collectIntegConnFromBuilder(root) {
+  const fields = [];
+  const values = {};
+  const used = new Set();
+  root.querySelectorAll(".integ-conn-row").forEach((row) => {
+   let label = (row.querySelector("[data-integ-flabel]")?.value || "").trim();
+   let key = (row.querySelector("[data-integ-fkey]")?.value || "").trim();
+   const type = (row.querySelector("[data-integ-ftype]")?.value || "text").trim();
+   const valEl = row.querySelector("[data-integ-fval]");
+   const val = valEl ? String(valEl.value || "") : "";
+   if (!label && !key && !val) return;
+   if (!key) key = slugIntegFieldKey(label || "field", used);
+   else if (used.has(key)) key = slugIntegFieldKey(key, used);
+   else used.add(key);
+   if (!label) label = key;
+   const secret = type === "password";
+   fields.push({
+    key,
+    label,
+    type,
+    secret,
+    placeholder: secret ? "可选" : "",
+   });
+   values[key] = val;
+  });
+  return { fields, values };
+ }
+
+ function buildIntegItemsTable(itemsObj, secrets, fieldMeta, opts) {
+  const options = opts || {};
+  const wrap = document.createElement("div");
+  wrap.className = "integ-items-wrap";
+  wrap.setAttribute("data-integ-items-table", "1");
+  const columns = integItemColumnsFromSchema(
+   fieldMeta && fieldMeta.columns
+    ? [{ type: "items_table", columns: fieldMeta.columns }]
+    : fieldMeta
+     ? [fieldMeta]
+     : [],
+   itemsObj
+  );
+  wrap._integColumns = columns;
+  const hint =
+   (fieldMeta && fieldMeta.hint) ||
+   "每行一条明细。列可改，例如企微用户、多个 bot 的 webhook。";
+  wrap.innerHTML =
+   '<div class="integ-items-head">' +
+   '<div class="integ-items-title">' +
+   escapeHtml((fieldMeta && fieldMeta.label) || "明细") +
+   "</div>" +
+   '<p class="field-hint" style="margin:0">' +
+   escapeHtml(hint) +
+   "</p></div>" +
+   (options.editableCols
+    ? '<div class="integ-items-cols" data-integ-item-cols></div>'
+    : "") +
+   '<div class="integ-items-table-scroll"><table class="integ-items-table">' +
+   "<thead><tr data-integ-item-thead></tr></thead>" +
+   '<tbody data-integ-items-body></tbody></table></div>' +
+   '<div class="integ-items-actions"><div class="cfg-tool-cluster">' +
+   '<button type="button" class="cfg-tool is-primary" data-integ-add-item>' +
+   '<span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>添加一行</span></button></div></div>';
+  const paintHead = () => {
+   const tr = wrap.querySelector("[data-integ-item-thead]");
+   if (!tr) return;
+   tr.innerHTML =
+    wrap._integColumns
+     .map((c) => "<th>" + escapeHtml(c.label || c.key) + "</th>")
+     .join("") + "<th></th>";
+  };
+  const paintCols = () => {
+   const box = wrap.querySelector("[data-integ-item-cols]");
+   if (!box) return;
+   box.innerHTML = "";
+   wrap._integColumns.forEach((c, idx) => {
+    const chip = document.createElement("div");
+    chip.className = "integ-item-col";
+    chip.innerHTML =
+     '<input data-col-label type="text" value="' +
+     escapeHtml(c.label || "") +
+     '" placeholder="列名" />' +
+     '<input data-col-key type="text" value="' +
+     escapeHtml(c.key || "") +
+     '" placeholder="键" />' +
+     integTypeSelectHtml(c.secret ? "password" : c.type) +
+     (c.key === "name"
+      ? ""
+      : '<button type="button" class="btn icon-btn" data-col-del title="删除列">×</button>');
+    const labelEl = chip.querySelector("[data-col-label]");
+    const keyEl = chip.querySelector("[data-col-key]");
+    const typeEl = chip.querySelector("[data-integ-ftype]");
+    labelEl?.addEventListener("change", () => {
+     c.label = labelEl.value.trim() || c.key;
+     if (keyEl && (!c.key || keyEl.dataset.auto === "1")) {
+      const used = new Set(wrap._integColumns.map((x) => x.key));
+      used.delete(c.key);
+      c.key = slugIntegFieldKey(c.label, used);
+      keyEl.value = c.key;
+     }
+     paintHead();
+     refreshItemRowInputs(wrap);
+    });
+    keyEl?.addEventListener("change", () => {
+     const used = new Set(wrap._integColumns.map((x) => x.key));
+     used.delete(c.key);
+     c.key = slugIntegFieldKey(keyEl.value || c.label, used);
+     keyEl.value = c.key;
+     paintHead();
+     refreshItemRowInputs(wrap);
+    });
+    typeEl?.addEventListener("change", () => {
+     c.type = typeEl.value;
+     c.secret = typeEl.value === "password";
+     refreshItemRowInputs(wrap);
+    });
+    chip.querySelector("[data-col-del]")?.addEventListener("click", () => {
+     wrap._integColumns.splice(idx, 1);
+     paintCols();
+     paintHead();
+     refreshItemRowInputs(wrap);
+    });
+    box.appendChild(chip);
+   });
+   const addWrap = document.createElement("div");
+   addWrap.className = "cfg-tool-cluster";
+   const add = document.createElement("button");
+   add.type = "button";
+   add.className = "cfg-tool";
+   add.textContent = "添加列";
+   add.addEventListener("click", () => {
+    const used = new Set(wrap._integColumns.map((x) => x.key));
+    const key = slugIntegFieldKey("列", used);
+    wrap._integColumns.push({ key, label: "列", type: "text", secret: false });
+    paintCols();
+    paintHead();
+    refreshItemRowInputs(wrap);
+   });
+   addWrap.appendChild(add);
+   box.appendChild(addWrap);
+  };
+  paintHead();
+  paintCols();
+  const body = wrap.querySelector("[data-integ-items-body]");
+  const blob = itemsObj && typeof itemsObj === "object" ? itemsObj : {};
+  const names = Array.isArray(blob)
+   ? blob.map((r, i) => (r && r.name) || "item_" + (i + 1))
+   : Object.keys(blob);
+  const rows = Array.isArray(blob)
+   ? blob
+   : names.map((n) => ({ name: n, ...(blob[n] || {}) }));
+  if (!rows.length) appendIntegItemRow(body, wrap, {}, secrets);
+  else rows.forEach((row) => appendIntegItemRow(body, wrap, row, secrets));
+  wrap.querySelector("[data-integ-add-item]")?.addEventListener("click", () => {
+   appendIntegItemRow(body, wrap, {}, secrets);
+  });
+  return wrap;
+ }
+
+ function refreshItemRowInputs(wrap) {
+  const body = wrap.querySelector("[data-integ-items-body]");
+  if (!body) return;
+  const secrets = {};
+  const snapshot = [];
+  body.querySelectorAll("tr.integ-item-row").forEach((tr) => {
+   const row = {};
+   tr.querySelectorAll("[data-item-k]").forEach((el) => {
+    row[el.getAttribute("data-item-k")] = el.value;
+   });
+   snapshot.push(row);
+  });
+  body.innerHTML = "";
+  snapshot.forEach((row) => appendIntegItemRow(body, wrap, row, secrets));
+ }
+
+ function appendIntegItemRow(tbody, wrap, row, secrets) {
+  if (!tbody) return;
+  const tr = document.createElement("tr");
+  tr.className = "integ-item-row";
+  const cols = (wrap && wrap._integColumns) || DEFAULT_ITEM_COLUMNS;
+  const name = String((row && row.name) || "");
+  tr.innerHTML =
+   cols
+    .map((c) => {
+     const isSecret = !!(c.secret || c.type === "password");
+     const setFlag =
+      secrets &&
+      (secrets[`items.${name}.${c.key}_set`] ||
+       secrets[`item_password_set.${name}`]);
+     const ph = isSecret ? (setFlag ? "已设置·留空不改" : "可选") : "";
+     const val =
+      !isSecret && row && row[c.key] != null ? String(row[c.key]) : "";
+     const itype =
+      isSecret ? "password" : c.type === "number" ? "number" : "text";
+     return (
+      "<td><input data-item-k=\"" +
+      escapeHtml(c.key) +
+      '" type="' +
+      itype +
+      '" placeholder="' +
+      escapeHtml(ph || c.label || "") +
+      '" value="' +
+      escapeHtml(val) +
+      '" autocomplete="' +
+      (isSecret ? "new-password" : "off") +
+      '" /></td>'
+     );
+    })
+    .join("") +
+   '<td><button type="button" class="btn danger icon-btn integ-item-del" title="删除行">' +
+   (typeof L.ipk === "function" ? L.ipk("delete", "ipk-xs") : "×") +
+   "</button></td>";
+  tr.querySelector(".integ-item-del")?.addEventListener("click", () => {
+   tr.remove();
+  });
+  tbody.appendChild(tr);
+ }
+
+ function snapshotIntegBuilderState(fieldsHost) {
+  const conn = fieldsHost?.querySelector("[data-integ-conn-builder]")
+   ? collectIntegConnFromBuilder(fieldsHost)
+   : { fields: [], values: {} };
+  const packed = collectIntegItemsFromForm(fieldsHost);
+  if (packed) fieldsHost._integItemsSnap = packed;
+  const fields = (conn.fields || []).slice();
+  const config = { ...(conn.values || {}) };
+  const itemsPack = packed || fieldsHost._integItemsSnap;
+  if (itemsPack) {
+   config.items = itemsPack.items || {};
+   if (
+    !fields.some((f) => f && (f.type === "items_table" || f.key === "items"))
+   ) {
+    fields.push({
+     key: "items",
+     label: "明细",
+     type: "items_table",
+     columns: itemsPack.columns || DEFAULT_ITEM_COLUMNS,
+    });
+   }
+  }
+  return { fields, config };
+ }
+
+ function bindIntegTemplateRadios(fieldsHost, base) {
+  const paint = () => {
+   const mode =
+    fieldsHost.querySelector('input[name="integTemplate"]:checked')?.value ||
+    base.layout ||
+    "single";
+   const snap = snapshotIntegBuilderState(fieldsHost);
+   const hasConn = (snap.fields || []).some(
+    (f) => f && f.key && f.type !== "items_table"
+   );
+   paintIntegCustomForm(fieldsHost, {
+    layout: mode,
+    fields: hasConn ? snap.fields : base.fields || [],
+    config: { ...(base.config || {}), ...(snap.config || {}) },
+    secrets: base.secrets || {},
+   });
+  };
+  fieldsHost.querySelectorAll('input[name="integTemplate"]').forEach((r) => {
+   r.addEventListener("change", paint);
+  });
+  paint();
+ }
+
+ function collectIntegItemsFromForm(root) {
+  const wrap = root?.querySelector("[data-integ-items-table]");
+  if (!wrap) return null;
+  const cols = wrap._integColumns || DEFAULT_ITEM_COLUMNS;
+  const items = {};
+  wrap.querySelectorAll("tr.integ-item-row").forEach((tr, idx) => {
+   const row = {};
+   cols.forEach((c) => {
+    const el = tr.querySelector('[data-item-k="' + c.key + '"]');
+    row[c.key] = el ? String(el.value || "") : "";
+   });
+   let name = String(row.name || "").trim();
+   const hasAny = Object.keys(row).some(
+    (k) => k !== "name" && String(row[k] || "").trim()
+   );
+   if (!name && !hasAny) return;
+   if (!name) name = "item_" + (idx + 1);
+   row.name = name;
+   const clean = {};
+   Object.keys(row).forEach((k) => {
+    const col = cols.find((c) => c.key === k);
+    const secret = col && (col.secret || col.type === "password");
+    if (secret && !String(row[k] || "").trim()) return;
+    clean[k] = row[k];
+   });
+   items[name] = clean;
+  });
+  return { items, columns: cols };
+ }
+
+ function collectIntegBuilderSchema(id, name, layout) {
+  const root = $("integFields");
+  if (!root || !root.querySelector("[data-integ-conn-builder]")) return null;
+  const conn = collectIntegConnFromBuilder(root);
+  const fields = conn.fields.slice();
+  if (layout === "content") {
+   const packed = collectIntegItemsFromForm(root);
+   const columns =
+    (packed && packed.columns) || DEFAULT_ITEM_COLUMNS.map((c) => ({ ...c }));
+   fields.push({
+    key: "items",
+    label: "明细",
+    type: "items_table",
+    columns,
+    hint: "每行一条明细，技能用 items 读取。",
+   });
+  }
+  return {
+   id,
+   name: name || id,
+   description: "",
+   builtin: false,
+   layout,
+   skills: [],
+   fields,
+   required_for_ready: fields
+    .filter((f) => f.key === "url" || f.key === "base_url" || f.key === "host")
+    .map((f) => f.key),
+  };
+ }
+
+ function applyIntegBuilderSchema(id, config) {
+  const root = $("integFields");
+  const layoutRaw =
+   root?.querySelector('input[name="integTemplate"]:checked')?.value || "";
+  const layout =
+   layoutRaw === "content"
+    ? "content"
+    : layoutRaw === "single"
+     ? "single"
+     : "";
+  const displayName = ($("integNewName")?.value || "").trim();
+  const schema = collectIntegBuilderSchema(
+   id,
+   displayName || id,
+   layout || "single"
+  );
+  if (schema) {
+   schema.layout = layout || "single";
+   config._schema = schema;
+   if (schema.layout === "single") config.items = {};
+  }
+  return displayName;
+ }
+
+ function paintIntegCustomForm(fieldsHost, opts) {
+  const o = opts || {};
+  const layout = o.layout === "content" ? "content" : "single";
+  const cfg = o.config || {};
+  const secrets = o.secrets || {};
+  const fields = o.fields || [];
+  if (cfg.items && !fieldsHost._integItemsSnap) {
+   fieldsHost._integItemsSnap = {
+    items: cfg.items,
+    columns: integItemColumnsFromSchema(fields, cfg.items),
+   };
+  }
+  const meta = fieldsHost.querySelector(".integ-meta-block");
+  let n = meta ? meta.nextSibling : fieldsHost.firstChild;
+  while (n) {
+   const nxt = n.nextSibling;
+   n.remove();
+   n = nxt;
+  }
+  fieldsHost.appendChild(buildIntegConnBuilder(fields, cfg, secrets));
+  if (layout === "content") {
+   const itemField =
+    (Array.isArray(fields) ? fields : []).find(
+     (f) => f && (f.type === "items_table" || f.key === "items")
+    ) || {
+     key: "items",
+     label: "明细",
+     type: "items_table",
+     columns: DEFAULT_ITEM_COLUMNS,
+    };
+   fieldsHost.appendChild(
+    buildIntegItemsTable(cfg.items || {}, secrets, itemField, {
+     editableCols: true,
+    })
+   );
+  }
+  if (typeof L.hydrateIconPark === "function") L.hydrateIconPark(fieldsHost);
  }
 
  function openIntegrationEditor(id, isNewCustom) {
@@ -2697,83 +4685,47 @@
  const fieldsHost = $("integFields");
  if (!fieldsHost) return;
  fieldsHost.innerHTML = "";
+ fieldsHost._integItemsSnap = null;
  setMsg("msgIntegEditor", "");
  const lead = box.querySelector(".kb-editor-lead");
  const modalEl = box.querySelector(".modal");
 
+ if (modalEl) modalEl.classList.add("cfg-editor-modal-lg");
  if (isNewCustom) {
- if (modalEl) modalEl.classList.remove("cfg-editor-modal-lg");
  $("integId").value = "";
  $("integEditorTitle").innerHTML =
  '<span data-ipk="plus" data-ipk-class="ipk-sm"></span> 新建自定义集成';
  if (lead) {
  lead.textContent =
- "配置技能连接参数；密钥留空表示不修改。与编辑内置集成同一套表单。";
+ "通用连接：地址、账号、Token。需要用户表或多条 bot 时选「内容式」。";
  }
  $("integEditorDesc").textContent =
- "用于扩展技能连接；保存后可在列表中再编辑。id 建议小写字母开头（如 my_api）。";
+ "id 建议小写字母开头（如 my_api）。保存后技能用键名读取这些字段。";
 
- // 元信息区（仅新建）
  const meta = document.createElement("div");
- meta.className = "full integ-meta-block";
+ meta.className = "integ-meta-block";
  meta.innerHTML = `
- <label>集成 id <em class="agent-opt-hint">保存后不可改</em>
+ <label class="integ-field">
+ <span class="integ-field-name">集成 id <em class="agent-opt-hint">保存后不可改</em></span>
  <input id="integNewId" type="text" placeholder="my_service" autocomplete="off" />
  </label>
- <label class="full">显示名称
- <input id="integNewName" type="text" placeholder="我的服务" />
+ <label class="integ-field">
+ <span class="integ-field-name">显示名称</span>
+ <input id="integNewName" type="text" placeholder="我的服务" autocomplete="off" />
  </label>
  <div class="integ-template-row">
- <span class="integ-template-label">表单模板</span>
- <label class="integ-template-opt"><input type="radio" name="integTemplate" value="generic" checked /> 通用连接（URL / 账号）</label>
- <label class="integ-template-opt"><input type="radio" name="integTemplate" value="hosts" /> 多机主机表（NetOps 风格）</label>
- </div>`;
+ <span class="integ-template-label">配置方式</span>
+ <label class="integ-template-opt"><input type="radio" name="integTemplate" value="single" checked /> 单一集成配置</label>
+ <label class="integ-template-opt"><input type="radio" name="integTemplate" value="content" /> 内容式集成配置</label>
+ </div>
+ <p class="field-hint integ-template-hint">单一：只填链接信息。内容式：链接信息 + 明细表（用户、多个 bot、多条 webhook）。</p>`;
  fieldsHost.appendChild(meta);
-
- const body = document.createElement("div");
- body.className = "full integ-fields-body form-grid";
- body.id = "integFieldsBody";
- fieldsHost.appendChild(body);
-
- const paintTemplate = () => {
- const mode =
- fieldsHost.querySelector('input[name="integTemplate"]:checked')
- ?.value || "generic";
- body.innerHTML = "";
- if (modalEl) {
- modalEl.classList.toggle("cfg-editor-modal-lg", mode === "hosts");
- }
- if (mode === "hosts") {
- renderIntegSchemaFields(
- body,
- [
- { ...HOSTS_TABLE_FIELD },
- {
- key: "default_ssh_password",
- label: "默认 SSH 密码",
- type: "password",
- secret: true,
- placeholder: "可选",
- hint: "单机未填密码时回落此值",
- },
- ],
- {},
- {}
- );
- } else {
- renderIntegSchemaFields(body, CUSTOM_INTEG_FIELDS, {}, {});
- }
- // 其它 JSON 放底部，两种模板都有
- const extra = document.createElement("label");
- extra.className = "full";
- extra.innerHTML = `其它字段 JSON <span class="field-hint">可选，合并进配置</span>
- <textarea data-integ-key="_extra_json" rows="2" placeholder='{"region":"cn"}'></textarea>`;
- body.appendChild(extra);
- };
- fieldsHost.querySelectorAll('input[name="integTemplate"]').forEach((r) => {
- r.addEventListener("change", paintTemplate);
+ bindIntegTemplateRadios(fieldsHost, {
+  layout: "single",
+  fields: [],
+  config: {},
+  secrets: {},
  });
- paintTemplate();
 
  openNestedEditor("integrationEditorModal");
  if (typeof L.hydrateIconPark === "function") L.hydrateIconPark(box);
@@ -2790,7 +4742,7 @@
  escapeHtml(it.name || id);
  if (lead) {
  lead.textContent =
- "配置技能连接参数；密钥留空表示不修改。与新建自定义集成同一套表单。";
+ "配置技能连接参数；密钥留空表示不修改。";
  }
  $("integEditorDesc").textContent =
  (it.description || "") +
@@ -2801,24 +4753,42 @@
  const fields = Array.isArray(it.fields) ? it.fields.slice() : [];
  const cfg = it.config || {};
  const secrets = it.secrets || {};
- const needsWide =
- String(it.id || id) === "netops" ||
- fields.some(
- (f) =>
- f.type === "hosts_table" ||
- f.key === "hosts" ||
- f.key === "hosts_json"
- );
- if (modalEl) modalEl.classList.toggle("cfg-editor-modal-lg", needsWide);
-
- renderIntegSchemaFields(fieldsHost, fields, cfg, secrets);
+ if (integUseBuilder(it, false)) {
+  const layout = integLayoutOf(it);
+  const meta = document.createElement("div");
+  meta.className = "integ-meta-block";
+  meta.innerHTML = `
+ <label class="integ-field">
+ <span class="integ-field-name">集成 id</span>
+ <input type="text" value="${escapeHtml(it.id || id)}" readonly class="prompt-readonly" />
+ </label>
+ <label class="integ-field">
+ <span class="integ-field-name">显示名称</span>
+ <input id="integNewName" type="text" value="${escapeHtml(it.name || "")}" autocomplete="off" />
+ </label>
+ <div class="integ-template-row">
+ <span class="integ-template-label">配置方式</span>
+ <label class="integ-template-opt"><input type="radio" name="integTemplate" value="single"${layout === "content" ? "" : " checked"} /> 单一集成配置</label>
+ <label class="integ-template-opt"><input type="radio" name="integTemplate" value="content"${layout === "content" ? " checked" : ""} /> 内容式集成配置</label>
+ </div>
+ <p class="field-hint integ-template-hint">单一：只填链接信息。内容式：链接信息 + 明细表（用户、多个 bot、多条 webhook）。</p>`;
+  fieldsHost.appendChild(meta);
+  bindIntegTemplateRadios(fieldsHost, {
+   layout,
+   fields,
+   config: cfg,
+   secrets,
+  });
+ } else {
+  renderIntegSchemaFields(fieldsHost, fields, cfg, secrets);
+ }
  openNestedEditor("integrationEditorModal");
  if (typeof L.hydrateIconPark === "function") L.hydrateIconPark(box);
  }
 
  function buildIntegHostsTable(hostsObj, secrets, fieldMeta) {
  const wrap = document.createElement("div");
- wrap.className = "full integ-hosts-wrap";
+ wrap.className = "integ-hosts-wrap";
  wrap.setAttribute("data-integ-hosts-table", "1");
  const hint = fieldMeta && fieldMeta.hint ? fieldMeta.hint : "";
  wrap.innerHTML = `
@@ -2850,10 +4820,12 @@
  </table>
  </div>
  <div class="integ-hosts-actions">
- <button type="button" class="btn icon-inline" id="btnIntegAddHost">
- <span data-ipk="plus" data-ipk-class="ipk-xs"></span> 添加主机
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnIntegAddHost">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>添加主机</span>
  </button>
- <span class="field-hint">配置名例：nas、router；检测端口逗号分隔，如 22,80,443</span>
+ </div>
+ <span class="field-hint">配置名自定；检测端口逗号分隔，如 22,80,443</span>
  </div>`;
  const body = wrap.querySelector("#integHostsBody");
  const hosts =
@@ -2862,7 +4834,7 @@
  : {};
  const names = Object.keys(hosts);
  if (!names.length) {
- appendIntegHostRow(body, { name: "nas" }, secrets);
+ appendIntegHostRow(body, { name: "" }, secrets);
  } else {
  names.forEach((name) => {
  appendIntegHostRow(
@@ -2895,7 +4867,7 @@
  ? String(row.ports)
  : "";
  tr.innerHTML = `
- <td><input data-h="name" type="text" placeholder="nas" value="${escapeHtml(
+ <td><input data-h="name" type="text" placeholder="host1" value="${escapeHtml(
  name
  )}" autocomplete="off" /></td>
  <td><input data-h="host" type="text" placeholder="192.168.1.100" value="${escapeHtml(
@@ -2960,22 +4932,35 @@
  function collectIntegFormConfig() {
  const cfg = {};
  const root = $("integFields");
- const hasHostsTable = !!root?.querySelector("[data-integ-hosts-table]");
- // 优先从 body 容器收集（新建时字段在 #integFieldsBody）
- const scope = $("integFieldsBody") || root;
- if (!scope) return cfg;
- scope.querySelectorAll("[data-integ-key]").forEach((el) => {
- const k = el.getAttribute("data-integ-key");
- if (!k || k === "_extra_json") return;
- if (hasHostsTable && (k === "hosts" || k === "hosts_json")) return;
- cfg[k] = el.value;
- });
+ if (!root) return cfg;
+ const hasHostsTable = !!root.querySelector("[data-integ-hosts-table]");
+ const hasConnBuilder = !!root.querySelector("[data-integ-conn-builder]");
+ if (hasConnBuilder) {
+  const conn = collectIntegConnFromBuilder(root);
+  Object.assign(cfg, conn.values);
+ } else {
+  root.querySelectorAll("[data-integ-key]").forEach((el) => {
+   const k = el.getAttribute("data-integ-key");
+   if (!k || k === "_extra_json") return;
+   if (hasHostsTable && (k === "hosts" || k === "hosts_json")) return;
+   if (el instanceof HTMLInputElement && el.type === "checkbox") {
+    cfg[k] = !!el.checked;
+    return;
+   }
+   cfg[k] = el.value;
+  });
+ }
  if (hasHostsTable) {
  const hosts = collectIntegHostsFromForm() || {};
  cfg.hosts = hosts;
  cfg.hosts_json = JSON.stringify(hosts);
  }
- const extra = scope.querySelector('[data-integ-key="_extra_json"]');
+ const layout =
+  root.querySelector('input[name="integTemplate"]:checked')?.value || "";
+ const packed = collectIntegItemsFromForm(root);
+ if (hasConnBuilder && layout === "single") cfg.items = {};
+ else if (packed) cfg.items = packed.items;
+ const extra = root.querySelector('[data-integ-key="_extra_json"]');
  if (extra && String(extra.value || "").trim()) {
  try {
  const o = JSON.parse(extra.value);
@@ -2984,7 +4969,6 @@
  throw new Error("其它 JSON 格式无效");
  }
  }
- // 去掉空字符串非密钥字段可选：保留空串以便清空 host 等
  return cfg;
  }
 
@@ -3000,9 +4984,10 @@
  }
  }
  const config = collectIntegFormConfig();
+ const displayName = applyIntegBuilderSchema(id, config);
  const body = { config };
- if (isNew) {
- body.name = ($("integNewName")?.value || "").trim() || id;
+ if (isNew || displayName) {
+ body.name = displayName || id;
  }
  await api(`/api/config/integrations/${encodeURIComponent(id)}`, {
  method: "PUT",
@@ -3028,23 +5013,25 @@
  }
  setMsg("msgIntegEditor", "测试中…");
  try {
- // save first so test uses latest non-secret fields; secrets only if typed
+ // save first so test uses latest fields; empty secret keeps the stored one
  await saveIntegrationQuiet(id);
  const res = await api(
  `/api/config/integrations/${encodeURIComponent(id)}/test`,
  { method: "POST" }
  );
- if (res.ok) {
+ const ok = !!(res && res.ok === true && !res.error);
+ const detail = (res && (res.error || res.detail || res.message)) || "";
+ if (ok) {
  setMsg(
  "msgIntegEditor",
- "测试通过: " + (res.detail || res.status_code || "ok"),
+ "测试通过: " + (detail || "连接正常"),
  "ok"
  );
  showToast("连接测试通过", "success");
  } else {
  setMsg(
  "msgIntegEditor",
- "测试失败: " + (res.error || res.detail || "unknown"),
+ "测试失败: " + (detail || "未知错误"),
  "error"
  );
  showToast("连接测试失败", "error");
@@ -3056,6 +5043,15 @@
 
  async function saveIntegrationQuiet(id) {
  const config = collectIntegFormConfig();
+ applyIntegBuilderSchema(id, config);
+ // Empty password/token means keep stored secret — drop so PUT does not wipe.
+ Object.keys(config).forEach((k) => {
+  if (typeof config[k] === "boolean") return;
+  if (k === "_schema" || k === "items" || k === "hosts") return;
+  if (/pass|token|secret|api_key|^key$/i.test(k) && !String(config[k] || "").trim()) {
+   delete config[k];
+  }
+ });
  await api(`/api/config/integrations/${encodeURIComponent(id)}`, {
  method: "PUT",
  body: JSON.stringify({ config }),
@@ -3127,9 +5123,275 @@
  bindIntegrationUi();
  L.bindIntegrationUi = bindIntegrationUi;
 
+ // --- Storage / database (inline in 设定 → 存储 tab) ---
+ const ST_PORT_DEFAULT = {
+  sqlite: 0,
+  postgresql: 5432,
+  mysql: 3306,
+  mariadb: 3306,
+  mssql: 1433,
+ };
+
+ const ST_BACKEND_LABEL = {
+  sqlite: "本地 SQLite",
+  postgresql: "PostgreSQL",
+  mysql: "MySQL",
+  mariadb: "MariaDB",
+  mssql: "SQL Server",
+ };
+
+ function storageIsRemote() {
+  const b = ($("stBackend") && $("stBackend").value) || "sqlite";
+  return b !== "sqlite";
+ }
+
+ function syncStorageFormMode() {
+  const remote = storageIsRemote();
+  document.querySelectorAll(".stRemoteOnly").forEach((el) => {
+   if (!remote) {
+    el.style.display = "none";
+    return;
+   }
+   el.style.display = el.classList.contains("full") ? "flex" : "";
+  });
+  const sw = $("stSqliteWrap");
+  if (sw) sw.style.display = remote ? "none" : "";
+  const port = $("stPort");
+  const backend = ($("stBackend") && $("stBackend").value) || "sqlite";
+  if (port && remote) {
+   port.placeholder =
+    "默认 " + String(ST_PORT_DEFAULT[backend] || "") + "（0 表示用默认）";
+  }
+ }
+
+ function collectStoragePayload() {
+  const backend = ($("stBackend") && $("stBackend").value) || "sqlite";
+  return {
+   backend,
+   host: ($("stHost") && $("stHost").value.trim()) || "127.0.0.1",
+   port: parseInt(($("stPort") && $("stPort").value) || "0", 10) || 0,
+   database: ($("stDatabase") && $("stDatabase").value.trim()) || "eva",
+   username: ($("stUsername") && $("stUsername").value.trim()) || "",
+   password: ($("stPassword") && $("stPassword").value) || "",
+   ssl: !!( $("stSsl") && $("stSsl").checked ),
+   sqlite_path: ($("stSqlitePath") && $("stSqlitePath").value.trim()) || "eva.db",
+  };
+ }
+
+ function updateStorageTabSummary(s) {
+  const el = $("storageTabSummary");
+  if (!el) return;
+  const b = (s && s.backend) || "sqlite";
+  const label = ST_BACKEND_LABEL[b] || b;
+  if (b === "sqlite") {
+   el.textContent =
+    "当前后端：" + label + "（" + ((s && s.sqlite_path) || "eva.db") + "）";
+  } else {
+   const host = (s && s.host) || "";
+   const port = (s && (s.port_effective || s.port)) || "";
+   const db = (s && s.database) || "";
+   el.textContent =
+    "当前后端：" + label + " · " + host + (port ? ":" + port : "") + "/" + db;
+  }
+ }
+
+ async function loadStorage(opts = {}) {
+  const soft = !!opts.soft;
+  try {
+   bindStorageUi();
+   if (!soft) setMsg("msgStorage", "载入中…");
+   const d = await api("/api/storage");
+   const s = (d && d.storage) || {};
+   if ($("stBackend")) $("stBackend").value = s.backend || "sqlite";
+   if ($("stHost")) $("stHost").value = s.host || "127.0.0.1";
+   if ($("stPort")) $("stPort").value = s.port > 0 ? s.port : "";
+   if ($("stDatabase")) $("stDatabase").value = s.database || "eva";
+   if ($("stUsername")) $("stUsername").value = s.username || "";
+   if ($("stPassword")) $("stPassword").value = "";
+   if ($("stSsl")) $("stSsl").checked = !!s.ssl;
+   if ($("stSqlitePath")) $("stSqlitePath").value = s.sqlite_path || "eva.db";
+   syncStorageFormMode();
+   updateStorageTabSummary(s);
+   const tip = s.password_set ? "（已保存密码，留空则不修改）" : "";
+   setMsg(
+    "msgStorage",
+    "当前：" + (ST_BACKEND_LABEL[s.backend] || s.backend || "sqlite") + tip,
+    "ok"
+   );
+  } catch (e) {
+   setMsg("msgStorage", "载入失败：" + (e.message || e), "err");
+  }
+ }
+
+ function bindStorageUi() {
+  const backend = $("stBackend");
+  if (backend && !backend._stBound) {
+   backend._stBound = true;
+   backend.addEventListener("change", syncStorageFormMode);
+  }
+  const btnTest = $("btnTestStorage");
+  if (btnTest && !btnTest._stBound) {
+   btnTest._stBound = true;
+   btnTest.addEventListener("click", async () => {
+    setMsg("msgStorage", "测试连接中…");
+    try {
+     const res = await api("/api/storage/test", {
+      method: "POST",
+      body: JSON.stringify(collectStoragePayload()),
+     });
+     if (res && res.ok) setMsg("msgStorage", res.message || "连接成功", "ok");
+     else
+      setMsg(
+       "msgStorage",
+       (res && (res.error || res.message)) || "连接失败",
+       "err"
+      );
+    } catch (e) {
+     setMsg("msgStorage", "测试失败：" + (e.message || e), "err");
+    }
+   });
+  }
+  const btnSave = $("btnSaveStorage");
+  if (btnSave && !btnSave._stBound) {
+   btnSave._stBound = true;
+   btnSave.addEventListener("click", async () => {
+    setMsg("msgStorage", "保存并初始化中…");
+    try {
+     const res = await api("/api/storage", {
+      method: "PUT",
+      body: JSON.stringify(collectStoragePayload()),
+     });
+     const mig = (res && res.summary && res.summary.migrated) || {};
+     const bits = Object.keys(mig)
+      .filter((k) => mig[k])
+      .map((k) => k + ":" + mig[k]);
+     const extra = bits.length ? " 已导入 " + bits.join(", ") : "";
+     setMsg("msgStorage", (res.message || "已保存") + extra, "ok");
+     if ($("stPassword")) $("stPassword").value = "";
+     if (res && res.storage) updateStorageTabSummary(res.storage);
+     showToast("存储配置已应用", "ok");
+    } catch (e) {
+     setMsg("msgStorage", "保存失败：" + (e.message || e), "err");
+    }
+   });
+  }
+ }
+
+ function renderUpdatePanel(d) {
+  const local = (d && d.local) || {};
+  const remote = (d && d.remote) || {};
+  const ch = (d && d.channel) || {};
+  const repo = ch.repo || local.repo || "";
+  if ($("updRepo") && !$("updRepo").value) $("updRepo").value = repo;
+  const ver = local.version ? "v" + String(local.version).replace(/^v/i, "") : "";
+  const tag = local.tag ? " 已应用 " + local.tag : "";
+  const bits = ["当前 " + (ver || "未知") + tag];
+  if (repo) bits.push("仓库 " + repo);
+  if (ch.has_token) bits.push("已保存 Token");
+  if (d && d.pending) bits.push("已下载更新包，待启动器应用");
+  if (d && d.newer) {
+    bits.push("有新版本 " + (remote.tag || remote.version || ""));
+  } else if (d && d.ok) {
+    bits.push("已是最新");
+  }
+  if ($("updSummary")) $("updSummary").textContent = bits.join(" · ");
+  const notes = $("updNotes");
+  if (notes) {
+    const body = [];
+    if (d && d.error) body.push(String(d.error));
+    if (remote.name) body.push(String(remote.name));
+    if (remote.published_at) body.push("发布于 " + String(remote.published_at));
+    if (remote.notes) body.push(String(remote.notes));
+    notes.textContent = body.join("\n");
+  }
+ }
+
+ function bindUpdateUi() {
+  const saveBtn = $("btnSaveUpdChannel");
+  if (saveBtn && !saveBtn._updBound) {
+   saveBtn._updBound = true;
+   saveBtn.addEventListener("click", async () => {
+    setMsg("msgUpdate", "保存中…");
+    try {
+     const payload = { repo: ($("updRepo") && $("updRepo").value.trim()) || "" };
+     const tok = ($("updToken") && $("updToken").value.trim()) || "";
+     if (tok) payload.token = tok;
+     const res = await api("/api/system/update/channel", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+     });
+     if ($("updToken")) $("updToken").value = "";
+     setMsg(
+      "msgUpdate",
+      "已保存仓库" + (res && res.channel && res.channel.has_token ? "和 Token" : ""),
+      "ok"
+     );
+    } catch (e) {
+     setMsg("msgUpdate", "保存失败：" + (e.message || e), "err");
+    }
+   });
+  }
+  const checkBtn = $("btnCheckUpdate");
+  if (checkBtn && !checkBtn._updBound) {
+   checkBtn._updBound = true;
+   checkBtn.addEventListener("click", () => loadAppUpdate({ force: true }));
+  }
+  const applyBtn = $("btnApplyUpdate");
+  if (applyBtn && !applyBtn._updBound) {
+   applyBtn._updBound = true;
+   applyBtn.addEventListener("click", async () => {
+    setMsg("msgUpdate", "正在下载并应用…");
+    try {
+     const res = await api("/api/system/update/apply", { method: "POST", body: "{}" });
+     renderUpdatePanel(res || {});
+     if (res && res.ok && (res.replaced || res.pending)) {
+      setMsg("msgUpdate", res.message || "已处理", "ok");
+      showToast(res.replaced ? "程序已更新，请重启 Eva" : "更新包已下载", "success");
+     } else {
+      setMsg(
+       "msgUpdate",
+       (res && (res.error || res.message)) || "没有可应用的更新",
+       res && res.ok ? "ok" : "err"
+      );
+     }
+    } catch (e) {
+     setMsg("msgUpdate", "更新失败：" + (e.message || e), "err");
+    }
+   });
+  }
+ }
+
+ async function loadAppUpdate(opts = {}) {
+  const soft = !!opts.soft;
+  const force = !!opts.force;
+  try {
+   bindUpdateUi();
+   if (!soft) setMsg("msgUpdate", "检查中…");
+   const path = force ? "/api/system/update/check" : "/api/system/update";
+   const d = force
+    ? await api(path, { method: "POST", body: "{}" })
+    : await api(path);
+   renderUpdatePanel(d || {});
+   if (d && d.ok) {
+    setMsg(
+     "msgUpdate",
+     d.newer
+      ? "发现新版本 " + ((d.remote && (d.remote.tag || d.remote.version)) || "")
+      : "已是最新",
+     "ok"
+    );
+   } else {
+    setMsg("msgUpdate", (d && d.error) || "检查失败", "err");
+   }
+  } catch (e) {
+   setMsg("msgUpdate", "检查失败：" + (e.message || e), "err");
+  }
+ }
+
  L.loadConfig = loadConfig;
  L.renderAgentForm = renderAgentForm;
  L.collectAgentFormPayload = collectAgentFormPayload;
+ L.loadEvolutionPanel = loadEvolutionPanel;
  L.addPersonaOption = addPersonaOption;
  L.removePersonaOption = removePersonaOption;
  L.getMsSelection = getMsSelection;
@@ -3138,11 +5400,14 @@
  L.loadSkills = loadSkills;
  L.loadMcp = loadMcp;
  L.loadIntegrations = loadIntegrations;
+ L.loadStorage = loadStorage;
+ L.loadAppUpdate = loadAppUpdate;
  L.openIntegrationEditor = openIntegrationEditor;
  L.openLlmEditor = openLlmEditor;
  L.openCustomToolEditor = openCustomToolEditor;
  L.openMcpEditor = openMcpEditor;
  L.openPromptEditor = openPromptEditor;
+ L.closePromptEditor = closePromptEditor;
  L.deleteLlm = deleteLlm;
  L.deleteCustomTool = deleteCustomTool;
  L.deleteMcp = deleteMcp;

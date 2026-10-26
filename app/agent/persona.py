@@ -2,15 +2,14 @@
 
 Editable expression:
   1. Identity + persona (one UI block):
-     - always: name, role, language, language_style, background
+     - always: name, language, background
      - opt-in roleplay (roleplay_enabled): relationship / personality /
        speech_patterns / example_dialogue / ooc_rules + intensity
      - runtime knobs: max_tool_rounds, max_history_messages, evolution_*
-  2. decision_tree — 隐性决策树
-  3. language_calibrator — 动态语言校准器
-  4. sop — 标准化作业流程
-  5. hard_boundaries — 硬性边界（通用红线）
-  6. greeting — 通用开机语
+  2. 演化人格 — session evolution digest (read-only in 人设)
+
+SOP / decision_tree / language_calibrator / hard_boundaries belong in the
+knowledge base (retrieved on demand), not in the per-turn persona.
 
 Legacy commercial-boundary fields are read once during migrate then dropped
 from the stored agent object (see compact_agent_config).
@@ -38,11 +37,6 @@ ACTIVE_AGENT_KEYS = (
     "speech_patterns",
     "example_dialogue",
     "ooc_rules",
-    "decision_tree",
-    "language_calibrator",
-    "sop",
-    "hard_boundaries",
-    "greeting",
     "persona_options",
     "max_tool_rounds",
     "max_history_messages",
@@ -64,21 +58,10 @@ PERSONA_FIELDS = (
     "speech_patterns",
     "example_dialogue",
     "ooc_rules",
-    "decision_tree",
-    "language_calibrator",
-    "sop",
-    "hard_boundaries",
-    "greeting",
 )
 
-# Primary free-text layers of the agent form (assistant workflow)
-LAYER_TEXT_FIELDS = (
-    "decision_tree",
-    "language_calibrator",
-    "sop",
-    "hard_boundaries",
-    "greeting",
-)
+# Primary free-text layers of the agent form (assistant identity extras)
+LAYER_TEXT_FIELDS: tuple[str, ...] = ()
 
 # Roleplay free-text fields (injected only when roleplay_enabled)
 ROLEPLAY_TEXT_FIELDS = (
@@ -118,113 +101,52 @@ TEXT_BOUNDARY_FIELDS = (
 # id → label + line used when composing system prompt from selections
 BOUNDARY_CHOICES: dict[str, list[dict[str, str]]] = {
     "principles": [
-        {"id": "commercial", "label": "商业化", "line": "商业化：卖点与转化优先，不只描述画面。"},
-        {"id": "executable", "label": "可执行", "line": "可执行：输出可直接复制到 AI 工具。"},
-        {"id": "viral", "label": "爆款思维", "line": "爆款思维：优先点击率、传播性、主体突出。"},
-        {"id": "platform_fit", "label": "平台适配", "line": "平台适配：按目标平台调整语气与结构。"},
-        {"id": "info_tiers", "label": "信息分级", "line": "信息分级：可确认 / 推测 / 需补充，禁止编造。"},
-        {"id": "stage_order", "label": "不跳阶段", "line": "按阶段执行，只生成用户需要的内容类型。"},
+        {"id": "accurate", "label": "准确", "line": "先核对事实，信息不足就说明缺口，不编造。"},
+        {"id": "executable", "label": "可执行", "line": "输出可直接使用：步骤清楚、少套话。"},
+        {"id": "concise", "label": "简洁", "line": "默认简短；用户要求展开时再写长。"},
+        {"id": "ask_when_unclear", "label": "目标不明先问", "line": "目标不清时最多问 1～3 个关键问题再动手。"},
     ],
     "platforms": [
-        {"id": "xhs", "label": "小红书", "line": "小红书：生活方式 + 情绪价值 + 真实种草。"},
-        {"id": "taobao", "label": "淘宝/天猫", "line": "淘宝/天猫：卖点突出 + 信任背书 + 转化。"},
-        {"id": "douyin", "label": "抖音/视频号", "line": "抖音/视频号：前三秒钩子 + 节奏 + 互动。"},
-        {"id": "zhihu", "label": "知乎", "line": "知乎：专业深度 + 客观测评。"},
-        {"id": "tvc", "label": "TVC/品牌", "line": "TVC/品牌广告：情绪曲线 + 镜头语言 + 记忆点。"},
-        {
-            "id": "kb_ref",
-            "label": "细则见知识库",
-            "line": "平台专章与模板全文见知识库 collection=commercial。",
-        },
+        {"id": "follow_user", "label": "跟随用户", "line": "按用户指定的渠道或格式写，不预设平台。"},
+        {"id": "kb_ref", "label": "细则见知识库", "line": "若知识库有对应页面，按其标题与正文执行。"},
     ],
     "workflow": [
         {
-            "id": "s1",
-            "label": "阶段1 识别",
-            "line": "阶段1 产品识别：输出可确认/推测/需补充。",
+            "id": "clarify",
+            "label": "先确认再做",
+            "line": "先确认目标与约束，再行动。",
         },
         {
-            "id": "s15",
-            "label": "阶段1.5 咨询",
-            "line": "阶段1.5 主动咨询：目标不明时最多约3问；「随便」用默认策略并标注。",
+            "id": "tools_first",
+            "label": "先工具后结论",
+            "line": "需要查资料或改文件时先调工具，再根据结果回答。",
         },
         {
-            "id": "s2",
-            "label": "阶段2 策略",
-            "line": "阶段2 策略：平台/人群/传播方向/视觉调性。",
-        },
-        {
-            "id": "s3",
-            "label": "阶段3 按需生成",
-            "line": "阶段3 生成：仅按用户需要的类型输出。",
-        },
-        {
-            "id": "video_ab",
-            "label": "视频 A′→B",
-            "line": "视频默认：先首帧改图 A′，再视频 B（用户明确跳过除外）。",
-        },
-        {
-            "id": "wf_pipeline",
-            "label": "工作流·内容流水线",
-            "line": "编排可用工作流 commercial_content_pipeline。",
-        },
-        {
-            "id": "wf_video",
-            "label": "工作流·视频路径",
-            "line": "视频路径可用工作流 commercial_video_a_prime_then_b。",
+            "id": "wf_optional",
+            "label": "多步用工作流",
+            "line": "重复多步流程用设定→工作流，或让助手创建 workflow。",
         },
     ],
     "output_modes": [
-        {"id": "mode_a", "label": "图片 Prompt", "line": "模式 A：商品/场景图 Prompt（中英）。"},
-        {"id": "mode_ap", "label": "首帧改图 A′", "line": "模式 A′：视频母版首帧改图（锁外观）。"},
-        {"id": "mode_b", "label": "视频 B", "line": "模式 B：CRITICAL 锁定参考图 + 旁白/字幕模板。"},
-        {"id": "mode_c", "label": "小红书", "line": "模式 C：小红书种草笔记。"},
-        {"id": "mode_d", "label": "淘宝素材", "line": "模式 D：淘宝/天猫电商素材。"},
-        {"id": "mode_e", "label": "抖音脚本", "line": "模式 E：抖音/视频号脚本。"},
-        {"id": "mode_tvc", "label": "TVC", "line": "TVC：10/15/30 秒方案（知识库手册）。"},
+        {"id": "as_asked", "label": "按用户要求", "line": "格式、长度、语言以用户当轮要求为准。"},
         {
             "id": "tools_media",
-            "label": "生图/识图工具",
-            "line": "真·生图视频用 grok_media；识图用 analyze_image_auto；模板全文用 kb。",
+            "label": "生图/识图随技能",
+            "line": "生图/识图仅在已安装对应 skill 时使用。",
         },
     ],
     "notes": [
         {
-            "id": "def_xhs",
-            "label": "默认小红书",
-            "line": "默认平台：小红书。",
-        },
-        {
-            "id": "def_mom",
-            "label": "默认宝妈/女性",
-            "line": "默认人群：宝妈/女性。",
-        },
-        {
-            "id": "def_img_copy",
-            "label": "默认图片+文案",
-            "line": "默认内容：图片+文案。",
-        },
-        {
-            "id": "def_studio",
-            "label": "默认棚拍首帧",
-            "line": "首帧背景默认：浅色棚拍 + 柔光 + 产品居中。",
-        },
-        {
-            "id": "def_mark",
-            "label": "标注默认策略",
-            "line": "使用默认时须标注：⚠️ 基于默认策略，建议补充后优化。",
-        },
-        {
             "id": "mem_vs_kb",
             "label": "记忆≠知识库",
-            "line": "短偏好 → memory；长手册/SOP → kb。",
+            "line": "短偏好 → memory；长手册 → kb。",
         },
     ],
     "constraints": [
         {
             "id": "no_invent",
             "label": "不编造",
-            "line": "信息不足时区分可确认/推测/需补充，不编造细节。",
+            "line": "信息不足时说明缺口，不编造细节。",
         },
         {
             "id": "refuse_bad",
@@ -236,45 +158,17 @@ BOUNDARY_CHOICES: dict[str, list[dict[str, str]]] = {
             "label": "守字数",
             "line": "有字数限制的区块严格遵守。",
         },
-        {
-            "id": "default_on_skip",
-            "label": "拒答用默认",
-            "line": "用户拒绝补充关键信息时用默认策略并标注。",
-        },
     ],
 }
 
-# Default chip selection for commercial-content agents
+# Blank delivery: no chip pre-selection
 DEFAULT_BOUNDARY_SEL: dict[str, list[str]] = {
-    "principles_sel": [
-        "commercial",
-        "executable",
-        "viral",
-        "platform_fit",
-        "info_tiers",
-        "stage_order",
-    ],
-    "platforms_sel": ["xhs", "taobao", "douyin", "zhihu", "tvc", "kb_ref"],
-    "workflow_sel": ["s1", "s15", "s2", "s3", "video_ab", "wf_pipeline", "wf_video"],
-    "output_modes_sel": [
-        "mode_a",
-        "mode_ap",
-        "mode_b",
-        "mode_c",
-        "mode_d",
-        "mode_e",
-        "mode_tvc",
-        "tools_media",
-    ],
-    "notes_sel": [
-        "def_xhs",
-        "def_mom",
-        "def_img_copy",
-        "def_studio",
-        "def_mark",
-        "mem_vs_kb",
-    ],
-    "constraints_sel": ["no_invent", "refuse_bad", "length_limit", "default_on_skip"],
+    "principles_sel": [],
+    "platforms_sel": [],
+    "workflow_sel": [],
+    "output_modes_sel": [],
+    "notes_sel": [],
+    "constraints_sel": [],
 }
 
 
@@ -309,20 +203,12 @@ def resolve_boundary_field(cfg: dict[str, Any], field: str) -> str:
 
 PERSONA_PRESETS: dict[str, list[str]] = {
     "role": [
-        "AI商业内容专家",
-        "产品视觉分析师",
-        "爆款策略总监",
-        "AI提示词工程师",
-        "淘宝天猫视觉策划",
-        "小红书种草博主",
-        "抖音短视频导演",
-        "TVC广告导演",
-        "AI商业摄影师",
-        "产品视觉营销顾问",
-        "知乎深度种草答主",
+        "通用助手",
         "专属助手",
         "文案策划",
         "技术顾问",
+        "产品经理",
+        "研究员",
     ],
     "language": [
         "跟随用户",
@@ -334,72 +220,42 @@ PERSONA_PRESETS: dict[str, list[str]] = {
     ],
     "language_style": [
         "专业",
-        "商业化",
-        "可执行",
-        "爆款思维",
-        "种草",
-        "转化导向",
-        "专业测评",
         "简洁",
         "口语",
         "正式",
         "热情",
         "冷静",
+        "可执行",
     ],
 }
 
 # Placeholder / empty-state hints for free-text boundaries (short; long docs → KB)
 BOUNDARY_PLACEHOLDERS: dict[str, str] = {
-    "principles": "商业化 · 可执行 · 爆款 · 平台适配 · 信息三级（可确认/推测/需补充）",
-    "platforms": "小红书、淘宝/天猫、抖音、视频号、知乎、TVC…（专章在知识库）",
-    "workflow": "1识别→1.5咨询→2策略→3按需生成；视频先A′再B。工作流 commercial_content_pipeline",
-    "output_modes": "图/改图/视频/小红书/淘宝/抖音/TVC…模板用 kb，勿在此贴全文",
+    "principles": "可在此写原则；或由对话中让助手写入设定",
+    "platforms": "目标平台（可选）",
+    "workflow": "多步流程请用设定→工作流，或让助手创建",
+    "output_modes": "输出格式说明（可选）",
 }
 
-# Recommended short summaries for the Agent form (not full SOP)
 _DEFAULT_BOUNDARIES: dict[str, str] = {
-    "principles": (
-        "商业化：卖点与转化优先。\n"
-        "可执行：输出可直接复制到 AI 工具。\n"
-        "爆款思维：点击率/传播/主体突出。\n"
-        "平台适配：按目标平台调整。\n"
-        "信息分级：可确认 / 推测 / 需补充，禁止编造。"
-    ),
-    "platforms": (
-        "小红书、淘宝/天猫、抖音/视频号、知乎、TVC/品牌广告。\n"
-        "细则见知识库 commercial（模式 C/D/E、TVC 手册等）。"
-    ),
-    "workflow": (
-        "阶段1 产品识别 → 1.5 主动咨询（最多约3问）→ 2 策略 → 3 仅生成用户需要的类型。\n"
-        "视频默认：先首帧改图 A′，再视频 B（用户明确跳过除外）。\n"
-        "编排：工作流 commercial_content_pipeline / commercial_video_a_prime_then_b。"
-    ),
-    "output_modes": (
-        "图片 Prompt · 首帧改图 A′ · 视频 CRITICAL 模板 B · 小红书 · 淘宝素材 · 抖音脚本 · TVC。\n"
-        "强制模板全文在知识库 commercial-modes；生图/视频用 grok_media，识图用 analyze_image_auto。"
-    ),
+    "principles": "",
+    "platforms": "",
+    "workflow": "",
+    "output_modes": "",
 }
 
-# Short defaults for notes / constraints (form 「填入推荐摘要」)
-RECOMMENDED_NOTES = (
-    "用户说「随便/默认/你决定」时：\n"
-    "平台小红书 · 人群宝妈/女性 · 内容图片+文案；\n"
-    "首帧背景默认浅色棚拍+柔光+居中。\n"
-    "须标注：⚠️ 基于默认策略，建议补充后优化。\n"
-    "短偏好 → memory；长手册 → kb。"
-)
+RECOMMENDED_NOTES = ""
 RECOMMENDED_CONSTRAINTS = (
-    "信息不足时区分可确认/推测/需补充，不编造。\n"
-    "拒绝补充时用默认策略并标注。\n"
+    "信息不足时说明缺口，不编造。\n"
     "不当/虚假/误导内容拒绝并说明。\n"
     "有字数限制的区块严格遵守。"
 )
 
 SYSTEM_FIXED_RULES_SUMMARY = """\
 【系统固定 · 不可改】
-工具路由（workspace/http/memory/…）· 记忆匹配与强制记住 · 媒体约定
+事实边界（信息不足说明缺口，不编造）· 工具路由 · 记忆匹配与强制记住 · 媒体约定
 意图预路由/硬拦截 · 受保护 skill · 凭证与路径安全
-人设/能力边界仅影响表达与业务交付；与系统规则冲突时以系统为准。
+人设只影响身份与语气；与系统规则冲突时以系统为准。
 """
 
 
@@ -512,6 +368,85 @@ def _empty_persona_options() -> dict[str, list[str]]:
     return out
 
 
+def _shorten_field(text: str, max_chars: int = 220) -> str:
+    """Keep the first beat of a persona field; used on task turns only."""
+    t = _compact_multiline(text)
+    if len(t) <= max_chars:
+        return t
+    cut = t[:max_chars]
+    for sep in ("。", "！", "？", "\n", "；", ".", "!"):
+        i = cut.rfind(sep)
+        if i >= 40:
+            return cut[: i + 1].strip()
+    return cut.rstrip() + "…"
+
+
+# Tools that mean "this turn is work, not roleplay". Time-only chat stays full persona.
+_TASK_PERSONA_TOOLS = frozenset(
+    {
+        "workflow",
+        "scheduled_task",
+        "integrations",
+        "llms",
+        "create_tool",
+        "read_skill",
+        "list_skills",
+        "validate_skill",
+        "promote_skill",
+        "delete_tool",
+        "workspace",
+        "server_health_check",
+        "list_api_models",
+        "reload_runtime",
+        "terminal",
+        "document",
+        "kb",
+    }
+)
+
+_TASK_PERSONA_MARKERS = (
+    "工作流",
+    "定时任务",
+    "excel",
+    "xlsx",
+    "docx",
+    "pptx",
+    "pdf",
+)
+
+
+def use_compact_persona(
+    message: str,
+    *,
+    intent_force: set[str] | None = None,
+    image_only: bool = False,
+    tools: Any = None,
+) -> bool:
+    """True when this turn is a tool/business task — inject a short persona."""
+    if image_only:
+        return False
+    forced = {str(x).strip() for x in (intent_force or set()) if str(x).strip()}
+    skip = {"get_current_time", "ask_user", "memory"}
+    if tools is not None:
+        for n in forced:
+            if n in skip:
+                continue
+            spec = None
+            try:
+                spec = tools.get(n)
+            except Exception:
+                spec = None
+            src = str(getattr(spec, "source", "") or "")
+            if src == "skill":
+                return True
+    if forced & _TASK_PERSONA_TOOLS:
+        return True
+    t = (message or "").lower()
+    if not t.strip():
+        return False
+    return any(k.lower() in t for k in _TASK_PERSONA_MARKERS)
+
+
 def _compact_multiline(text: str) -> str:
     lines = [line.rstrip() for line in (text or "").splitlines()]
     out: list[str] = []
@@ -571,11 +506,8 @@ def migrate_legacy_system_prompt(agent: dict[str, Any]) -> dict[str, Any]:
     else:
         out["background"] = bg  # empty stays empty — no stock filler
 
-    # --- Six-layer free text ---
-    # Only auto-seed from *legacy boundary keys* when layer key never existed.
-    missing_layers = {k for k in LAYER_TEXT_FIELDS if k not in out or out.get(k) is None}
     for key in LAYER_TEXT_FIELDS:
-        if key in missing_layers:
+        if key not in out or out.get(key) is None:
             out[key] = ""
         else:
             out[key] = _strip(out.get(key))
@@ -588,32 +520,6 @@ def migrate_legacy_system_prompt(agent: dict[str, Any]) -> dict[str, Any]:
             out[key] = ""
         else:
             out[key] = _strip(out.get(key))
-
-    # Migrate old commercial boundary blobs → layers only on first upgrade
-    if "decision_tree" in missing_layers and not out["decision_tree"]:
-        chunks: list[str] = []
-        p = resolve_boundary_field(out, "principles")
-        if p:
-            chunks.append(p)
-        d = _strip(out.get("duties"))
-        if d:
-            chunks.append(d)
-        if chunks:
-            out["decision_tree"] = "\n\n".join(chunks)
-
-    if "sop" in missing_layers and not out["sop"]:
-        w = resolve_boundary_field(out, "workflow")
-        modes = resolve_boundary_field(out, "output_modes")
-        bits = [x for x in (w, modes) if x]
-        if bits:
-            out["sop"] = "\n\n".join(bits)
-
-    if "hard_boundaries" in missing_layers and not out["hard_boundaries"]:
-        c = resolve_boundary_field(out, "constraints")
-        if c:
-            out["hard_boundaries"] = c
-        elif _strip(out.get("constraints")):
-            out["hard_boundaries"] = _strip(out.get("constraints"))
 
     opts = out.get("persona_options")
     if not isinstance(opts, dict):
@@ -717,8 +623,14 @@ def merged_persona_options(agent_cfg: dict[str, Any] | None) -> dict[str, list[s
     return out
 
 
-def build_persona_prompt(agent_cfg: dict[str, Any] | None) -> str:
+def build_persona_prompt(
+    agent_cfg: dict[str, Any] | None,
+    *,
+    compact: bool = False,
+) -> str:
     cfg = migrate_legacy_system_prompt(dict(agent_cfg or {}))
+    if compact:
+        return _build_compact_persona(cfg)
     parts: list[str] = []
     roleplay_on = _as_bool(cfg.get("roleplay_enabled"), False)
     intensity = _normalize_intensity(cfg.get("roleplay_intensity"))
@@ -800,42 +712,6 @@ def build_persona_prompt(agent_cfg: dict[str, Any] | None) -> str:
                 "可用简短旁白/OOC 回应后再回到角色。"
             )
 
-    decision_tree = _strip(cfg.get("decision_tree"))
-    if decision_tree:
-        parts.append(
-            "【隐性决策树】（内部判断路径，勿向用户完整复述决策树本身）\n"
-            f"{_compact_multiline(decision_tree)}"
-        )
-
-    calibrator = _strip(cfg.get("language_calibrator"))
-    if calibrator:
-        parts.append(
-            f"【动态语言校准器】\n{_compact_multiline(calibrator)}"
-        )
-
-    sop = _strip(cfg.get("sop"))
-    if sop:
-        # Deep RP: still inject SOP but mark as internal work method
-        if roleplay_on and intensity == "deep":
-            parts.append(
-                "【标准化作业流程 · SOP】（内部办事顺序；对外仍用角色口吻呈现结果）\n"
-                f"{_compact_multiline(sop)}"
-            )
-        else:
-            parts.append(f"【标准化作业流程 · SOP】\n{_compact_multiline(sop)}")
-
-    hard = _strip(cfg.get("hard_boundaries"))
-    if hard:
-        parts.append(f"【硬性边界 · 通用红线】\n{_compact_multiline(hard)}")
-
-    greeting = _strip(cfg.get("greeting"))
-    if greeting:
-        parts.append(
-            "【通用开机语】新对话开场可参考以下语气与内容（勿机械每次全文复读，"
-            "除非用户明确要求重说）：\n"
-            f"{_compact_multiline(greeting)}"
-        )
-
     if not parts:
         legacy = _strip(cfg.get("system_prompt"))
         if legacy:
@@ -846,15 +722,51 @@ def build_persona_prompt(agent_cfg: dict[str, Any] | None) -> str:
         parts.append(
             "【优先级】系统工具/记忆/安全规则固定注入且优先于一切人设；"
             "在不违反安全与工具正确性的前提下，保持角色身份与语气。"
-            "冲突时以系统规则与硬性边界为准；用户明确要求出戏时可短暂 OOC。"
+            "作业流程以知识库检索结果为准，不要凭空编造制度。"
+            "冲突时以系统规则为准（含事实边界）；用户明确要求出戏时可短暂 OOC。"
         )
     else:
         parts.append(
             "【优先级】系统工具/记忆/安全规则固定注入且优先于人设；"
-            "先正确调工具，再按角色与决策/SOP/边界向用户交付。"
-            "冲突时以系统规则与硬性边界为准。"
+            "先正确调工具，再按角色向用户交付。"
+            "作业流程以知识库检索结果为准，不要凭空编造制度。"
             "（角色扮演开关关闭：不注入扮演专用字段。）"
         )
+    return "\n".join(parts)
+
+
+def _build_compact_persona(cfg: dict[str, Any]) -> str:
+    """Task-turn persona: identity + short RP, no SOP / examples / greeting."""
+    parts: list[str] = []
+    name = _strip(cfg.get("name"))
+    if name:
+        parts.append(f"名字：{name}。")
+    lang = _field_text(cfg.get("language"))
+    if lang:
+        if lang == "跟随用户":
+            parts.append("【语言】跟随用户当前使用的语言。")
+        else:
+            parts.append(f"【语言】{lang}")
+    bg = _strip(cfg.get("background"))
+    if bg:
+        parts.append(f"【角色背景】\n{_shorten_field(bg, 160)}")
+    if _as_bool(cfg.get("roleplay_enabled"), False):
+        parts.append(
+            "【扮演模式 · 任务轮精简】保持角色口吻，但先把这件事做完；"
+            "不要客服式 A/B 选择题，除非用户在选方案。"
+        )
+        relationship = _strip(cfg.get("relationship"))
+        if relationship:
+            parts.append(f"【与用户关系】\n{_shorten_field(relationship, 220)}")
+        personality = _strip(cfg.get("personality"))
+        if personality:
+            parts.append(f"【性格与情绪】\n{_shorten_field(personality, 220)}")
+    parts.append(
+        "【优先级】系统工具/记忆/安全规则优先于人设；对外仍用角色身份说话。"
+        "本轮不注入示例对白。作业细则以知识库为准。"
+    )
+    if not parts:
+        return "你是 AI 助手。用用户语言清晰回复；需要时使用系统工具。"
     return "\n".join(parts)
 
 
@@ -874,11 +786,6 @@ def persona_public_view(agent_cfg: dict[str, Any] | None) -> dict[str, Any]:
         "speech_patterns": _strip(cfg.get("speech_patterns")),
         "example_dialogue": _strip(cfg.get("example_dialogue")),
         "ooc_rules": _strip(cfg.get("ooc_rules")),
-        "decision_tree": _strip(cfg.get("decision_tree")),
-        "language_calibrator": _strip(cfg.get("language_calibrator")),
-        "sop": _strip(cfg.get("sop")),
-        "hard_boundaries": _strip(cfg.get("hard_boundaries")),
-        "greeting": _strip(cfg.get("greeting")),
         "persona_options": cfg.get("persona_options") or _empty_persona_options(),
         "persona_presets": {
             "role": PERSONA_PRESETS["role"],

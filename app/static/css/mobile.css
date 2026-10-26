@@ -1,5 +1,5 @@
 /* ============================================
- Lily / AgentOS — 手机浏览器适配
+ Eva — 手机浏览器适配
  Midnight 主题 · ≤900px 抽屉 · ≤640px 紧凑
  ============================================ */
 
@@ -15,9 +15,11 @@ body {
 }
 
 .app {
+ width: 100%;
  max-width: 100%;
  height: var(--app-height, 100vh);
  min-height: var(--app-height, 100vh);
+ overflow-x: hidden;
 }
 
 /* —— 平板 / 手机共用：侧栏抽屉（与 modals.css 对齐并补强） —— */
@@ -26,31 +28,111 @@ body {
  grid-template-columns: 1fr;
  grid-template-rows: minmax(0, 1fr);
  width: 100%;
- max-width: 100vw;
+ max-width: 100%;
  height: var(--app-height, 100vh);
  min-height: var(--app-height, 100vh);
  max-height: var(--app-height, 100vh);
+ overflow-x: hidden;
  }
 
  .main {
   grid-column: 1;
   grid-row: 1;
+  min-width: 0;
   min-height: 0;
   height: 100%;
+  max-width: 100%;
+  overflow: hidden;
  }
 
- /* 空状态图形：手机略降透明度，不锁死 opacity/transform（否则 anime 入场失效） */
- .empty-anime-home .empty-shapes {
-  pointer-events: none;
+ .messages-wrap,
+ .messages {
+  min-width: 0;
+  max-width: 100%;
  }
- /* 动画失败回退时仍保证文案可见（仅 no-anime） */
- .empty-anime-home.no-anime .empty-title-line,
- .empty-anime-home.no-anime .empty-home-lead,
- .empty-anime-home.no-anime .empty-chip {
-  opacity: 1;
+
+ /* Grok 式居中主页 · 移动端 */
+ body.home-hero .composer,
+ .main.home-hero .composer {
+  width: min(100%, calc(100% - 20px));
+  top: 46%;
+  transform: translate(-50%, -50%);
+  gap: 12px;
+  /* 避免被顶栏/底部安全区裁切 */
+  max-height: calc(var(--app-height, 100vh) - 24px);
+  overflow: visible;
+ }
+ body.home-hero .home-hero-title {
+  font-size: clamp(26px, 7.5vw, 36px);
+ }
+ body.home-hero .home-hero-sub {
+  font-size: 13px;
+  padding: 0 8px;
+ }
+ body.home-hero .home-setup {
+  padding: 12px 14px;
+ }
+ body.home-hero.kb-open .home-setup {
+  display: none !important;
+ }
+ body.home-hero .top-actions {
+  display: none;
+ }
+ /* 手机主页：快捷入口横向滑动，不占两行高度 */
+ body.home-hero .home-hero-chips:not(.hidden),
+ .main.home-hero .home-hero-chips:not(.hidden) {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding: 2px 2px 4px;
+  max-width: 100%;
+  scroll-snap-type: x proximity;
+ }
+ body.home-hero .home-hero-chips::-webkit-scrollbar {
+  display: none;
+ }
+ body.home-hero .home-hero-chip {
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+  min-height: 40px;
+  padding: 8px 14px;
+  font-size: 13px;
+  white-space: nowrap;
+  touch-action: manipulation;
+ }
+ /* 键盘弹起：主页改贴底，避免输入框被挡 */
+ body.home-hero.kb-open .composer,
+ .main.home-hero.kb-open .composer,
+ body.home-hero.kb-open .main.home-hero .composer {
+  top: auto;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  width: 100%;
+  max-width: none;
   transform: none;
+  padding: 8px 10px max(8px, env(safe-area-inset-bottom));
+  gap: 8px;
+  background: linear-gradient(
+   180deg,
+   transparent 0%,
+   rgba(13, 17, 23, 0.82) 28%,
+   rgba(13, 17, 23, 0.98) 100%
+  );
  }
-
+ body.home-hero.kb-open .home-hero-head {
+  display: none !important;
+ }
+ body.home-hero.kb-open .home-hero-chips {
+  display: none !important;
+ }
+ body.home-hero.kb-open .composer-shell {
+  width: 100%;
+ }
  /* 菜单按钮始终可点 */
  .btn.icon-btn {
  display: inline-grid !important;
@@ -128,14 +210,39 @@ body {
  padding: 12px 12px 16px;
  gap: 12px;
  -webkit-overflow-scrolling: touch;
+ overflow-x: hidden;
+ min-width: 0;
+ }
+
+ .msg,
+ .msg.assistant {
+  max-width: 100%;
+  min-width: 0;
+ }
+ .msg.assistant {
+  width: 100%;
+ }
+ .msg.user {
+  max-width: 88%;
+  min-width: 0;
+ }
+ .msg-main,
+ .msg-col,
+ .bubble {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+ }
+ .msg.assistant .bubble {
+  width: 100%;
  }
 
  .composer {
  padding: 8px 10px max(10px, env(safe-area-inset-bottom));
- position: sticky;
- bottom: 0;
+ position: relative;
  z-index: 6;
  }
+ /* 非主页时主区仍用 grid 底栏；sticky 在 iOS 与 absolute 主页切换易冲突 */
 
  .scroll-bottom {
  right: 12px;
@@ -153,6 +260,9 @@ body {
  .form-grid input,
  .form-grid select,
  .form-grid textarea,
+ #integrationEditorModal .integ-form input,
+ #integrationEditorModal .integ-form select,
+ #integrationEditorModal .integ-form textarea,
  #memSearch,
  #memContent {
  font-size: 16px !important;
@@ -176,9 +286,10 @@ body {
  font-size: 14.5px;
  }
 
- /* 顶栏：语音 / 模式芯片 —— 手机只保留语音态，模式进 title */
+ /* 顶栏：模式芯片可点切换；待机语音芯片本身已隐藏 */
  .top-actions #modeHint {
-  display: none;
+  display: inline-flex;
+  max-width: 7.5em;
  }
  .top-actions .top-hint-chip,
  .top-actions .hint-chip {
@@ -187,29 +298,45 @@ body {
  border-radius: 10px;
  }
 
- /* —— 消息区 —— */
+ /* —— 消息区：锁在屏宽内，长内容在气泡里折行/横滑，不撑出整页 —— */
  .messages {
  padding: 12px 10px 18px;
  gap: 14px;
+ overflow-x: hidden;
+ min-width: 0;
  }
 
  .msg {
  max-width: 100%;
+ min-width: 0;
+ box-sizing: border-box;
  }
 
  .msg.user,
  .msg.assistant {
- max-width: 100%;
- width: fit-content;
+ min-width: 0;
  }
  .msg.user {
- max-width: 90%;
+ max-width: 88%;
+ width: auto;
  }
  .msg.assistant {
- max-width: 94%;
+ max-width: 100%;
+ width: 100%;
+ }
+ .msg-main,
+ .msg-col {
+ min-width: 0;
+ max-width: 100%;
+ }
+ .msg.assistant .msg-col,
+ .msg.assistant .msg-main {
+ width: 100%;
  }
  .msg.assistant .bubble {
+ width: 100%;
  max-width: 100%;
+ min-width: 0;
  }
 
  .msg-avatar {
@@ -225,11 +352,14 @@ body {
 
  .bubble {
  font-size: 15px;
- padding: 10px 13px;
+ padding: 10px 12px;
  border-radius: 14px;
  line-height: 1.55;
  word-break: break-word;
  overflow-wrap: anywhere;
+ overflow-x: auto;
+ max-width: 100%;
+ box-sizing: border-box;
  }
 
  .role-row {
@@ -244,22 +374,18 @@ body {
  }
 
  /* 消息级小按钮：不要强制 44px 撑破布局 */
- .role-row .btn-copy,
- .role-row .btn-retry,
- .role-row .btn-speak,
- .role-row .btn-cancel,
- .role-row .speak-wrap,
- .speak-lang {
- min-height: 28px !important;
- height: auto;
- font-size: 11px;
- padding: 2px 8px;
- }
-
- .speak-lang {
- max-width: 72px;
- height: 28px;
- min-height: 28px !important;
+ .msg-icon-btn,
+ .msg-foot .btn-copy,
+ .msg-foot .btn-retry,
+ .msg-foot .btn-speak,
+ .msg-foot .btn-speak-lang,
+ .msg-foot .btn-del-msg,
+ .msg-foot .btn-cancel {
+ min-width: 36px !important;
+ min-height: 36px !important;
+ width: 36px;
+ height: 36px;
+ padding: 0;
  }
 
  .msg-foot {
@@ -285,23 +411,38 @@ body {
  touch-action: manipulation;
  }
 
+ .md-code-block {
+ min-width: 0;
+ }
+
  .md-code-block pre,
  .bubble.md > pre {
  max-height: 280px;
+ max-width: 100%;
  padding: 8px 10px;
+ overflow-x: auto;
  -webkit-overflow-scrolling: touch;
  }
 
  .bubble.md pre code,
  .md-code-block pre code {
  font-size: 12.5px;
+ white-space: pre-wrap;
+ word-break: break-word;
+ overflow-wrap: anywhere;
  }
 
  .bubble.md table {
  display: block;
+ width: 100%;
  max-width: 100%;
  overflow-x: auto;
  -webkit-overflow-scrolling: touch;
+ }
+ .bubble.md th,
+ .bubble.md td {
+ word-break: break-word;
+ overflow-wrap: anywhere;
  }
 
  .tools,
@@ -319,12 +460,6 @@ body {
  padding: 28px 12px;
  max-width: 100%;
  }
- .empty h2 { font-size: 18px; }
- .empty p { font-size: 13.5px; }
- .empty-chips {
- gap: 8px;
- margin-top: 14px;
- }
  .empty-chip {
  font-size: 13px;
  padding: 10px 12px;
@@ -334,13 +469,16 @@ body {
 
  /* —— 输入区 —— */
  .composer {
- padding: 8px 10px max(10px, env(safe-area-inset-bottom));
+ padding: 6px 10px max(10px, env(safe-area-inset-bottom));
  background: linear-gradient(
   180deg,
   transparent 0%,
   rgba(13, 17, 23, 0.75) 40%,
   rgba(13, 17, 23, 0.96) 100%
  );
+ /* 非主页：贴底，避免被浏览器栏遮挡 */
+ position: relative;
+ z-index: 6;
  }
 
  .composer-shell {
@@ -348,43 +486,65 @@ body {
  }
 
  .composer-box {
- border-radius: 22px;
+ border-radius: 20px;
  padding: 10px 10px 8px;
  gap: 4px;
+ /* 聚焦时更明显，方便确认输入区 */
+ }
+
+ body.kb-open .composer-box {
+ border-color: rgba(63, 185, 80, 0.35);
+ box-shadow:
+  0 0 0 1px rgba(63, 185, 80, 0.12),
+  0 8px 24px rgba(0, 0, 0, 0.35);
  }
 
  .composer-toolbar {
- min-height: 36px;
+ min-height: 40px;
+ gap: 6px;
  }
 
  .composer-icon-btn {
- width: 34px;
- height: 34px;
- min-width: 34px;
+ width: 40px;
+ height: 40px;
+ min-width: 40px;
  border-radius: 50%;
  touch-action: manipulation;
  }
-
- .voice-group {
- gap: 2px;
+ .composer-icon-btn .ci {
+ width: 20px;
+ height: 20px;
  }
 
- /* 手机：会议模式开关仅剩 checkbox 方块，易误触；改到 ≤380 再藏，此处直接隐藏 */
- .voice-meet-wrap {
- display: none !important;
+ .composer-plus-menu {
+ min-width: min(240px, calc(100vw - 48px));
  }
- .voice-meet-label { display: none; }
+ .composer-plus-item {
+ min-height: 42px;
+ padding: 10px 12px;
+ font-size: 14px;
+ }
 
  .btn.primary.btn-send {
- width: 34px;
- min-width: 34px;
- min-height: 34px;
- height: 34px;
+ width: 40px;
+ min-width: 40px;
+ min-height: 40px;
+ height: 40px;
  padding: 0;
  border-radius: 50%;
  touch-action: manipulation;
  }
  .btn.primary.btn-send .btn-send-label { display: none; }
+ .btn.primary.btn-send .ci-send,
+ .btn.primary.btn-send .ci-send .ipk,
+ .btn.primary.btn-send .ci-send svg {
+  width: 18px !important;
+  height: 18px !important;
+ }
+ .btn-send-stop-sq {
+  width: 12px;
+  height: 12px;
+ }
 
  textarea#input {
  min-height: 24px;
@@ -517,6 +677,22 @@ body {
  flex-shrink: 0;
  }
 
+ .cfg-layout {
+ grid-template-columns: 128px minmax(0, 1fr);
+ }
+ .cfg-side {
+ padding: 10px 8px 16px;
+ gap: 10px;
+ }
+ .cfg-groups {
+ padding: 8px 10px 0;
+ gap: 6px;
+ }
+ .cfg-group {
+ min-height: 28px;
+ font-size: 11px;
+ padding: 4px 6px 2px;
+ }
  .tabs {
  padding: 8px 10px;
  gap: 6px;
@@ -525,12 +701,16 @@ body {
  scrollbar-width: none;
  flex-wrap: nowrap;
  }
+ #configTabs.tabs {
+ padding-top: 6px;
+ }
  .tabs::-webkit-scrollbar { display: none; }
 
+ #configTabs .tab,
  .tab {
  flex: 0 0 auto;
  min-height: 36px;
- padding: 7px 12px;
+ padding: 7px 8px;
  font-size: 12.5px;
  white-space: nowrap;
  }
@@ -594,10 +774,6 @@ body {
  .top-actions .toggle {
  padding: 5px;
  }
- /* 会议模式：超窄时隐藏会议开关，只留语音键 */
- .voice-meet-wrap {
- display: none;
- }
  .md-code-lang {
  max-width: 40%;
  overflow: hidden;
@@ -630,11 +806,88 @@ body {
  }
 }
 
-/* —— 键盘弹出时：由 JS 设置 --kb-open —— */
+/* —— 键盘弹出时：由 JS 设置 body.kb-open + --app-height —— */
 body.kb-open .composer {
- box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.35);
+ box-shadow: 0 -10px 32px rgba(0, 0, 0, 0.4);
 }
 
 body.kb-open .scroll-bottom {
  display: none !important;
+}
+
+/* 非主页：键盘升起时压缩顶栏，给对话更多高度 */
+body.kb-open:not(.home-hero) .topbar {
+ padding-top: max(4px, env(safe-area-inset-top));
+ padding-bottom: 6px;
+}
+body.kb-open:not(.home-hero) .topbar .hint,
+body.kb-open:not(.home-hero) .top-actions .top-hint-chip {
+ display: none;
+}
+
+/* 对话列表最后一条不被输入框视觉挤压 */
+@media (max-width: 900px) {
+ body:not(.home-hero) .messages {
+  padding-bottom: 20px;
+  scroll-padding-bottom: 24px;
+ }
+ body.kb-open:not(.home-hero) .messages {
+  padding-bottom: 12px;
+ }
+ /* 气泡内长链接/代码不撑破 */
+ .bubble a {
+  word-break: break-all;
+  overflow-wrap: anywhere;
+ }
+ .bubble.md img,
+ .bubble.md video,
+ .msg-media-card img,
+ .msg-media-card video {
+  max-width: 100%;
+  height: auto;
+ }
+ .msg.assistant .tools,
+ .tools-chips {
+  max-width: 100%;
+  min-width: 0;
+ }
+ /* 工具调用条可横滑，但不撑开页面 */
+ .tools-chips {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  flex-wrap: nowrap;
+ }
+ /* 附件条横滑 */
+ .attach-list {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  gap: 8px;
+  padding-bottom: 2px;
+ }
+ .attach-chip {
+  flex: 0 0 auto;
+ }
+}
+
+/* 触控：点按反馈弱一点，避免闪白 */
+@media (hover: none) and (pointer: coarse) {
+ .empty-chip:hover,
+ .home-hero-chip:hover {
+  background: rgba(22, 27, 34, 0.72);
+  border-color: rgba(148, 163, 184, 0.18);
+  color: #c9d1d9;
+  transform: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+ }
+ .btn.primary.btn-send:hover:not(:disabled):not(.is-empty) {
+  transform: none;
+ }
+ .btn.primary.btn-send:active:not(:disabled):not(.is-empty) {
+  transform: scale(0.94);
+ }
+ .session-item:active {
+  background: rgba(63, 185, 80, 0.1);
+ }
 }

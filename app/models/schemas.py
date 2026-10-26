@@ -30,6 +30,11 @@ class ChatRequest(BaseModel):
         default=None,
         description="Reuse an existing session; omit to create a new one",
     )
+    session_title: str | None = Field(
+        default=None,
+        max_length=120,
+        description="Title when creating a new session",
+    )
     stream: bool = False
     use_tools: bool = True
     use_memory: bool = True
@@ -50,6 +55,12 @@ class ChatResponse(BaseModel):
     model: str
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     usage: dict[str, Any] = Field(default_factory=dict)
+    ask_deputy: bool = False
+    used_deputy: bool = False
+    llm_name: str | None = None
+    deputy_reason: str | None = None
+    form: dict[str, Any] | None = None
+    media_paths: list[str] = Field(default_factory=list)
 
 
 class SessionInfo(BaseModel):
@@ -159,6 +170,7 @@ class HealthResponse(BaseModel):
     version: str
     llm_provider: str
     llm_model: str
+    llm_configured: bool = False
     tools: int
     mcp_servers: int
     scheduled_tasks: int

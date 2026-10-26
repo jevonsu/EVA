@@ -1,17 +1,14 @@
-"""SMB/NAS media proxy for chat bubble preview.
+"""SMB media proxy for chat bubble preview.
 
-Reuses connection defaults from skills/nas/handler.py without modifying that file.
-Streams images/videos into the browser via HTTP so <img>/<video> can load them.
+Uses credentials from 设定 → 集成 rows that have a matching host (pysmb).
 """
 
 from __future__ import annotations
 
-import importlib.util
 import io
 import logging
 import mimetypes
 import re
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
@@ -44,18 +41,73 @@ _EXTRA_TYPES = {
 }
 
 
-@lru_cache(maxsize=1)
-def _load_nas_handler() -> Any:
-    """Load skills/nas/handler.py for DEFAULT_* and _get_conn (no edits to that file)."""
-    handler_py = Path(__file__).resolve().parents[2] / "skills" / "nas" / "handler.py"
-    if not handler_py.is_file():
-        raise RuntimeError(f"NAS skill not found: {handler_py}")
-    spec = importlib.util.spec_from_file_location("skills_nas_handler_media", handler_py)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Cannot load NAS handler module")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def _smb_credentials(host_override: str | None = None) -> dict[str, Any]:
+    """Find SMB login from a user-created integration whose host matches."""
+    from app.config_store import get_config_store
+
+    want = (host_override or "").strip()
+    raw = get_config_store().get_integrations_raw()
+    rows: list[dict[str, Any]] = []
+    for iid, sec in (raw or {}).items():
+        if iid == "http" or not isinstance(sec, dict):
+            continue
+        host = str(sec.get("host") or "").strip()
+        if not host:
+            continue
+        rows.append({"id": iid, "host": host, **sec})
+
+    chosen: dict[str, Any] | None = None
+    if want:
+        for row in rows:
+            if str(row.get("host") or "").strip().lower() == want.lower():
+                chosen = row
+                break
+        if not chosen:
+            raise RuntimeError(
+                f"未在设定→集成中找到主机 {want} 的连接（请添加含 host 的自定义集成）"
+            )
+    elif len(rows) == 1:
+        chosen = rows[0]
+    else:
+        raise RuntimeError(
+            "SMB 预览需要完整 smb://主机/共享/路径，并在设定→集成中填写该主机账号"
+        )
+
+    host = want or str(chosen.get("host") or "").strip()
+    try:
+        port = int(chosen.get("port") or 445)
+    except (TypeError, ValueError):
+        port = 445
+    return {
+        "host": host,
+        "user": str(chosen.get("user") or ""),
+        "password": str(chosen.get("password") or ""),
+        "port": port,
+    }
+
+
+def _smb_connect(host_override: str | None = None) -> Any:
+    """Open an SMB connection using a matching 设定 → 集成 row."""
+    from smb.SMBConnection import SMBConnection
+
+    cfg = _smb_credentials(host_override)
+    host = str(cfg.get("host") or "").strip()
+    if not host:
+        raise RuntimeError("未配置 SMB 主机（设定 → 集成）")
+    user = str(cfg.get("user") or "")
+    password = str(cfg.get("password") or "")
+    port = int(cfg.get("port") or 445)
+    conn = SMBConnection(
+        user,
+        password,
+        "eva-preview",
+        (host[:15] or "smb"),
+        use_ntlm_v2=True,
+        is_direct_tcp=True,
+    )
+    if not conn.connect(host, port, timeout=8):
+        raise RuntimeError(f"SMB 登录失败 {user}@{host}:{port}")
+    return conn
 
 
 def _media_type(name: str) -> str:
@@ -89,7 +141,7 @@ def _safe_share(name: str) -> str:
 
 
 def _path_variants(rel: str) -> list[str]:
-    """Generate pysmb path candidates (NAS path styles vary)."""
+    """Generate pysmb path candidates (share path styles vary)."""
     rel = (rel or "").replace("\\", "/").strip("/")
     if not rel:
         return []
@@ -214,34 +266,9 @@ def _serve_smb(share: str, path: str, host: str | None = None) -> Response:
     if not share_name or not rel:
         raise HTTPException(status_code=400, detail="Invalid share or path")
 
-    try:
-        nas = _load_nas_handler()
-    except Exception as e:
-        logger.exception("Load NAS handler failed")
-        raise HTTPException(status_code=500, detail=f"NAS skill unavailable: {e}") from e
-
-    # Prefer live config (DEFAULT_* may be empty until _defaults runs)
-    try:
-        refresh = getattr(nas, "_defaults", None)
-        if callable(refresh):
-            refresh()
-    except Exception:
-        pass
-    default_host = (
-        getattr(nas, "DEFAULT_HOST", None)
-        or ""
-    ).strip()
-    use_host = (host or "").strip() or default_host
-    if use_host != default_host:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Host not allowed for preview (only {default_host})",
-        )
-
     conn = None
     try:
-        get_conn = getattr(nas, "_get_conn")
-        conn = get_conn(host=use_host)
+        conn = _smb_connect(host)
         share_name = _resolve_share_name(conn, share_name)
 
         try:
@@ -302,7 +329,7 @@ def _serve_smb(share: str, path: str, host: str | None = None) -> Response:
     finally:
         if conn is not None:
             try:
-                getattr(nas, "_close_conn")(conn)
+                conn.close()
             except Exception:
                 pass
 
@@ -311,7 +338,7 @@ def _serve_smb(share: str, path: str, host: str | None = None) -> Response:
 async def get_smb_media_query(
     share: str = Query(..., description="SMB share name, e.g. Video"),
     path: str = Query(..., description="Path inside share, e.g. 18+/SONE-616/SONE-616.jpg"),
-    host: str | None = Query(None, description="Optional host (default nas skill host)"),
+    host: str | None = Query(None, description="SMB host; must match a 设定→集成 row"),
 ) -> Response:
     """
     Query form (note: encode '+' as %2B):

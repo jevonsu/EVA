@@ -10,27 +10,26 @@ env/
 *.egg-info/
 dist/
 build/
+*.spec
+*.spec.bak
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
 
-# Env & secrets
+# Local secrets (copy .env.example → .env). Never publish .env.
 .env
 .env.local
 *.pem
 
-# Runtime data (keep structure, ignore volatile state)
-data/sessions/
-data/memory/
-data/tasks/
-data/*.db
-data/*.sqlite
-data/webhooks.json
-data/webhook_sessions.json
-data/tool_meta_dynamic.json
+# Runtime data — upgrades and git publish must never touch this
+data/*
 !data/.gitkeep
+
+# User workspace
+workspace/*
+!workspace/.gitkeep
 
 # IDE / OS
 .idea/
@@ -44,14 +43,7 @@ Thumbs.db
 logs/
 Users/
 .agents/
-
-# Agent workspace (volatile / user runtime)
-workspace/scratch/
-workspace/temp/
-workspace/new_folder/
-workspace/uploads/
-workspace/images/generated/
-workspace/videos/generated/
+node_modules/
 
 # Editor backups
 *.bak
@@ -59,7 +51,6 @@ workspace/videos/generated/
 *~
 *.orig
 
-# Auth runtime
-data/auth/
+# Local DBs (anywhere)
 *.db
 

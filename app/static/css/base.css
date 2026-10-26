@@ -90,6 +90,17 @@
  height: 28px;
  color: var(--accent, #3fb950);
 }
+.logo.logo-img {
+ padding: 0;
+ overflow: hidden;
+ background: #171717;
+}
+.logo.logo-img img {
+ width: 100%;
+ height: 100%;
+ display: block;
+ object-fit: cover;
+}
 
 .tab .ipk,
 .btn .ipk {
@@ -189,6 +200,23 @@ body.modal-open {
  margin-left: auto;
 }
 
+.toast-action {
+ background: rgba(63, 185, 80, 0.12);
+ border: 1px solid rgba(63, 185, 80, 0.28);
+ color: var(--accent, #3fb950);
+ font: inherit;
+ font-size: 12px;
+ font-weight: 600;
+ cursor: pointer;
+ padding: 4px 10px;
+ border-radius: 8px;
+ flex-shrink: 0;
+}
+
+.toast-action:hover {
+ background: rgba(63, 185, 80, 0.2);
+}
+
 @keyframes slideIn {
  from { opacity: 0; transform: translateX(30px); }
  to { opacity: 1; transform: none; }
@@ -202,9 +230,27 @@ body.modal-open {
  height: var(--app-height, 100vh);
  min-height: var(--app-height, 100vh);
  width: 100%;
- max-width: 100vw;
+ max-width: 100%;
  z-index: auto;
  overflow: hidden;
+}
+
+/* 电脑端：菜单按钮可收起侧栏（手机仍用抽屉 + sidebar-open） */
+@media (min-width: 901px) {
+ #btnMenu.btn.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  pointer-events: auto;
+  z-index: 6;
+ }
+
+ body.sidebar-collapsed .app {
+  grid-template-columns: 1fr;
+ }
+
+ body.sidebar-collapsed .sidebar {
+  display: none;
+ }
 }
 
 /* reduced motion */

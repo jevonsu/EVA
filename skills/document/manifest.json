@@ -1,0 +1,33 @@
+{
+  "id": "document",
+  "name": "办公文档",
+  "description": "在工作区读写编辑删除 Word、Excel、PPT、PDF、Markdown。支持 paths 或通配符批量。普通文本仍用 workspace。",
+  "version": "1.0.0",
+  "tools": [],
+  "agentos_meta": {
+    "role": "primary",
+    "tag": "文档",
+    "group": "office",
+    "how_to_call": "读这份 Word / 改 Excel / 做 PPT / 看 PDF / 写 Markdown",
+    "scene_keywords": [
+      "word",
+      "excel",
+      "ppt",
+      "pdf",
+      "markdown",
+      "docx",
+      "xlsx",
+      "pptx",
+      "文档",
+      "表格",
+      "幻灯片",
+      "读写excel",
+      "编辑word",
+      "做ppt",
+      "看pdf",
+      "批量",
+      "批量删除",
+      "批量替换"
+    ]
+  }
+}

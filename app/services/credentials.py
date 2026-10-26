@@ -10,7 +10,6 @@ Priority (high → low):
 from __future__ import annotations
 
 import os
-import re
 from typing import Any
 
 
@@ -38,31 +37,73 @@ def _integ(section: str) -> dict[str, Any]:
     return dict(sec) if isinstance(sec, dict) else {}
 
 
+def integration_config(section: str) -> dict[str, Any]:
+    """Read one integrations.* row (skill handlers should use this, not hardcode)."""
+    return _integ((section or "").strip())
+
+
 def default_llm_credentials() -> dict[str, str]:
-    """Return {base_url, api_key, model} for OpenAI-compatible APIs."""
+    """Return {base_url, api_key, model} from UI-configured default LLM only."""
+    return llm_credentials("")
+
+
+def llm_credentials(llm_id: str = "") -> dict[str, str]:
+    """Read one 设定→LLM row for skill handlers. Empty id = default model.
+
+    Never use integrations for chat-model keys. 业务连接（单一字段或 items 明细）才走 integration_config.
+    """
     try:
         from app.config_store import get_config_store
 
-        llm = get_config_store().get_default_llm()
-        if llm:
-            return {
-                "base_url": str(llm.get("base_url") or "").strip().rstrip("/"),
-                "api_key": str(llm.get("api_key") or "").strip(),
-                "model": str(llm.get("model") or "").strip(),
-            }
+        store = get_config_store()
+        wanted = (llm_id or "").strip()
+        row = store.get_llm(wanted) if wanted else store.get_default_llm()
+        if not row and wanted:
+            # allow lookup by name
+            for item in store.list_llms():
+                if str(item.get("name") or "").strip() == wanted:
+                    row = item
+                    break
+        if row:
+            out = _llm_row_creds(row)
+            out["source"] = "llm"
+            return out
     except Exception:
         pass
-    try:
-        from app.config import get_settings
+    return {
+        "base_url": "",
+        "api_key": "",
+        "model": "",
+        "name": "",
+        "id": "",
+        "source": "llm",
+        "error": "未配置 LLM。请在设定 → LLM 添加模型，或对工具 llms 执行 upsert。",
+    }
 
-        s = get_settings()
-        return {
-            "base_url": (s.llm_base_url or "").strip().rstrip("/"),
-            "api_key": (s.llm_api_key or "").strip(),
-            "model": (s.llm_model or "").strip(),
-        }
+
+def list_llms_public() -> list[dict[str, Any]]:
+    """Masked catalog of 设定→LLM rows for the agent (no raw keys)."""
+    try:
+        from app.config_store import get_config_store
+        from app.services.model_meta import enrich_llm_public
+
+        out: list[dict[str, Any]] = []
+        for row in get_config_store().list_llms():
+            pub = {
+                "id": str(row.get("id") or ""),
+                "name": str(row.get("name") or ""),
+                "provider": str(row.get("provider") or ""),
+                "model": str(row.get("model") or ""),
+                "base_url": str(row.get("base_url") or ""),
+                "enabled": bool(row.get("enabled", True)),
+                "is_default": bool(row.get("is_default")),
+                "api_key_set": bool(str(row.get("api_key") or "").strip()),
+                "use_proxy": bool(row.get("use_proxy")),
+            }
+            out.append(enrich_llm_public(pub))
+        return out
     except Exception:
-        return {"base_url": "", "api_key": "", "model": ""}
+        return []
 
 
 def _llm_row_creds(llm: dict[str, Any]) -> dict[str, str]:
@@ -72,6 +113,7 @@ def _llm_row_creds(llm: dict[str, Any]) -> dict[str, str]:
         "model": str(llm.get("model") or "").strip(),
         "name": str(llm.get("name") or "").strip(),
         "id": str(llm.get("id") or "").strip(),
+        "use_proxy": "1" if llm.get("use_proxy") else "",
     }
 
 
@@ -110,116 +152,161 @@ def looks_like_vision_model(model: str, *, base_url: str = "", name: str = "") -
     return any(p in blob for p in positive)
 
 
-def vision_llm_credentials() -> dict[str, str]:
-    """Credentials for product vision / image analysis.
+def _vision_rank(row: dict[str, Any]) -> int:
+    """How clearly this row can do image understanding. Not default-LLM order."""
+    m = f"{row.get('model', '')} {row.get('name', '')}".lower()
+    s = 0
+    if any(k in m for k in ("vision", "-vl", "vl-", "qwen-vl", "qwen2-vl", "qwen2.5-vl")):
+        s += 50
+    if any(
+        k in m
+        for k in (
+            "gpt-4o",
+            "gpt-4.1",
+            "gpt-5",
+            "gpt-4-turbo",
+            "gpt-4-vision",
+            "gemini",
+            "claude-3",
+            "claude-4",
+            "claude-sonnet",
+            "claude-opus",
+        )
+    ):
+        s += 40
+    if "grok" in m:
+        s += 25
+    return s
 
-    Priority:
-      1. VISION_API_KEY / VISION_BASE_URL / VISION_MODEL env
-      2. integrations.vision {base_url, api_key, model, llm_id}
-      3. Enabled LLM whose model/name looks vision-capable (prefer GPT)
-      4. Default LLM only if it looks vision-capable
+
+def list_vision_llms() -> list[dict[str, str]]:
+    """Enabled 设定→LLM rows that accept image_url.
+
+    Sorted by how clearly they support vision, never by is_default / list order.
     """
-    env_key = _env("VISION_API_KEY", "VISION_KEY")
-    env_url = _env("VISION_BASE_URL", "VISION_API_BASE")
-    env_model = _env("VISION_MODEL")
-    if env_key and env_url:
-        return {
-            "base_url": env_url.rstrip("/"),
-            "api_key": env_key,
-            "model": env_model or "gpt-4o",
-            "source": "env",
-        }
+    try:
+        from app.config_store import get_config_store
 
-    sec = _integ("vision")
-    if sec:
-        llm_id = str(sec.get("llm_id") or "").strip()
-        if llm_id:
-            try:
-                from app.config_store import get_config_store
+        rows = get_config_store().list_llms()
+    except Exception:
+        return []
+    out: list[dict[str, str]] = []
+    for r in rows:
+        if not r.get("enabled", True):
+            continue
+        c = _llm_row_creds(r)
+        if not c["api_key"] or not c["base_url"]:
+            continue
+        if not looks_like_vision_model(
+            c["model"], base_url=c["base_url"], name=c["name"]
+        ):
+            continue
+        c["source"] = f"llm:{c.get('id') or c.get('name') or c.get('model')}"
+        c["_rank"] = str(_vision_rank(r))
+        out.append(c)
+    out.sort(key=lambda x: (-int(x.get("_rank") or 0), (x.get("name") or "").lower()))
+    for c in out:
+        c.pop("_rank", None)
+    return out
 
-                for row in get_config_store().get_raw().get("llms") or []:
-                    if str(row.get("id")) == llm_id and row.get("enabled", True):
-                        c = _llm_row_creds(row)
-                        if c["api_key"] and c["base_url"]:
-                            c["source"] = f"integrations.vision.llm_id:{llm_id}"
-                            return c
-            except Exception:
-                pass
-        base_url = str(sec.get("base_url") or "").strip().rstrip("/")
-        api_key = str(sec.get("api_key") or "").strip()
-        model = str(sec.get("model") or "").strip()
-        if base_url and api_key:
-            return {
-                "base_url": base_url,
-                "api_key": api_key,
-                "model": model or "gpt-4o",
-                "source": "integrations.vision",
-            }
 
-    # Scan configured LLMs
+def resolve_vision_llms(wanted: str = "") -> list[dict[str, str]]:
+    """Try-list for识图: explicit 设定→LLM pick first, then other vision models.
+
+    ``wanted`` matches id / 显示名 / model 字符串. Never falls back to the
+    default chat model just because it is default.
+    """
+    vision = list_vision_llms()
+    pick = (wanted or "").strip()
+    if not pick:
+        return vision
+
     try:
         from app.config_store import get_config_store
 
         rows = [
             r
-            for r in (get_config_store().get_raw().get("llms") or [])
+            for r in get_config_store().list_llms()
             if r.get("enabled", True)
-            and str(r.get("api_key") or "").strip()
-            and str(r.get("base_url") or "").strip()
         ]
-        vision_rows = [
-            r
-            for r in rows
-            if looks_like_vision_model(
-                str(r.get("model") or ""),
-                base_url=str(r.get("base_url") or ""),
-                name=str(r.get("name") or ""),
-            )
-        ]
-        # Prefer GPT / OpenAI-compatible vision names (over Gemini)
-        def _score(r: dict[str, Any]) -> int:
-            m = f"{r.get('model','')} {r.get('name','')}".lower()
-            s = 0
-            if "gpt-4o" in m or "gpt-5" in m or "gpt-4.1" in m or "gpt-4-turbo" in m:
-                s += 40
-            elif re.search(r"\bgpt\b", m) or m.strip().startswith("gpt"):
-                s += 35
-            if "vision" in m or "vl" in m or "luna" in m:
-                s += 20
-            if "gemini" in m:
-                s += 10  # still vision-capable, but below GPT
-            if r.get("is_default"):
-                s += 5
-            return s
-
-        vision_rows.sort(key=_score, reverse=True)
-        if vision_rows:
-            c = _llm_row_creds(vision_rows[0])
-            c["source"] = f"llm:{c.get('id') or c.get('name') or c.get('model')}"
-            return c
     except Exception:
-        pass
+        rows = []
 
-    # Default only if it can do vision
-    d = default_llm_credentials()
-    if d.get("api_key") and d.get("base_url") and looks_like_vision_model(
-        d.get("model") or "", base_url=d.get("base_url") or ""
+    picked: dict[str, Any] | None = None
+    low = pick.lower()
+    for r in rows:
+        if str(r.get("id") or "") == pick:
+            picked = r
+            break
+    if picked is None:
+        for r in rows:
+            name = str(r.get("name") or "").strip()
+            model = str(r.get("model") or "").strip()
+            if name.lower() == low or model.lower() == low:
+                picked = r
+                break
+    if picked is None:
+        for r in rows:
+            blob = f"{r.get('id', '')} {r.get('name', '')} {r.get('model', '')}".lower()
+            if low in blob:
+                picked = r
+                break
+
+    if picked is None:
+        return []
+
+    cred = _llm_row_creds(picked)
+    cred["source"] = f"llm:{cred.get('id') or cred.get('name')}"
+    if not looks_like_vision_model(
+        cred["model"], base_url=cred["base_url"], name=cred["name"]
     ):
-        d["source"] = "default_llm"
-        return d
+        cred["error"] = (
+            f"「{cred.get('name') or cred.get('model') or pick}」看起来不支持识图，"
+            "请换设定→LLM 里的多模态模型。"
+        )
+        return [cred]
 
-    return {
+    rest = [c for c in vision if c.get("id") and c.get("id") != cred.get("id")]
+    return [cred] + rest
+
+
+def vision_llm_credentials() -> dict[str, str]:
+    """Vision skill LLM: only the row picked in 设定→集成→Vision.
+
+    Never auto-picks default chat model or ranks 设定→模型.
+    """
+    return resolve_vision_skill_llm()
+
+
+def resolve_vision_skill_llm() -> dict[str, str]:
+    """Credentials for the Vision skill from integrations.vision.llm_id."""
+    cfg = integration_config("vision")
+    wanted = str(cfg.get("llm_id") or cfg.get("llm") or "").strip()
+    empty = {
         "base_url": "",
         "api_key": "",
         "model": "",
-        "source": "none",
-        "hint": (
-            "未找到支持识图的 LLM。当前默认模型可能不支持 image_url。"
-            "请在设定中启用 Gemini/GPT-4o 等 Vision 模型，"
-            "或设置环境变量 VISION_BASE_URL / VISION_API_KEY / VISION_MODEL，"
-            "或在 integrations.vision 中配置。"
-        ),
+        "name": "",
+        "id": "",
+        "source": "integration:vision",
+        "integration_id": "vision",
+        "hint": "设定→集成→Vision 识图",
     }
+    if not wanted:
+        empty["error"] = (
+            "未配置识图模型。请到设定→集成选择 Vision 要使用的 LLM，不会自动取默认模型。"
+        )
+        return empty
+    cred = llm_credentials(wanted)
+    out = dict(cred)
+    out["source"] = "integration:vision"
+    out["integration_id"] = "vision"
+    if not (out.get("base_url") or "").strip() or not (out.get("api_key") or "").strip():
+        out["error"] = (
+            out.get("error")
+            or f"找不到或未配好模型「{wanted}」。请在设定→模型补全，再到集成里重选。"
+        )
+    return out
 
 
 def http_network_config() -> dict[str, str]:
@@ -234,133 +321,16 @@ def http_network_config() -> dict[str, str]:
     except Exception:
         settings_proxy = ""
         settings_fs = ""
+    # Explicit PROXY_URL only — never inherit system HTTP_PROXY / HTTPS_PROXY
     proxy = _env(
         "PROXY_URL",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "http_proxy",
-        "https_proxy",
         default=str(sec.get("proxy_url") or settings_proxy or ""),
     )
     fs = _env(
         "FLARESOLVERR_URL",
-        default=str(
-            sec.get("flaresolverr_url")
-            or settings_fs
-            or "http://127.0.0.1:8191/v1"
-        ),
+        default=str(sec.get("flaresolverr_url") or settings_fs or ""),
     )
     return {"proxy_url": proxy.strip(), "flaresolverr_url": fs.strip()}
-
-
-def nas_config() -> dict[str, Any]:
-    sec = _integ("nas")
-    return {
-        "host": _env("NAS_HOST", default=str(sec.get("host") or "")),
-        "user": _env("NAS_USER", default=str(sec.get("user") or "")),
-        "password": _env("NAS_PASSWORD", "NAS_PASS", default=str(sec.get("password") or "")),
-        "port": int(_env("NAS_PORT", default=str(sec.get("port") or "445")) or 445),
-    }
-
-
-def nocodb_config() -> dict[str, str]:
-    sec = _integ("nocodb")
-    return {
-        "base_url": _env("NOCODB_URL", "NOCODB_BASE_URL", default=str(sec.get("base_url") or "")).rstrip("/"),
-        "email": _env("NOCODB_EMAIL", default=str(sec.get("email") or "")),
-        "password": _env("NOCODB_PASSWORD", default=str(sec.get("password") or "")),
-        "token": _env("NOCODB_TOKEN", default=str(sec.get("token") or "")),
-    }
-
-
-def qb_config() -> dict[str, str]:
-    sec = _integ("qbittorrent")
-    return {
-        "base_url": _env("QB_URL", "QBITTORRENT_URL", default=str(sec.get("base_url") or "")).rstrip("/"),
-        "user": _env("QB_USER", "QBITTORRENT_USER", default=str(sec.get("user") or "")),
-        "password": _env(
-            "QB_PASSWORD",
-            "QB_PASS",
-            "QBITTORRENT_PASSWORD",
-            default=str(sec.get("password") or ""),
-        ),
-    }
-
-
-def netops_config() -> dict[str, Any]:
-    """NetOps hosts table from integrations.netops (fallback: skill-local JSON).
-
-    Returns ``{"hosts": {name: {host,user,port,password,key_path,ports}, ...},
-               "default_ssh_password": str, "source": str}``.
-    """
-    import json
-    from pathlib import Path
-
-    sec = _integ("netops")
-    hosts: dict[str, Any] = {}
-    source = "empty"
-
-    raw_hosts = sec.get("hosts")
-    if isinstance(raw_hosts, dict) and raw_hosts:
-        hosts = {str(k): dict(v) if isinstance(v, dict) else {"host": str(v)} for k, v in raw_hosts.items()}
-        source = "integrations.netops.hosts"
-    else:
-        hj = sec.get("hosts_json")
-        if isinstance(hj, str) and hj.strip():
-            try:
-                parsed = json.loads(hj)
-                if isinstance(parsed, dict):
-                    if isinstance(parsed.get("hosts"), dict):
-                        hosts = {
-                            str(k): dict(v) if isinstance(v, dict) else {"host": str(v)}
-                            for k, v in parsed["hosts"].items()
-                        }
-                    else:
-                        hosts = {
-                            str(k): dict(v) if isinstance(v, dict) else {"host": str(v)}
-                            for k, v in parsed.items()
-                            if isinstance(v, (dict, str))
-                        }
-                    source = "integrations.netops.hosts_json"
-            except Exception:
-                pass
-
-    if not hosts:
-        # Legacy fallback: skills/netops/netops_config.json
-        try:
-            from app.services.skills import skills_root
-
-            path = skills_root() / "netops" / "netops_config.json"
-            if path.is_file():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                h = data.get("hosts") if isinstance(data, dict) else None
-                if isinstance(h, dict) and h:
-                    hosts = {
-                        str(k): dict(v) if isinstance(v, dict) else {"host": str(v)}
-                        for k, v in h.items()
-                    }
-                    source = "skills/netops/netops_config.json"
-        except Exception:
-            pass
-
-    default_pw = _env(
-        "NETOPS_SSH_PASSWORD",
-        "NETOPS_PASSWORD",
-        default=str(sec.get("default_ssh_password") or sec.get("password") or ""),
-    )
-    # Fill empty per-host passwords with default
-    if default_pw:
-        for _name, conf in list(hosts.items()):
-            if isinstance(conf, dict) and not str(conf.get("password") or "").strip():
-                conf = dict(conf)
-                conf["password"] = default_pw
-                hosts[_name] = conf
-
-    return {
-        "hosts": hosts,
-        "default_ssh_password": default_pw,
-        "source": source,
-    }
 
 
 def missing_msg(service: str, keys: list[str]) -> str:

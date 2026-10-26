@@ -139,7 +139,7 @@ def _resolve_endpoint(
 
 
 def _session_map_path() -> Path:
-    return get_settings().data_dir / "webhook_sessions.json"
+    return get_settings().paths().webhooks_sessions
 
 
 def _load_session_map() -> dict[str, str]:
@@ -374,6 +374,7 @@ async def _run_chat(
             session_id=resolved,
             use_tools=bool(use_tools),
             use_memory=bool(use_memory),
+            allow_deputy=True,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

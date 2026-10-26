@@ -140,15 +140,23 @@ def api_limiter() -> SlidingWindowLimiter:
 
 
 def client_ip(headers: list[tuple[bytes, bytes]] | dict, scope_client: str | None) -> str:
-    """Prefer first X-Forwarded-For hop only when you trust the reverse proxy."""
+    """Use X-Forwarded-For only when AUTH_TRUST_PROXY is on."""
+    trust = False
+    try:
+        from app.config import get_settings
+
+        trust = bool(getattr(get_settings(), "auth_trust_proxy", False))
+    except Exception:
+        trust = False
     xf = ""
-    if isinstance(headers, dict):
-        xf = headers.get("x-forwarded-for") or headers.get("X-Forwarded-For") or ""
-    else:
-        for k, v in headers:
-            if k.lower() == b"x-forwarded-for":
-                xf = v.decode("latin-1", "replace")
-                break
+    if trust:
+        if isinstance(headers, dict):
+            xf = headers.get("x-forwarded-for") or headers.get("X-Forwarded-For") or ""
+        else:
+            for k, v in headers:
+                if k.lower() == b"x-forwarded-for":
+                    xf = v.decode("latin-1", "replace")
+                    break
     if xf:
         return xf.split(",")[0].strip()[:64]
     return (scope_client or "0.0.0.0")[:64]

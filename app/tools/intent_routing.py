@@ -64,11 +64,10 @@ _EXPLICIT_WORKFLOW = re.compile(
     r"\bworkflow\b)",
     re.I,
 )
-
 # Content-shape signals → prefer kb (structured / long / catalogs)
 _KB_SHAPE = re.compile(
     r"(数据库|数据表|表结构|字段|schema|base\b|bases\b|tables?\b|"
-    r"nocodb|库名|表名|清单|列表如下|如下[:：]|参数表|规格|手册|sop|SOP|"
+    r"库名|表名|清单|列表如下|如下[:：]|参数表|规格|手册|sop|SOP|"
     r"标准作业|红线|提示词标准|文档|章节|多个库|几个库|几张表|"
     r"product|collection\s*=)",
     re.I,
@@ -103,7 +102,7 @@ _OP_UPDATE = re.compile(
 
 
 def classify_durable_persist(text: str) -> DurablePersistPlan | None:
-    """Route 记住/保存类意图到 memory | kb | workflow (create/update/delete).
+    """Route 记住/保存类意图到 memory | kb | workflow.
 
     Returns None if this turn is not a durable-persist request.
     """
@@ -144,6 +143,7 @@ def classify_durable_persist(text: str) -> DurablePersistPlan | None:
     elif hit_kb and not hit_wf:
         primary, reason = "kb", "explicit_kb"
     elif hit_mem and not hit_kb and not hit_wf:
+        # 「存到记忆」wins only when they named the memory store — not 记住尾款
         primary, reason = "memory", "explicit_memory"
     elif hit_wf and hit_kb:
         # both mentioned: prefer workflow if create/run process, else kb for docs
@@ -172,12 +172,16 @@ def classify_durable_persist(text: str) -> DurablePersistPlan | None:
         if re.search(r"(步骤|[1-9][\.、．)]\s*\S+){2,}", free):
             score_wf += 2
 
-        if score_wf >= score_kb and score_wf >= score_mem and score_wf > 0:
-            primary, reason = "workflow", f"shape_wf:{score_wf}"
-        elif score_kb >= score_mem and score_kb > 0:
-            primary, reason = "kb", f"shape_kb:{score_kb}"
+        ranked = [
+            (score_wf, "workflow", f"shape_wf:{score_wf}"),
+            (score_kb, "kb", f"shape_kb:{score_kb}"),
+            (score_mem, "memory", f"shape_mem:{score_mem}"),
+        ]
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        if ranked[0][0] > 0:
+            primary, reason = ranked[0][1], ranked[0][2]
         else:
-            primary, reason = "memory", f"shape_mem:{score_mem or 0}"
+            primary, reason = "memory", "shape_mem:0"
 
     # Map op for tools
     if primary == "memory":
@@ -222,7 +226,7 @@ def classify_durable_persist(text: str) -> DurablePersistPlan | None:
         if op != "delete":
             force.append("memory")
         require = ["kb"]
-    else:  # workflow
+    elif primary == "workflow":
         if op == "delete":
             hint = (
                 "PERSIST→workflow DELETE: call `workflow` action=delete "
@@ -232,19 +236,31 @@ def classify_durable_persist(text: str) -> DurablePersistPlan | None:
         elif op == "update":
             hint = (
                 "PERSIST→workflow UPDATE: call `workflow` action=get then update "
-                "with steps_json/inputs as needed."
+                "with steps_json/inputs as needed. "
+                "Timer changes: scheduled_task create/update with workflow_id."
             )
             tool_op = "update"
         else:
             hint = (
                 "PERSIST→workflow CREATE: call `workflow` action=create with name + steps_json "
-                "(tool|note|human_gate|agent). Multi-step automation must NOT go only to memory."
+                "(tool|note|human_gate|agent). "
+                "If the user wants it on a timer, also call `scheduled_task` action=create "
+                "with workflow_id/workflow_name + cron or interval_minutes. "
+                "Do not say there is no cron entry."
             )
             tool_op = "create"
-        force = ["workflow"]
+        force = ["workflow", "scheduled_task"]
         if op != "delete":
             force.append("memory")  # optional short pointer
         require = ["workflow"]
+    else:
+        force = ["memory"]
+        require = ["memory"]
+        tool_op = "remember"
+        hint = (
+            "PERSIST→memory: call `memory` action=remember with COMPLETE natural-language "
+            "content. Do not only reply 好的记住了."
+        )
 
     return DurablePersistPlan(
         primary=primary,
@@ -275,7 +291,7 @@ _INTENT_RULES: list[tuple[str, re.Pattern[str], list[str], bool]] = [
         "kb",
         re.compile(
             r"(知识库|wiki|百科|手册|sop|SOP|写入知识库|建(一个)?页|知识页|"
-            r"流水线|作业流程|产品内容|错误规制|提示词标准|"
+            r"作业流程|提示词标准|"
             r"\bknowledge base\b|\bwiki\b|\bhandbook\b)",
             re.I,
         ),
@@ -304,104 +320,171 @@ _INTENT_RULES: list[tuple[str, re.Pattern[str], list[str], bool]] = [
             r"\blist (files|dir)|read file|write file\b)",
             re.I,
         ),
-        ["workspace"],
+        ["workspace", "document"],
         False,
     ),
-    # http / network
-    (
-        "http",
-        re.compile(
-            r"(https?://|请求(一下)?|抓(取|一下)?|访问(这个)?(网址|链接|url)|"
-            r"调(用)?接口|api|代理|proxy|cloudflare|flaresolverr|爬(一下)?|"
-            r"\bfetch\b|\bhttp\b)",
-            re.I,
-        ),
-        ["http"],
-        False,
-    ),
-    # vision
-    (
-        "vision",
-        re.compile(
-            r"(识图|分析(这|下)?图|看(一下)?图|产品图|图片分析|这张图|"
-            r"\bvision\b|\banalyze (the )?image\b)",
-            re.I,
-        ),
-        ["analyze_image_auto"],
-        False,
-    ),
-    # media gen
-    (
-        "media",
-        re.compile(
-            r"(生图|生成图|生成一?(张|幅)?|画(一)?张|改图|图生视频|生成视频|文生图|主图|"
-            r"\bgenerate (image|video)\b|\bimage to video\b)",
-            re.I,
-        ),
-        ["grok_media"],
-        False,
-    ),
-    # office
-    (
-        "office",
-        re.compile(
-            r"(excel|xlsx|pdf|ppt|pptx|word|docx|表格|幻灯片|办公文档)",
-            re.I,
-        ),
-        ["office"],
-        False,
-    ),
-    # news
-    (
-        "news",
-        re.compile(
-            r"(资讯|新闻|热点|科技圈|ai\s*新闻|今日要闻)",
-            re.I,
-        ),
-        ["search_ai_news"],
-        False,
-    ),
-    # run py / pip
-    (
-        "run_py",
-        re.compile(
-            r"(跑(一下)?脚本|运行(python|py)|pip\s*install|装(个|一下)?包|"
-            r"\brun (the )?script\b|\bpip install\b)",
-            re.I,
-        ),
-        ["run_py"],
-        False,
-    ),
-    # nas / smb
-    (
-        "nas",
-        re.compile(r"(\bnas\b|\bsmb\b|共享盘|局域网(共享|盘))", re.I),
-        ["nas"],
-        False,
-    ),
-    # nocodb
-    (
-        "nocodb",
-        re.compile(r"(nocodb|数据库表|数据表)", re.I),
-        ["nocodb"],
-        False,
-    ),
-    # qb
-    (
-        "qb",
-        re.compile(r"(qbittorrent|\bqb\b|\bbt\b|磁力|种子|下载任务)", re.I),
-        ["qb_manager"],
-        False,
-    ),
-    # schedule — 统一走 scheduled_task（设定→任务面板），不再路由到 reminders
+    # schedule — 统一走 scheduled_task（设定→任务面板）
     (
         "schedule",
         re.compile(
-            r"(定时任务|cron|每隔|每小时|每天.*跑|schedule|"
-            r"提醒我|设(个|一个)?提醒|闹钟|到点提醒)",
+            r"(定时任务|cron|每隔|每小时|每天.*跑|每三天|例行|"
+            r"schedule|提醒我|设(个|一个)?提醒|闹钟|到点提醒|"
+            r"定时|排程|到点(跑|执行)|自动跑)",
             re.I,
         ),
-        ["scheduled_task"],
+        ["scheduled_task", "workflow"],
+        False,
+    ),
+    (
+        "llms",
+        re.compile(
+            r"(对话模型|设定.?llm|大模型|模型列表|api[ _-]?key|base_url|"
+            r"\bllms\b|\bopenai\b|\bdeepseek\b|\bxai\b)",
+            re.I,
+        ),
+        ["llms", "list_api_models"],
+        False,
+    ),
+    (
+        "list_api_models",
+        re.compile(
+            r"(远程模型|/models|中转站模型|拉取模型|供应商模型|"
+            r"这个(接口|中转|站点).{0,6}(哪些|什么)模型)",
+            re.I,
+        ),
+        ["list_api_models", "llms"],
+        False,
+    ),
+    (
+        "reload_runtime",
+        re.compile(
+            r"(热重载|重载运行时|reload\s*runtime|刷新工具|"
+            r"重新加载(技能|工具|配置)|重载配置)",
+            re.I,
+        ),
+        ["reload_runtime"],
+        False,
+    ),
+    (
+        "server_health_check",
+        re.compile(
+            r"(健康检查|服务器状态|本机健康|health\s*check|"
+            r"(cpu|内存|磁盘).{0,4}(占用|空间|够不够)|"
+            r"机器(卡不卡|卡吗)|本机(卡不卡|资源))",
+            re.I,
+        ),
+        ["server_health_check"],
+        False,
+    ),
+    (
+        "integrations",
+        re.compile(
+            r"(设定.?集成|连接配置|ssh配置|主机密码|业务.?api|"
+            r"\bintegrations\b|\bssh\b)",
+            re.I,
+        ),
+        ["integrations"],
+        False,
+    ),
+    (
+        "terminal",
+        re.compile(
+            r"(执行|跑|运行).{0,8}(命令|脚本|终端)|"
+            r"(终端|命令行|cmd|powershell)|"
+            r"\bpip\s+install\b|\bnpm\s+i(nstall)?\b|\bgit\s+clone\b|"
+            r"安装(依赖|python包|节点包)",
+            re.I,
+        ),
+        ["terminal"],
+        False,
+    ),
+    (
+        "document",
+        re.compile(
+            r"\.(docx|xlsx|pptx|pdf|md)\b|"
+            r"\b(docx|xlsx|pptx)\b|"
+            r"(word|excel|powerpoint|ppt).{0,4}(文档|表格|幻灯片|文件)|"
+            r"(文档|表格|幻灯片).{0,4}(word|excel|ppt|pdf)|"
+            r"(读|写|改|编辑|打开|做|生成|删除).{0,8}"
+            r"(word|excel|ppt|pdf|markdown|docx|xlsx|pptx|文档|表格|幻灯片)|"
+            r"办公文档|markdown文档",
+            re.I,
+        ),
+        ["document"],
+        False,
+    ),
+    # skill / tool package management (create_tool / read_skill / delete_tool)
+    (
+        "skill_create",
+        re.compile(
+            r"(创建|新建|做成|封装成|写一个|做一个|做个|做一下|开发).{0,20}(工具|skill|技能)|"
+            r"(工具|skill|技能).{0,8}(创建|新建)|"
+            r"\bcreate_tool\b|"
+            r"create\s+(a\s+)?(new\s+)?(tool|skill)|"
+            r"new\s+(tool|skill)|make\s+(a\s+)?(new\s+)?(tool|skill)",
+            re.I,
+        ),
+        ["create_tool", "read_skill"],
+        False,
+    ),
+    (
+        "skill_update",
+        re.compile(
+            r"(更新|修改|编辑|改一下|改下|修好|修一下|修复|改进).{0,20}(工具|skill|技能)|"
+            r"(工具|skill|技能).{0,12}(更新|修改|编辑|修复)|"
+            r"(update|edit|fix|modify)\s+(the\s+)?(tool|skill)",
+            re.I,
+        ),
+        ["create_tool", "read_skill"],
+        False,
+    ),
+    (
+        "skill_delete",
+        re.compile(
+            r"(删除|刪除|卸载|卸載|移除|去掉).{0,16}(工具|skill|技能)|"
+            r"(工具|skill|技能).{0,8}(删除|刪除|卸载|移除)|"
+            r"\bdelete_tool\b|"
+            r"(delete|remove|uninstall)\s+(the\s+)?(tool|skill)",
+            re.I,
+        ),
+        ["delete_tool", "read_skill"],
+        False,
+    ),
+    (
+        "skill_read",
+        re.compile(
+            r"(读|查看|看一下|看下).{0,16}(skill|技能)(源码|代码|实现)?|"
+            r"(skill|技能).{0,8}(源码|代码|实现)|"
+            r"\bread_skill\b|"
+            r"(read|show|inspect|view)\s+(the\s+)?skill",
+            re.I,
+        ),
+        ["read_skill", "list_skills"],
+        False,
+    ),
+    (
+        "skill_list",
+        re.compile(
+            r"(你)?(有|会)(什么|哪些).{0,8}(技能|skill)|"
+            r"(列出|有哪些|有什么|全部|所有).{0,12}(技能|skill)|"
+            r"技能列表|"
+            r"\blist_skills\b|"
+            r"list\s+skills?|"
+            r"what skills",
+            re.I,
+        ),
+        ["list_skills"],
+        False,
+    ),
+    (
+        "skill_promote",
+        re.compile(
+            r"(发布|上线|promote).{0,12}(技能|skill|草稿)|"
+            r"(技能|skill|草稿).{0,8}(发布|上线)|"
+            r"\bpromote_skill\b",
+            re.I,
+        ),
+        ["promote_skill", "validate_skill", "read_skill", "list_skills"],
         False,
     ),
 ]
@@ -409,7 +492,7 @@ _INTENT_RULES: list[tuple[str, re.Pattern[str], list[str], bool]] = [
 
 def match_intents(text: str) -> list[IntentHit]:
     """Return all matching intents (may be multiple)."""
-    t = text or ""
+    t = text if isinstance(text, str) else str(text or "")
     if not t.strip():
         return []
     hits: list[IntentHit] = []
@@ -441,20 +524,18 @@ _UPLOAD_PATH = re.compile(
 )
 # Boilerplate the frontend appends for attachments (not user free text)
 _ATTACH_BOILERPLATE = re.compile(
-    r"【用户上传的(?:文件|产品图片)】|"
+    r"【用户上传的(?:文件|图片|产品图片)】|"
     r"界面已在用户消息中预览|"
     r"仅当用户明确要求|"
     r"不要仅因附件|"
     r"用户本轮未打字|"
-    r"默认启动多轮",
+    r"只描述/识别|"
+    r"不要编造业务流程",
     re.I,
 )
 
-# When user sends image(s) with no real question, boost KB/product pipeline match
-IMAGE_ONLY_KB_BOOST = (
-    "产品图 产品识别 产品内容流水线SOP 产品辨识与咨询 阶段1 识图分析 "
-    "电商 营销 可确认 推测 需补充 sop"
-)
+# Legacy name kept so older imports do not break. No longer injected.
+IMAGE_ONLY_KB_BOOST = ""
 
 
 def has_upload_image(text: str) -> bool:
@@ -505,17 +586,18 @@ def is_image_only_turn(text: str) -> bool:
 
 def force_tools_from_text(text: str) -> set[str]:
     """Union of tools that should be force-included for this user text."""
-    # Silent image upload: only product-vision pipeline (avoid false media/workspace hits
-    # from attachment boilerplate wording like 「生成」「文件」).
+    from app.tools.lookup import tool_registered, tools_in_group
+
+    # Silent image upload: only an installed vision-group skill (if any).
     if is_image_only_turn(text):
-        return {"analyze_image_auto", "kb"}
+        return set(tools_in_group("vision"))
     out: set[str] = set()
     for h in match_intents(text):
         out.update(h.tools)
     plan = classify_durable_persist(text)
     if plan:
         out.update(plan.force_tools)
-    return out
+    return {n for n in out if tool_registered(n)}
 
 
 def required_tools_from_text(text: str) -> set[str]:
@@ -528,9 +610,8 @@ def required_tools_from_text(text: str) -> set[str]:
     for h in match_intents(text):
         if h.require_tool:
             out.update(h.require_any_of or h.tools)
-    # Image-only: must actually analyze before answering
-    if is_image_only_turn(text):
-        out.add("analyze_image_auto")
+    # Image-only: do not hard-require a specific vision skill here
+    # (native multimodal models can see the image; core.py picks a skill if needed).
     return out
 
 
@@ -584,14 +665,14 @@ def build_filter_query(
     path_hints: Iterable[str] | None = None,
     extra_tools: Iterable[str] | None = None,
 ) -> str:
-    """Augment filter/memory/KB query with path tokens, tool names, and image-only boost."""
-    parts = [base_query or ""]
-    if is_image_only_turn(base_query or ""):
-        parts.append(IMAGE_ONLY_KB_BOOST)
-    paths = list(path_hints or [])
+    """Augment the tool soft-filter query with path tokens.
+
+    Tool names are force-seated via ``force_tools``, not stuffed into the query
+    (that made ``http`` match ``https://`` and unlocked meta tools by accident).
+    """
+    _ = extra_tools
+    parts = [base_query if isinstance(base_query, str) else str(base_query or "")]
+    paths = [str(p) for p in list(path_hints or []) if p]
     if paths:
         parts.append("paths: " + " ".join(paths[:12]))
-    tools = list(extra_tools or [])
-    if tools:
-        parts.append("tools: " + " ".join(tools[:8]))
-    return "\n".join(p for p in parts if p.strip())
+    return "\n".join(p for p in parts if isinstance(p, str) and p.strip())

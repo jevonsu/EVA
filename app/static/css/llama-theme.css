@@ -1,0 +1,603 @@
+/* llama.cpp WebUI 观感：中性深色 shadcn，EVA 功能结构不变 */
+
+:root {
+ --theme-id: "llama";
+ --theme-name: "llama.cpp";
+
+ --glass-bg: #1c1c1c;
+ --glass-bg-hover: #2a2a2a;
+ --glass-bg-strong: #242424;
+ --glass-border: rgba(255, 255, 255, 0.1);
+ --glass-border-strong: rgba(255, 255, 255, 0.16);
+ --glass-shadow: none;
+ --glass-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.35);
+ --glass-blur: none;
+ --glass-blur-heavy: none;
+
+ --text: #fafafa;
+ --text-muted: #a3a3a3;
+ --accent: #e5e5e5;
+ --accent-soft: #d4d4d4;
+ --accent-warm: #fafafa;
+ --bg-gradient-1: #171717;
+ --bg-gradient-2: #1c1c1c;
+ --bg-gradient-3: #0a0a0a;
+ --danger: #f87171;
+ --success: #4ade80;
+
+ --user-bg: #262626;
+ --user-border: rgba(255, 255, 255, 0.1);
+ --user-text: #fafafa;
+ --assistant-bg: transparent;
+ --assistant-border: transparent;
+ --assistant-shadow: none;
+
+ --radius: 10px;
+ --radius-sm: 8px;
+ --radius-bubble: 18px;
+ --sidebar-w: 272px;
+ --sidebar-bg: #141414;
+ --btn-primary-bg: #fafafa;
+ --btn-primary-text: #171717;
+ --brand-gradient: none;
+ --surface: #1c1c1c;
+ --surface-2: #262626;
+ --surface-3: #333333;
+}
+
+body {
+ background: #171717 !important;
+}
+
+body::before,
+body::after {
+ display: none;
+}
+
+.app {
+ background: #171717;
+}
+
+/* —— 侧栏：扁平、无绿边 —— */
+.sidebar {
+ background: #141414;
+ border-right: 1px solid rgba(255, 255, 255, 0.08);
+ box-shadow: none;
+ backdrop-filter: none;
+}
+
+.brand {
+ border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+.logo {
+ background: #171717;
+ border: 1px solid rgba(255, 255, 255, 0.1);
+ box-shadow: none;
+ color: #fafafa;
+}
+.logo.logo-ipk .ipk {
+ color: #fafafa;
+}
+.logo.logo-img {
+ background: #171717;
+}
+
+.brand-title {
+ background: none;
+ -webkit-text-fill-color: #fafafa;
+ color: #fafafa;
+ font-weight: 650;
+}
+
+.btn.ghost-sm {
+ background: transparent;
+ border: 1px solid rgba(255, 255, 255, 0.1);
+ color: #e5e5e5;
+}
+.btn.ghost-sm:hover {
+ background: #262626;
+ border-color: rgba(255, 255, 255, 0.16);
+ color: #fafafa;
+}
+
+.session-search {
+ background: #1c1c1c;
+ border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.btn {
+ background: #262626;
+ border: 1px solid rgba(255, 255, 255, 0.1);
+ backdrop-filter: none;
+}
+.btn:hover {
+ background: #333333;
+ border-color: rgba(255, 255, 255, 0.16);
+}
+
+.btn.primary {
+ background: #fafafa;
+ border: 1px solid #fafafa;
+ color: #171717;
+}
+.btn.primary:hover {
+ background: #e5e5e5;
+ box-shadow: none;
+ color: #171717;
+}
+
+.sidebar .btn.full:not(.primary) {
+ background: transparent;
+ border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.btn.icon-btn {
+ background: #262626 !important;
+ border: 1px solid rgba(255, 255, 255, 0.1) !important;
+ color: #fafafa !important;
+ box-shadow: none;
+}
+#btnMenu.btn.icon-btn {
+ display: inline-grid !important;
+ place-items: center;
+ pointer-events: auto;
+}
+.btn.icon-btn:hover {
+ background: #333 !important;
+ border-color: rgba(255, 255, 255, 0.2) !important;
+ color: #fff !important;
+}
+body.sidebar-open .btn.icon-btn {
+ background: #fafafa !important;
+ color: #171717 !important;
+ border-color: #fafafa !important;
+}
+
+/* —— 顶栏 —— */
+.topbar {
+ background: #171717;
+ backdrop-filter: none;
+ -webkit-backdrop-filter: none;
+ border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+ box-shadow: none;
+}
+
+.top-actions .top-hint-chip,
+.top-actions .hint-chip {
+ background: #262626;
+ border: 1px solid rgba(255, 255, 255, 0.1);
+ color: #a3a3a3;
+}
+
+/* —— 对话：助手无底，用户浅灰圆角（llama.cpp 风格） —— */
+.messages {
+ background: transparent;
+}
+
+.msg.assistant .bubble {
+ background: transparent;
+ border: none;
+ box-shadow: none;
+ color: #fafafa;
+ border-radius: 0;
+ padding: 4px 2px 8px;
+}
+
+.msg.assistant .bubble:hover {
+ border-color: transparent;
+ box-shadow: none;
+}
+
+.msg.user .bubble {
+ background: #262626;
+ border: 1px solid rgba(255, 255, 255, 0.08);
+ color: #fafafa;
+ box-shadow: none;
+ border-bottom-right-radius: 6px;
+}
+
+.msg.user .bubble:hover {
+ border-color: rgba(255, 255, 255, 0.14);
+}
+
+.msg-icon-btn {
+ color: #a3a3a3;
+ background: transparent;
+ border: none;
+}
+.msg-icon-btn:hover {
+ background: transparent;
+ color: #fafafa;
+}
+.btn-copy.is-copied {
+ color: #a3a3a3;
+ background: transparent;
+}
+.btn-del-msg:hover {
+ color: #f87171;
+ background: transparent;
+}
+.tools,
+.tools.tools-compact {
+ background: transparent;
+ border: none;
+ box-shadow: none;
+}
+
+.msg.assistant .msg-avatar {
+ background: #262626;
+ border: 1px solid rgba(255, 255, 255, 0.1);
+ color: #e5e5e5;
+ box-shadow: none;
+}
+.msg.user .msg-avatar {
+ background: #fafafa;
+ border: 1px solid #fafafa;
+ color: #171717;
+}
+
+.bubble.md code {
+ background: #262626;
+ color: #e5e5e5;
+}
+
+.md-code-block,
+.bubble.md > pre {
+ background: #0a0a0a;
+ border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.md-code-toolbar {
+ background: #141414;
+ border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+.bubble.md pre code,
+.md-code-block pre code {
+ color: #e5e5e5;
+}
+
+.bubble.md a {
+ color: #e5e5e5;
+ border-bottom-color: rgba(255, 255, 255, 0.25);
+}
+.bubble.md a:hover {
+ color: #fff;
+}
+
+.bubble.md th {
+ background: rgba(255, 255, 255, 0.06);
+}
+.bubble.md th,
+.bubble.md td {
+ border-color: rgba(255, 255, 255, 0.1);
+}
+
+.tool-chip,
+.tool-row-name {
+ color: #a3a3a3;
+ border: none;
+ background: transparent;
+}
+
+.tools-detail,
+.tool-row {
+ border-color: rgba(255, 255, 255, 0.08);
+ background: transparent;
+}
+
+.tools pre {
+ color: #d4d4d4;
+}
+
+/* —— 输入框：大圆角、中性边 —— */
+.composer-box {
+ background: #1c1c1c;
+ border: 1px solid rgba(255, 255, 255, 0.12);
+ box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+ backdrop-filter: none;
+ -webkit-backdrop-filter: none;
+}
+
+#btnComposerPlus.composer-icon-btn {
+ background: #262626;
+ border: 1px solid rgba(255, 255, 255, 0.1);
+ color: #fafafa;
+}
+#btnComposerPlus.composer-icon-btn:hover {
+ background: #333;
+ color: #fff;
+}
+#btnComposerPlus.listening {
+ background: rgba(248, 113, 113, 0.16) !important;
+ color: #f87171 !important;
+ border-color: rgba(248, 113, 113, 0.28) !important;
+}
+
+.composer-plus-menu {
+ background: #1c1c1c;
+ border-color: rgba(255, 255, 255, 0.12);
+}
+.composer-plus-item:hover,
+.composer-plus-item.voice-meet-wrap:hover,
+.composer-plus-item.voice-meet-wrap:has(input:checked),
+body.voice-meeting .composer-plus-item.voice-meet-wrap {
+ background: #262626;
+ color: #fafafa;
+}
+
+.btn.primary.btn-send:not(.busy-stop):not(.is-empty) {
+ background: #fafafa;
+ color: #171717;
+ border-color: #fafafa;
+}
+.btn.primary.btn-send:hover:not(:disabled):not(.is-empty):not(.busy-stop) {
+ background: #e5e5e5;
+}
+
+body.home-hero .composer-box,
+.main.home-hero .composer-box {
+ background: #1c1c1c;
+ box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
+ border-color: rgba(255, 255, 255, 0.12);
+}
+
+.home-hero-title {
+ background: none;
+ -webkit-text-fill-color: #fafafa;
+ color: #fafafa;
+}
+
+.home-setup {
+ background: #1c1c1c;
+ border-color: rgba(255, 255, 255, 0.12);
+}
+
+.home-hero-chip {
+ background: #1c1c1c;
+ border-color: rgba(255, 255, 255, 0.12);
+ color: #d4d4d4;
+}
+.home-hero-chip:hover {
+ border-color: rgba(255, 255, 255, 0.28);
+ color: #fff;
+ background: #262626;
+}
+
+.scroll-bottom {
+ background: #1c1c1c;
+ border-color: rgba(255, 255, 255, 0.14);
+ color: #fafafa;
+}
+
+/* —— 设定弹窗：与 llama.cpp 同一套中性深色 —— */
+.modal-backdrop {
+ background: rgba(0, 0, 0, 0.62);
+}
+
+.modal {
+ background: #171717 !important;
+ border: 1px solid rgba(255, 255, 255, 0.1) !important;
+ box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+}
+
+.modal-header {
+ background: #171717;
+ border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.cfg-layout {
+ background: #171717;
+}
+.cfg-nav {
+ background: #141414;
+ border-bottom: none;
+ border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+.cfg-group:hover {
+ color: #e5e5e5;
+ background: transparent;
+}
+.cfg-group.active {
+ background: transparent;
+ color: #a3a3a3;
+}
+
+.tabs {
+ background: #171717;
+ border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+ box-shadow: none;
+}
+#configTabs.tabs {
+ background: transparent;
+ border-bottom: none;
+}
+.tabs::-webkit-scrollbar-thumb {
+ background: rgba(255, 255, 255, 0.22);
+}
+
+.tab:hover {
+ background: #262626;
+ border-color: rgba(255, 255, 255, 0.12);
+ color: #fafafa;
+}
+
+.tab.active,
+.tab.is-active {
+ color: #171717 !important;
+ background: #fafafa !important;
+ border-color: #fafafa !important;
+ box-shadow: none;
+ -webkit-text-fill-color: #171717;
+}
+
+.tab:focus-visible {
+ outline: 2px solid rgba(255, 255, 255, 0.45);
+}
+
+.panel-banner {
+ background: #1c1c1c;
+ border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.panel-group {
+ border: 1px solid rgba(255, 255, 255, 0.1);
+ background: #1c1c1c;
+ border-radius: 10px;
+}
+
+.panel-group-actions .btn.icon-btn {
+ background: transparent !important;
+ border-color: transparent !important;
+}
+
+.panel-group-header:hover {
+ background: rgba(255, 255, 255, 0.04);
+}
+
+.panel-group:not(.is-collapsed) .panel-group-header {
+ border-bottom-color: rgba(255, 255, 255, 0.08);
+ background: rgba(255, 255, 255, 0.03);
+}
+
+.panel-group-header .group-count {
+ background: rgba(255, 255, 255, 0.08);
+ color: #a3a3a3;
+}
+
+.panel-group:not(.is-collapsed) .panel-group-header .group-chevron,
+.panel-group-header .group-type-icon-wrap {
+ color: #e5e5e5;
+}
+
+.panel-group-body {
+ background: #1c1c1c;
+}
+
+.modal .card,
+.card {
+ background: #1c1c1c;
+ border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.card:hover {
+ background: #1f1f1f;
+ box-shadow: none;
+}
+.card.card-role-primary,
+.card.card-role-primary:hover {
+ border-color: rgba(255, 255, 255, 0.16);
+ box-shadow: none;
+}
+
+.agent-ms-panel {
+ background: #0a0a0a;
+ border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.agent-ms-item:hover {
+ background: rgba(255, 255, 255, 0.06);
+}
+.agent-ms-item.is-on {
+ background: rgba(255, 255, 255, 0.1);
+}
+.agent-ms-check {
+ border-color: rgba(255, 255, 255, 0.28);
+ background: #171717;
+}
+.agent-ms-item.is-on .agent-ms-check {
+ background: #fafafa;
+ border-color: #fafafa;
+ color: #171717;
+}
+
+.pill.group-pill {
+ background: rgba(255, 255, 255, 0.08);
+ color: #e5e5e5;
+ border-color: rgba(255, 255, 255, 0.14);
+}
+
+.modal input,
+.modal select,
+.modal textarea,
+.modal .agent-field > input,
+.modal .agent-field > select,
+.modal .agent-field > textarea,
+.modal .agent-field label > input,
+.modal .agent-field label > select,
+.modal .agent-field label > textarea,
+.modal .agent-add-line input,
+.modal .agent-ms-trigger,
+.form-grid input,
+.form-grid select,
+.form-grid textarea {
+ background: #0a0a0a !important;
+ border: 1px solid rgba(255, 255, 255, 0.12) !important;
+ color: #fafafa !important;
+ box-shadow: none;
+}
+
+.modal input:focus,
+.modal select:focus,
+.modal textarea:focus,
+.modal .agent-field > input:focus,
+.modal .agent-field > select:focus,
+.modal .agent-field > textarea:focus,
+.modal .agent-ms-trigger:hover,
+.modal .agent-ms.is-open .agent-ms-trigger,
+.form-grid input:focus,
+.form-grid select:focus,
+.form-grid textarea:focus {
+ border-color: rgba(255, 255, 255, 0.28) !important;
+ box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08) !important;
+}
+
+.modal .pill,
+.pill {
+ background: rgba(255, 255, 255, 0.06);
+ color: #e5e5e5;
+ border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.pill-on {
+ background: rgba(255, 255, 255, 0.12);
+ color: #fafafa;
+ border-color: rgba(255, 255, 255, 0.2);
+}
+
+.tool-toggle-label {
+ background: #1c1c1c;
+ border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.modal .btn.primary {
+ background: #fafafa;
+ border-color: #fafafa;
+ color: #171717;
+}
+.modal .btn.primary:hover {
+ background: #e5e5e5;
+ box-shadow: none;
+ color: #171717;
+}
+
+.modal a,
+.modal .link,
+.modal .accent {
+ color: #e5e5e5;
+}
+
+.modal .status-ok,
+.modal .ok {
+ color: #4ade80;
+}
+
+.modal .agent-fixed-pre,
+.agent-fixed-pre {
+ background: #0a0a0a;
+ border-color: rgba(255, 255, 255, 0.1);
+ color: #e5e5e5;
+}
+
+.modal .toggle input {
+ accent-color: #fafafa;
+}

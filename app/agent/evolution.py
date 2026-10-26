@@ -21,6 +21,17 @@ DEFAULT_EVOLUTION_KEEP = 16  # raw messages kept after compress
 DEFAULT_EVOLUTION_MAX_ENTRIES = 12  # bullet entries in digest
 DEFAULT_EVOLUTION_MAX_CHARS = 2200
 
+KIND_LABELS: dict[str, str] = {
+    "preference": "人格",
+    "goal": "目标",
+    "decision": "决定",
+    "fact": "事实",
+    "constraint": "约束",
+    "stage": "阶段",
+    "open": "待办",
+    "artifact": "产物",
+}
+
 
 def evolution_settings(agent_cfg: dict[str, Any] | None) -> dict[str, Any]:
     cfg = agent_cfg or {}
@@ -48,6 +59,15 @@ def evolution_settings(agent_cfg: dict[str, Any] | None) -> dict[str, Any]:
     keep = max(4, min(keep, 80))
     max_entries = max(4, min(max_entries, 40))
     max_chars = max(400, min(max_chars, 8000))
+    try:
+        max_history = int(cfg.get("max_history_messages") or 0)
+    except (TypeError, ValueError):
+        max_history = 0
+    # Session trims at max_history*2; trigger must fire before that or evolution never runs.
+    if max_history > 0:
+        ceiling = max(8, int(max_history) * 2 - 1)
+        if trigger >= ceiling:
+            trigger = max(6, ceiling)
     # keep must be < trigger or evolution never reduces pressure
     if keep >= trigger:
         keep = max(4, trigger // 2)
@@ -100,6 +120,44 @@ def normalize_evolution(raw: Any) -> dict[str, Any]:
     return base
 
 
+def evolution_public_view(
+    evo: dict[str, Any] | None,
+    *,
+    session_id: str = "",
+    session_title: str = "",
+    message_count: int = 0,
+) -> dict[str, Any]:
+    """Settings-panel payload: what this session evolved into."""
+    evo = normalize_evolution(evo)
+    entries: list[dict[str, str]] = []
+    for e in evo.get("entries") or []:
+        kind = str(e.get("kind") or "fact").strip() or "fact"
+        content = str(e.get("content") or "").strip()
+        if not content:
+            continue
+        entries.append(
+            {
+                "kind": kind,
+                "kind_label": KIND_LABELS.get(kind, kind),
+                "content": content,
+            }
+        )
+    entries.sort(key=lambda x: 0 if x.get("kind") == "preference" else 1)
+    text = str(evo.get("text") or "").strip()
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "session_title": session_title,
+        "version": int(evo.get("version") or 0),
+        "updated_at": evo.get("updated_at"),
+        "message_count_at_update": int(evo.get("message_count_at_update") or 0),
+        "message_count": int(message_count or 0),
+        "entries": entries,
+        "text": text,
+        "empty": not entries and not text,
+    }
+
+
 def render_evolution_block(evo: dict[str, Any] | None, *, max_chars: int = 2200) -> str:
     """System-prompt block for the current evolution digest."""
     evo = normalize_evolution(evo)
@@ -109,9 +167,10 @@ def render_evolution_block(evo: dict[str, Any] | None, *, max_chars: int = 2200)
         return ""
 
     lines = [
-        "SESSION EVOLUTION (running summary of this conversation — authoritative for prior decisions):",
-        "Treat the items below as established context. Prefer them over vague recall of early turns.",
-        "If the user corrects something here, obey the correction.",
+        "SESSION NOTES (this conversation only — not SOPs or standing rules):",
+        "Working scratch after old turns were compressed. Prefer knowledge base for procedures "
+        "and pinned memory for durable prefs. If those disagree with an item here, they win.",
+        "User corrections in this conversation still override older notes below.",
         "",
     ]
     if entries:
@@ -200,9 +259,13 @@ async def evolve_session_context(
         "Rules:\n"
         f"- Output STRICT JSON only: {{\"entries\":[{{\"kind\":\"...\",\"content\":\"...\"}}],\"text\":\"optional prose\"}}\n"
         f"- At most {max_entries} entries; each content ≤ 200 Chinese chars or 120 English words.\n"
-        "- kind ∈ goal|decision|fact|constraint|stage|open|artifact|preference\n"
-        "- Keep: user goals, confirmed decisions, product facts (可确认/推测/待补), platform/audience, "
-        "current stage in multi-step flows, file paths/artifacts, open questions.\n"
+        "- kind ∈ preference|goal|decision|fact|constraint|stage|open|artifact\n"
+        "- preference = persona result: how to speak/act with this user (tone, address, "
+        "boundaries, likes). Put these first when they exist.\n"
+        "- Keep: this-session goals, confirmed decisions, open questions, file paths/artifacts, "
+        "current stage in a multi-step flow.\n"
+        "- Do NOT copy procedures/SOPs. Durable standing rules live in kb / memory.\n"
+        "- Do NOT keep live business records (orders, payments, inventory) — those live in business tools.\n"
         "- Drop: chit-chat, failed tool noise, full prompts longer than one line (summarize instead).\n"
         "- Merge/update old evolution; correct superseded decisions.\n"
         "- Language: match the conversation (usually Chinese).\n"

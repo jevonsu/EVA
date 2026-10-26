@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+_OFFICE_BIN_EXT = {".docx", ".xlsx", ".xlsm", ".pptx", ".pdf"}
 
 from app.tools.registry import ToolRegistry
 from app.tools.safety import (
@@ -15,10 +20,31 @@ from app.tools.safety import (
 )
 
 
+def _source_meta() -> dict[str, str]:
+    try:
+        from app.services.workspace_bind import binding_public
+
+        pub = binding_public()
+        if pub.get("shared"):
+            return {
+                "file_source": "hub",
+                "file_source_label": "Hub 公司工作区（所有员工共用）",
+            }
+    except Exception:
+        pass
+    return {
+        "file_source": "eva_local",
+        "file_source_label": "本机 Eva 独立工作区（未接到 Hub）",
+    }
+
+
 def register_workspace_tools(registry: ToolRegistry) -> None:
-    workspace = get_workspace_root()
+    def _root() -> Path:
+        return get_workspace_root()
 
     def _ws_err(msg: str, **extra: Any) -> str:
+        extra.setdefault("workspace_root", str(_root()))
+        extra.update(_source_meta())
         return json.dumps({"ok": False, "error": msg, **extra}, ensure_ascii=False)
 
     def _resolve(path: str | None) -> tuple[Path | None, str]:
@@ -26,12 +52,30 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
         target = resolve_workspace_path(rel)
         return target, rel
 
+    def _office_bin_hint(rel: str) -> str | None:
+        ext = Path(rel or "").suffix.lower()
+        if ext in _OFFICE_BIN_EXT:
+            return (
+                f"{rel} 是办公文档，请用 document 的 action=read|write|edit|delete，"
+                "不要用 workspace 当文本读写（会乱码）。"
+                "重命名/移动仍可用 workspace rename。"
+            )
+        return None
+
     async def list_workspace(path: str = ".") -> str:
+        try:
+            from app.services.workspace_bind import uses_hub_http
+            from app.services.hub_ws_client import tool_list
+
+            if uses_hub_http():
+                return tool_list(path)
+        except Exception as exc:
+            logger.debug("Hub workspace list failed, using local: %s", exc)
         target, rel = _resolve(path)
         if target is None:
             return _ws_err("Path outside workspace is not allowed", path=path)
         if not target.exists():
-            return _ws_err(f"Not found: {rel}", path=rel, workspace_root=str(workspace))
+            return _ws_err(f"Not found: {rel}", path=rel, workspace_root=str(_root()))
         if target.is_file():
             return json.dumps(
                 {
@@ -39,7 +83,8 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
                     "type": "file",
                     "path": rel,
                     "size": target.stat().st_size,
-                    "workspace_root": str(workspace),
+                    "workspace_root": str(_root()),
+                    **_source_meta(),
                 },
                 ensure_ascii=False,
             )
@@ -57,13 +102,26 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
                 "ok": True,
                 "path": rel,
                 "entries": entries,
-                "workspace_root": str(workspace),
-                "hint": "path 相对项目下 workspace/，不要再加 workspace/ 前缀",
+                "workspace_root": str(_root()),
+                "hint": "path 相对工作区，不要再加 workspace/ 前缀",
+                **_source_meta(),
             },
             ensure_ascii=False,
         )
 
     async def read_workspace_file(path: str, max_chars: int = 8000) -> str:
+        rel0 = normalize_workspace_relpath(path)
+        hint = _office_bin_hint(rel0)
+        if hint:
+            return _ws_err(hint, path=rel0, use_tool="document")
+        try:
+            from app.services.workspace_bind import uses_hub_http
+            from app.services.hub_ws_client import tool_read
+
+            if uses_hub_http():
+                return tool_read(path, max_chars=max_chars)
+        except Exception as exc:
+            logger.debug("Hub workspace read failed, using local: %s", exc)
         target, rel = _resolve(path)
         if target is None:
             return _ws_err("Path outside workspace is not allowed", path=path)
@@ -78,11 +136,24 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
                 "content": text[:max_chars],
                 "truncated": truncated,
                 "total_chars": len(text),
+                **_source_meta(),
             },
             ensure_ascii=False,
         )
 
     async def write_workspace_file(path: str, content: str) -> str:
+        rel0 = normalize_workspace_relpath(path)
+        hint = _office_bin_hint(rel0)
+        if hint:
+            return _ws_err(hint, path=rel0, use_tool="document")
+        try:
+            from app.services.workspace_bind import uses_hub_http
+            from app.services.hub_ws_client import tool_write
+
+            if uses_hub_http():
+                return tool_write(path, content)
+        except Exception as exc:
+            logger.debug("Hub workspace write failed, using local: %s", exc)
         target, rel = _resolve(path)
         if target is None:
             return _ws_err("Path outside workspace is not allowed", path=path)
@@ -93,7 +164,8 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
                 "ok": True,
                 "path": rel,
                 "bytes": len(content.encode("utf-8")),
-                "workspace_root": str(workspace),
+                "workspace_root": str(_root()),
+                **_source_meta(),
             },
             ensure_ascii=False,
         )
@@ -136,7 +208,7 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
                 "base": rel,
                 "count": len(matches),
                 "files": matches,
-                "workspace_root": str(workspace),
+                "workspace_root": str(_root()),
             },
             ensure_ascii=False,
         )
@@ -165,7 +237,7 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
         source: str = "",
         dest: str = "",
     ) -> str:
-        act = (action or "").strip().lower()
+        act = str(action if action is not None else "").strip().lower()
         if act in ("list", "ls", "dir"):
             return await list_workspace(path=path)
         if act in ("read", "cat", "get"):
@@ -186,7 +258,7 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
             return json.dumps(
                 {
                     "ok": True,
-                    "workspace_root": str(workspace),
+                    "workspace_root": str(_root()),
                     "hint": (
                         "所有 path 均相对于此目录，例如 uploads/a.jpg 或 notes.md；"
                         "不要写 workspace/uploads/a.jpg（会自动去掉多余前缀）。"
@@ -200,10 +272,10 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
 
     registry.register(
         "workspace",
-        "【主推·工作区】统一本地文件操作（唯一入口，项目下 workspace/）。"
-        "action: list|read|write|delete|find|rename|info。"
-        "path 相对 workspace 根目录，例如 notes.md 或 uploads/a.jpg；"
-        "禁止再加 workspace/ 前缀（会自动剥离，避免 workspace/workspace）。",
+        "【工作区】目录与普通文件：list|read|write|delete|find|rename|info。"
+        "txt/代码/图片/任意文件名用本工具；Word/Excel/PPT/PDF 用 document（读文本会乱码）。"
+        "Markdown 短笔记可用本工具；要按标题/查找替换也可用 document。"
+        "path 相对工作区，如 notes.md、uploads/a.jpg，不要加 workspace/ 前缀。",
         workspace_tool,
         {
             "type": "object",

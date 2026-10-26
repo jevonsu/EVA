@@ -2,7 +2,7 @@ window.Lily = (() => {
  "use strict";
 
 /**
- * Lily — 桜のAI助手 (优化版 v2.3)
+ * Eva — AI 助手
  * 玻璃拟态基线 + Markdown / 流式 / 任务API / 体验补丁
  */
 
@@ -97,29 +97,45 @@ window.Lily = (() => {
  }
  } catch (_) {}
 
- // 工具 / 记忆：界面不再展示开关，固定默认开启（完整能力）
- if (els.useTools) els.useTools.checked = true;
- if (els.useMemory) els.useMemory.checked = true;
+ // 工具 / 记忆开关跟本机上次选择，缺省为开。不要在启动时强制打开记忆。
  try {
- localStorage.setItem("lily_use_tools", "1");
- localStorage.setItem("lily_use_memory", "1");
- } catch (_) {}
+  const t = localStorage.getItem("lily_use_tools");
+  if (els.useTools) els.useTools.checked = t !== "0";
+  const m = localStorage.getItem("lily_use_memory");
+  if (els.useMemory) els.useMemory.checked = m !== "0";
+ } catch (_) {
+  if (els.useTools) els.useTools.checked = true;
+  if (els.useMemory) els.useMemory.checked = true;
+ }
 
  // ==================== 工具函数 ====================
- function showToast(message, type = "info", duration = 3000) {
+ function showToast(message, type = "info", duration = 3000, action) {
  const container = document.getElementById("toastContainer");
  if (!container) return;
  const toast = document.createElement("div");
  toast.className = `toast ${type}`;
  const span = document.createElement("span");
  span.textContent = message || "";
+ toast.appendChild(span);
+ if (action && action.label && typeof action.onClick === "function") {
+  const act = document.createElement("button");
+  act.type = "button";
+  act.className = "toast-action";
+  act.textContent = action.label;
+  act.addEventListener("click", () => {
+   toast.remove();
+   try {
+    action.onClick();
+   } catch (_) {}
+  });
+  toast.appendChild(act);
+ }
  const close = document.createElement("button");
  close.type = "button";
  close.className = "toast-close";
  close.setAttribute("aria-label", "关闭");
  close.textContent = "×";
  close.addEventListener("click", () => toast.remove());
- toast.appendChild(span);
  toast.appendChild(close);
  container.appendChild(toast);
  setTimeout(() => {
@@ -143,6 +159,17 @@ window.Lily = (() => {
  if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`;
  if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`;
  return new Date(iso).toLocaleDateString();
+ } catch {
+ return "";
+ }
+ }
+
+ function formatMsgTime(iso) {
+ try {
+ const d = iso ? new Date(iso) : new Date();
+ if (Number.isNaN(d.getTime())) return "";
+ const p = (n) => String(n).padStart(2, "0");
+ return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
  } catch {
  return "";
  }
@@ -238,7 +265,7 @@ window.Lily = (() => {
  return normalizeToolCalls(meta.tool_calls);
  }
  if (typeof meta.tools_used === "string" && meta.tools_used.trim()) {
- // "daphile(); list_workspace(); daphile()"
+ // "tool_a(); list_workspace(); tool_b()"
  const names = meta.tools_used
  .split(/[;；]/)
  .map((s) => s.trim().replace(/\(\)\s*$/, "").trim())
@@ -250,19 +277,9 @@ window.Lily = (() => {
 
  /** 调用名 → 中文展示名（可由 /api/config/tools 刷新） */
  const TOOL_DISPLAY_NAMES = {
- analyze_image_auto: "产品识图",
- grok_media: "生图 / 视频",
  memory: "长期记忆",
- product_multi_platform_publisher: "多平台文案",
  workspace: "本地工作区",
- http: "网络请求",
- office: "办公文档",
  scheduled_task: "定时任务",
- reminders: "提醒",
- search_ai_news: "AI / 科技资讯",
- nas: "NAS / 共享盘",
- nocodb: "NocoDB 数据库",
- qb_manager: "qBittorrent 下载",
  get_current_time: "当前时间",
  calculator: "计算器",
  system_info: "系统信息",
@@ -273,9 +290,15 @@ window.Lily = (() => {
  workflow: "工作流",
  memory: "长期记忆",
  reload_runtime: "热重载运行时",
- run_py: "运行 Python / 装包",
  list_api_models: "列出 API 模型",
  server_health_check: "服务器健康检查",
+ terminal: "受控终端",
+ document: "办公文档",
+ llms: "对话模型",
+ list_skills: "列出技能",
+ validate_skill: "校验技能",
+ promote_skill: "发布技能",
+ integrations: "集成配置",
  };
 
  function setToolDisplayLabels(catalog) {
@@ -320,11 +343,8 @@ window.Lily = (() => {
 
  const LIST_LIKE_TOOLS = new Set([
  "workspace",
- "find_web_project",
  ]);
- const INPUT_ONLY_TOOLS = new Set([
- "analyze_image_auto",
- ]);
+ const INPUT_ONLY_TOOLS = new Set([]);
 
  function normalizeMediaPath(p) {
  if (!p || typeof p !== "string") return "";
@@ -497,7 +517,7 @@ window.Lily = (() => {
 
  return {
  $, els, state,
- showToast, debounce, timeAgo, renderSkeleton,
+ showToast, debounce, timeAgo, formatMsgTime, renderSkeleton,
  escapeHtml, stripThinking, normalizeToolCalls,
  extractToolCalls, summarizeToolNames, extractMediaPaths,
  setToolDisplayLabels, toolDisplayName,
@@ -521,6 +541,18 @@ window.Lily = (() => {
  }
  if (window.Lily && typeof window.Lily.bindConfigDelegatedUi === "function") {
  try { window.Lily.bindConfigDelegatedUi(); } catch (_) {}
+ }
+ if (window.Lily && typeof window.Lily.initWebhookPanel === "function") {
+ try { window.Lily.initWebhookPanel(); } catch (_) {}
+ }
+ if (window.Lily && typeof window.Lily.initMemoryForm === "function") {
+ try { window.Lily.initMemoryForm(); } catch (_) {}
+ }
+ if (window.Lily && typeof window.Lily.initKbPanel === "function") {
+ try { window.Lily.initKbPanel(); } catch (_) {}
+ }
+ if (window.Lily && typeof window.Lily.initWorkspacePanel === "function") {
+ try { window.Lily.initWorkspacePanel(); } catch (_) {}
  }
  }
  if (!document.getElementById('configModal')) {

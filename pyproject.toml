@@ -1,7 +1,7 @@
 [project]
-name = "python-ai-agent"
+name = "eva"
 version = "0.1.0"
-description = "Python backend AI Agent with multi-provider LLM, tools, memory, scheduler, and MCP"
+description = "Eva local AI assistant: FastAPI web UI, tools, memory, scheduler, MCP"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -22,7 +22,7 @@ dependencies = [
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "httpx>=0.27.0"]
 
 [project.scripts]
-ai-agent = "app.main:run"
+eva = "app.main:run"
 
 [build-system]
 requires = ["setuptools>=68"]

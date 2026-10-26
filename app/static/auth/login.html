@@ -5,48 +5,90 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="robots" content="noindex,nofollow" />
   <meta name="referrer" content="no-referrer" />
-  <title>Eva · 卡密登录</title>
+  <title>Eva · 登录</title>
+  <link rel="icon" type="image/png" href="/static/logo.png" />
   <link rel="stylesheet" href="/static/auth/auth.css" />
 </head>
-<body>
+<body class="login-body">
+  <div class="login-bg" aria-hidden="true">
+    <div class="login-orb login-orb-a"></div>
+    <div class="login-orb login-orb-b"></div>
+    <div class="login-grid"></div>
+  </div>
+
   <div class="wrap">
-    <div class="card">
+    <div class="card login-card">
       <div class="brand">
-        <div class="logo">E</div>
-        <div>
-          <h1>Eva 登录</h1>
-          <p>使用发卡平台发放的卡密进入系统</p>
+        <div class="logo logo-img" aria-hidden="true"><img src="/static/logo.png" alt="" /></div>
+        <div class="brand-text">
+          <h1>Eva</h1>
+          <p>卡密登录</p>
         </div>
       </div>
 
-      <form id="loginForm" autocomplete="off" novalidate>
-        <label for="card">卡密</label>
-        <input
-          id="card"
-          name="card"
-          type="text"
-          inputmode="text"
-          autocomplete="one-time-code"
-          placeholder="EVA-XXXX-XXXX-XXXX-XXXX"
-          maxlength="64"
-          required
-          spellcheck="false"
-        />
-        <!-- honeypot -->
+      <form id="loginForm" class="login-form" autocomplete="off" novalidate>
+        <div id="presetRow" class="field hidden">
+          <div class="field-head">
+            <label>网络</label>
+          </div>
+          <div id="presetChips" class="preset-chips"></div>
+        </div>
+
+        <div id="setupBanner" class="msg err hidden" role="status"></div>
+
+        <div class="field">
+          <div class="field-head">
+            <label for="card">卡密</label>
+          </div>
+          <div class="input-row">
+            <input
+              id="card"
+              name="card"
+              type="password"
+              inputmode="text"
+              autocomplete="off"
+              placeholder="EVA-XXXX-XXXX-XXXX-XXXX"
+              maxlength="64"
+              required
+              spellcheck="false"
+            />
+            <button
+              type="button"
+              class="btn ghost btn-inline"
+              id="btnToggleCard"
+              title="显示或隐藏卡密"
+              aria-pressed="false"
+            >显示</button>
+          </div>
+        </div>
+
+        <input id="controlUrl" type="hidden" value="" />
+        <input id="controlKey" type="hidden" value="" />
+
         <div class="hp" aria-hidden="true">
           <label>website</label>
           <input id="website" name="website" type="text" tabindex="-1" autocomplete="off" />
         </div>
 
-        <button class="btn primary" id="btnLogin" type="submit">进入系统</button>
+        <button class="btn primary btn-login" id="btnLogin" type="submit">
+          <span class="btn-login-label">登录</span>
+        </button>
         <div class="msg" id="msg" role="status"></div>
       </form>
 
-      <div class="hint">
-        · 卡密区分大小写，建议整段复制粘贴<br />
-        · 连续失败将触发临时锁定<br />
-        · 管理员入口：<a href="/admin">/admin</a>
+      <div id="pairPanel" class="pair-panel hidden">
+        <p class="pair-title">登录成功 · 办公室连接码</p>
+        <p class="pair-code" id="pairCode"></p>
+        <p class="pair-hint">把这串码填进 Hub「添加员工」。30 分钟内一次性有效，用后作废。</p>
+        <div class="pair-actions">
+          <button type="button" class="btn ghost" id="btnCopyPair">复制</button>
+          <button type="button" class="btn primary" id="btnEnterEva">进入 Eva</button>
+        </div>
       </div>
+
+      <p class="login-hint">
+        使用发卡方提供的卡密登录。成功后本机记住，接入办公室用连接码，不必把卡密给 Hub。
+      </p>
     </div>
   </div>
   <script src="/static/auth/login.js" defer></script>

@@ -1,21 +1,17 @@
-"""Background / cron task scheduler backed by APScheduler + JSON store."""
+"""Background / cron task scheduler backed by APScheduler + SQL store."""
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-import aiofiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app.config import get_settings
 from app.models.schemas import TaskCreate, TaskInfo, TaskStatus, TaskUpdate
 
 logger = logging.getLogger(__name__)
@@ -27,11 +23,6 @@ def _now() -> datetime:
 
 class TaskScheduler:
     def __init__(self) -> None:
-        settings = get_settings()
-        self.path = settings.data_dir / "tasks" / "tasks.json"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self.path.write_text("[]", encoding="utf-8")
         self._scheduler = AsyncIOScheduler(timezone="UTC")
         self._tasks: dict[str, dict[str, Any]] = {}
         self._started = False
@@ -53,15 +44,50 @@ class TaskScheduler:
             self._started = False
 
     async def _load(self) -> None:
-        async with aiofiles.open(self.path, "r", encoding="utf-8") as f:
-            raw = await f.read()
-        rows = json.loads(raw or "[]")
-        self._tasks = {r["id"]: r for r in rows}
+        from app.storage.engine import db_connect
+        from app.storage.schema import tasks as tasks_t
+        from app.storage.util import loads, run_db
+        from sqlalchemy import select
+
+        def _do() -> dict[str, dict[str, Any]]:
+            with db_connect() as conn:
+                rows = conn.execute(select(tasks_t)).all()
+            out: dict[str, dict[str, Any]] = {}
+            for r in rows:
+                data = loads(r.payload_json, {})
+                if isinstance(data, dict) and data.get("id"):
+                    out[str(data["id"])] = data
+            return out
+
+        self._tasks = await run_db(_do)
 
     async def _save(self) -> None:
+        from app.storage.engine import db_connect
+        from app.storage.schema import tasks as tasks_t
+        from app.storage.util import dumps, run_db
+        from sqlalchemy import delete, insert
+
         rows = list(self._tasks.values())
-        async with aiofiles.open(self.path, "w", encoding="utf-8") as f:
-            await f.write(json.dumps(rows, ensure_ascii=False, indent=2, default=str))
+
+        def _do() -> None:
+            with db_connect() as conn:
+                conn.execute(delete(tasks_t))
+                for row in rows:
+                    tid = str(row.get("id") or "")
+                    if not tid:
+                        continue
+                    conn.execute(
+                        insert(tasks_t).values(
+                            id=tid,
+                            name=str(row.get("name") or ""),
+                            enabled=bool(row.get("enabled", True)),
+                            status=str(row.get("status") or "pending"),
+                            created_at=str(row.get("created_at") or ""),
+                            payload_json=dumps(row),
+                        )
+                    )
+
+        await run_db(_do)
 
     def _to_info(self, row: dict[str, Any]) -> TaskInfo:
         meta = dict(row.get("metadata") or {})
@@ -123,28 +149,12 @@ class TaskScheduler:
         logger.info("Running scheduled task %s: %s", task_id, task["name"])
 
         try:
-            from app.agent.core import get_agent
-
-            agent = get_agent()
             meta = task.get("metadata") or {}
-            # always_new_session: 每次执行开新对话；否则写入固定 session_id（任务结果出现在该对话）
-            always_new = bool(meta.get("always_new_session"))
-            sid = None if always_new else (task.get("session_id") or None)
-            result = await agent.chat(
-                task["prompt"],
-                session_id=sid,
-                use_tools=True,
-                use_memory=True,
-            )
-            task["status"] = TaskStatus.completed.value
-            task["last_result"] = result.reply[:4000]
-            task["last_error"] = None
-            if always_new:
-                # 记录最近一次产生的会话，便于面板「打开对话」；下次仍新建
-                task["last_session_id"] = result.session_id
+            wid = str(meta.get("workflow_id") or "").strip()
+            if wid:
+                await self._run_workflow_task(task, wid, meta)
             else:
-                task["session_id"] = result.session_id
-                task["last_session_id"] = result.session_id
+                await self._run_agent_task(task, meta)
             if task.get("run_once"):
                 task["enabled"] = False
         except Exception as exc:
@@ -154,6 +164,87 @@ class TaskScheduler:
         finally:
             task["last_run_at"] = _now().isoformat()
             await self._save()
+
+    async def _run_agent_task(self, task: dict[str, Any], meta: dict[str, Any]) -> None:
+        from app.agent.core import get_agent
+
+        agent = get_agent()
+        always_new = bool(meta.get("always_new_session"))
+        sid = None if always_new else (task.get("session_id") or None)
+        result = await agent.chat(
+            task["prompt"],
+            session_id=sid,
+            use_tools=True,
+            use_memory=True,
+            allow_deputy=True,
+        )
+        task["status"] = TaskStatus.completed.value
+        task["last_result"] = result.reply[:4000]
+        task["last_error"] = None
+        if always_new:
+            task["last_session_id"] = result.session_id
+        else:
+            task["session_id"] = result.session_id
+            task["last_session_id"] = result.session_id
+
+    async def _run_workflow_task(
+        self, task: dict[str, Any], workflow_id: str, meta: dict[str, Any]
+    ) -> None:
+        from app.workflow.engine import get_workflow_engine
+
+        inputs = meta.get("workflow_inputs")
+        if not isinstance(inputs, dict):
+            inputs = {}
+        always_new = bool(meta.get("always_new_session"))
+        sid = None if always_new else (task.get("session_id") or None)
+        result = await get_workflow_engine().run(
+            workflow_id,
+            inputs=inputs,
+            trigger="schedule",
+            session_id=sid,
+            always_new_session=always_new,
+        )
+        status = str(result.get("status") or "")
+        err = result.get("error")
+        run = result.get("run") if isinstance(result.get("run"), dict) else {}
+        got_sid = str((run or {}).get("session_id") or "").strip()
+        if got_sid:
+            task["last_session_id"] = got_sid
+            if not always_new:
+                task["session_id"] = got_sid
+        if status == "waiting_human":
+            task["status"] = TaskStatus.failed.value
+            task["last_error"] = "定时任务不能停在人工确认（human_gate）；请改工作流或到工作流面板手动继续。"
+            task["last_result"] = None
+            return
+        if not result.get("ok") and status not in ("waiting_human", "succeeded"):
+            task["status"] = TaskStatus.failed.value
+            task["last_error"] = str(err or result.get("error") or "workflow failed")
+            task["last_result"] = None
+            return
+        task["status"] = TaskStatus.completed.value
+        task["last_error"] = None if status != "failed" else str(err or "")
+        if status == "failed":
+            task["status"] = TaskStatus.failed.value
+        summary = {
+            "workflow_id": workflow_id,
+            "run_id": (run or {}).get("id") or result.get("run_id"),
+            "status": status or ("ok" if result.get("ok") else "unknown"),
+            "session_id": got_sid or None,
+        }
+        if err:
+            summary["error"] = str(err)[:400]
+        task["last_result"] = str(summary)[:4000]
+
+    def find_by_workflow(self, workflow_id: str) -> dict[str, Any] | None:
+        wid = (workflow_id or "").strip()
+        if not wid:
+            return None
+        for row in self._tasks.values():
+            meta = row.get("metadata") or {}
+            if str(meta.get("workflow_id") or "").strip() == wid:
+                return row
+        return None
 
     async def create(self, body: TaskCreate) -> TaskInfo:
         if not body.run_once and not body.cron and not body.interval_seconds:

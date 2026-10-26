@@ -3,7 +3,7 @@
 Only affects descriptions shown to the LLM (and optionally UI catalog).
 Does NOT rename tools, change parameters, or disable anything.
 
-Dynamic meta from create_tool is stored in data/tool_meta_dynamic.json and
+Dynamic meta from create_tool is stored in data/tools/meta_dynamic.json and
 merged at read time so new skills participate in P0–P2 routing without restarts
 of the meta module (file is re-read on each lookup after cache invalidate).
 """
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ ROLE_PREFIX: dict[str, str] = {
     "dev": "开发/运维",
 }
 
-# UI group ids (aligned with frontend CAPABILITY_GROUPS)
+# Default UI group ids (live set lives in capability_groups.json).
 VALID_GROUPS = frozenset({
     "vision", "media", "memory", "content", "workspace", "network",
     "office", "schedule", "news", "infra", "dev", "other",
@@ -40,61 +41,37 @@ _dynamic_mtime: float | None = None
 # Consolidated: one primary per capability; no equivalent tools exposed.
 # group aligns with frontend CAPABILITY_GROUPS (vision/media/…/other).
 TOOL_META: dict[str, dict[str, str]] = {
-    # 识图
-    "analyze_image_auto": {"role": "primary", "tag": "产品识图", "group": "vision"},
-    # 媒体
-    "grok_media": {"role": "primary", "tag": "生图/视频", "group": "media"},
-    # 记忆
     "memory": {"role": "primary", "tag": "长期记忆", "group": "memory"},
-    "kb": {"role": "primary", "tag": "知识库标准", "group": "memory"},
+    "kb": {"role": "primary", "tag": "知识库", "group": "memory"},
     "workflow": {"role": "primary", "tag": "工作流", "group": "schedule"},
-    # 内容
-    "product_multi_platform_publisher": {
-        "role": "primary",
-        "tag": "多平台文案",
-        "group": "content",
-    },
-    # 工作区
     "workspace": {"role": "primary", "tag": "本地文件", "group": "workspace"},
-    # 网络
-    "http": {"role": "primary", "tag": "HTTP", "group": "network"},
-    # 办公
-    "office": {"role": "primary", "tag": "办公文档", "group": "office"},
-    # 任务（仅 scheduled_task 对接设定→任务面板；reminders 已废弃）
     "scheduled_task": {"role": "primary", "tag": "定时任务", "group": "schedule"},
-    "reminders": {"role": "legacy", "tag": "旧提醒·勿用", "group": "schedule"},
-    # 资讯
-    "search_ai_news": {"role": "primary", "tag": "资讯", "group": "news"},
-    # 基础设施
-    "nas": {"role": "primary", "tag": "NAS/SMB", "group": "infra"},
-    "nocodb": {"role": "primary", "tag": "NocoDB", "group": "infra"},
-    "qb_manager": {"role": "primary", "tag": "下载管理", "group": "infra"},
-    "prowlarr": {"role": "primary", "tag": "索引器搜索", "group": "infra"},
-    "radarr": {"role": "primary", "tag": "电影库", "group": "infra"},
-    "sonarr": {"role": "primary", "tag": "剧集库", "group": "infra"},
-    "daphile_player": {"role": "primary", "tag": "音乐播放", "group": "media"},
-    "search_web": {"role": "primary", "tag": "网页搜索", "group": "network"},
-    # 基础 / 元工具
     "get_current_time": {"role": "primary", "tag": "时间", "group": "dev"},
+    "ask_user": {"role": "primary", "tag": "问用户", "group": "dev"},
     "calculator": {"role": "primary", "tag": "计算", "group": "dev"},
     "system_info": {"role": "primary", "tag": "系统信息", "group": "dev"},
     "create_tool": {"role": "primary", "tag": "创建工具", "group": "dev"},
+    "capability_groups": {"role": "primary", "tag": "技能分类", "group": "dev"},
     "integrations": {"role": "primary", "tag": "集成配置", "group": "infra"},
-    "netops": {"role": "primary", "tag": "网络运维", "group": "infra"},
+    "llms": {"role": "primary", "tag": "对话模型", "group": "dev"},
     "read_skill": {"role": "primary", "tag": "读Skill", "group": "dev"},
+    "list_skills": {"role": "primary", "tag": "列Skill", "group": "dev"},
+    "validate_skill": {"role": "primary", "tag": "校验Skill", "group": "dev"},
+    "promote_skill": {"role": "primary", "tag": "发布Skill", "group": "dev"},
     "delete_tool": {"role": "primary", "tag": "删工具", "group": "dev"},
     "reload_runtime": {"role": "primary", "tag": "热重载", "group": "dev"},
-    "run_py": {"role": "primary", "tag": "跑脚本/装包", "group": "dev"},
     "list_api_models": {"role": "primary", "tag": "列模型", "group": "dev"},
     "server_health_check": {"role": "primary", "tag": "健康检查", "group": "dev"},
+    "terminal": {"role": "primary", "tag": "终端", "group": "dev"},
+    "document": {"role": "primary", "tag": "文档", "group": "office"},
 }
 
 # Keyword → group for create_tool auto-classification (order matters: first hit wins).
 _GROUP_HINTS: list[tuple[str, tuple[str, ...]]] = [
-    ("vision", ("识图", "看图", "产品图", "vision", "image analysis", "analyze_image")),
-    ("media", ("生图", "改图", "视频", "image gen", "video", "grok_media", "文生图")),
+    ("vision", ("识图", "看图", "图片", "vision", "image analysis")),
+    ("media", ("生图", "改图", "视频", "image gen", "video", "文生图")),
     ("memory", ("记忆", "偏好", "remember", "memory", "recall")),
-    ("content", ("文案", "种草", "营销", "小红书", "多平台", "publisher", "copywriting")),
+    ("content", ("文案", "营销", "多平台", "copywriting")),
     ("workspace", ("工作区", "本地文件", "workspace", "读写文件")),
     (
         "network",
@@ -109,11 +86,10 @@ _GROUP_HINTS: list[tuple[str, tuple[str, ...]]] = [
     (
         "infra",
         (
-            "nas", "smb", "共享盘", "nocodb", "qb", "bt", "下载", "数据库", "qbit",
-            "prowlarr", "radarr", "sonarr", "索引器", "pt",
+            "主机", "ssh", "smb", "共享盘", "数据库",
         ),
     ),
-    ("dev", ("脚本", "pip", "热重载", "health", "模型列表", "debug", "运维", "run_py")),
+    ("dev", ("脚本", "pip", "热重载", "health", "模型列表", "debug", "运维")),
 ]
 
 
@@ -138,7 +114,7 @@ def infer_group(
                 return gid
     # name token heuristics
     n = (name or "").lower()
-    if any(x in n for x in ("nas", "smb", "qb", "nocodb", "torrent")):
+    if any(x in n for x in ("smb", "ssh", "host")):
         return "infra"
     if any(x in n for x in ("http", "api", "fetch", "crawl", "proxy")):
         return "network"
@@ -153,7 +129,13 @@ def infer_group(
     if any(x in n for x in ("memory", "pref")):
         return "memory"
     fb = (fallback or "other").strip().lower()
-    return fb if fb in VALID_GROUPS else "other"
+    try:
+        from app.tools.capability_groups import valid_ids
+
+        ids = valid_ids()
+    except Exception:
+        ids = set(VALID_GROUPS)
+    return fb if fb in ids else "other"
 
 
 def resolve_group(
@@ -161,50 +143,87 @@ def resolve_group(
     group: str | None = None,
     description: str = "",
     keywords: list[str] | None = None,
+    *,
+    infer: bool = False,
+    create: bool = False,
 ) -> str:
-    """Prefer explicit non-other group; otherwise infer."""
-    g = (group or "").strip().lower()
-    if g in VALID_GROUPS and g != "other":
-        return g
-    # known static tools
-    static_g = (TOOL_META.get(name) or {}).get("group")
-    if static_g and static_g in VALID_GROUPS and static_g != "other":
-        return str(static_g)
-    return infer_group(name, description, keywords, fallback=g or "other")
+    """Resolve a capability group id.
+
+    Default (infer=False): respect the stored/explicit group, including
+    ``other``. Empty group stays ``other`` and is NOT keyword-inferred.
+    create=True turns an unknown label into a new user group (Eva / UI).
+    """
+    try:
+        from app.tools.capability_groups import ensure_group, match_group, valid_ids
+    except Exception:
+        ensure_group = None  # type: ignore[assignment]
+        match_group = None  # type: ignore[assignment]
+        valid_ids = None  # type: ignore[assignment]
+
+    raw = (group or "").strip()
+    if raw:
+        found = match_group(raw) if match_group else None
+        if found:
+            return str(found["id"])
+        if create and ensure_group:
+            try:
+                created = ensure_group(raw)
+                return str(created.get("id") or "other")
+            except Exception:
+                logger.exception("ensure_group(%r) failed", raw)
+        ids = set()
+        try:
+            ids = valid_ids() if valid_ids else set(VALID_GROUPS)
+        except Exception:
+            ids = set(VALID_GROUPS)
+        low = raw.lower()
+        if low in ids:
+            return low
+        if _ID_LIKE.match(raw):
+            return low
+        return "other"
+
+    static_g = str((TOOL_META.get(name) or {}).get("group") or "").strip()
+    if static_g:
+        found = match_group(static_g) if match_group else None
+        if found:
+            return str(found["id"])
+        if static_g.lower() in VALID_GROUPS:
+            return static_g.lower()
+    if infer:
+        return infer_group(name, description, keywords, fallback="other")
+    return "other"
+
+
+_ID_LIKE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,39}$")
 
 # Already-decorated descriptions start with these markers
 _PREFIX_MARKERS = ("【主推", "【等价", "【后备", "【开发")
 
 # Human-readable Chinese labels for UI / chat chips.
 DISPLAY_NAMES: dict[str, str] = {
-    "analyze_image_auto": "产品识图",
-    "grok_media": "生图 / 视频",
     "memory": "长期记忆",
-    "kb": "知识库标准",
+    "kb": "知识库",
     "workflow": "工作流",
-    "product_multi_platform_publisher": "多平台文案",
     "workspace": "本地工作区",
-    "http": "网络请求",
-    "office": "办公文档",
     "scheduled_task": "定时任务",
-    "reminders": "旧提醒(勿用)",
-    "tasks": "定时任务",
-    "search_ai_news": "AI / 科技资讯",
-    "nas": "NAS / 共享盘",
-    "nocodb": "NocoDB 数据库",
-    "qb_manager": "qBittorrent 下载",
     "get_current_time": "当前时间",
     "calculator": "计算器",
     "system_info": "系统信息",
     "create_tool": "创建工具",
+    "capability_groups": "技能分类",
     "integrations": "集成配置",
-    "netops": "网络运维",
+    "llms": "对话模型",
     "read_skill": "查看 Skill 源码",
+    "list_skills": "列出 Skills",
+    "validate_skill": "校验 Skill",
+    "promote_skill": "发布 Skill 草稿",
     "delete_tool": "删除工具",
     "reload_runtime": "热重载运行时",
-    "run_py": "运行 Python / 装包",
-    "list_api_models": "列出 API 模型",
+    "list_api_models": "拉取远程 /models",
     "server_health_check": "服务器健康检查",
+    "terminal": "受控终端",
+    "document": "办公文档",
 }
 
 
@@ -238,18 +257,10 @@ def build_prefix(meta: dict[str, str]) -> str:
 
 # Extra Chinese/English scene phrases → tool name (soft match boost only)
 SCENE_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "analyze_image_auto": (
-        "识图", "分析图", "产品图", "看图", "图片分析", "vision", "product image",
-    ),
-    "grok_media": (
-        "生图", "改图", "图生视频", "生成视频", "生成图片", "文生图", "主图视频",
-        "image to video", "generate video", "generate image",
-    ),
     "memory": ("记住", "记一下", "长期记忆", "记忆面板", "remember", "recall", "偏好"),
     "kb": (
         "知识库", "wiki", "百科", "手册", "sop", "SOP", "建页", "wiki页",
-        "knowledge", "知识页", "流水线", "产品内容", "提示词标准", "错误规制",
-        "handbook", "reference", "作业流程", "标准页",
+        "knowledge", "知识页", "handbook", "reference", "作业流程", "标准页",
     ),
     "workflow": (
         "工作流",
@@ -264,31 +275,51 @@ SCENE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "删除流程",
         "删除工作流",
     ),
-    "office": ("excel", "pdf", "ppt", "word", "办公", "表格"),
-    "http": (
-        "请求", "接口", "http", "api", "爬", "抓网页", "网页", "url",
-        "代理", "proxy", "flaresolverr", "cloudflare", "fetch",
-    ),
     "workspace": (
         "工作区", "本地文件", "列目录", "读文件", "写文件", "删文件",
         "workspace", "重命名", "搜文件", "保存文件", "打开文件",
     ),
-    "nas": ("nas", "smb", "共享盘"),
-    "nocodb": ("nocodb", "数据库表"),
-    "qb_manager": ("qb", "bt", "下载", "种子", "qbittorrent"),
     "scheduled_task": (
-        "定时任务", "cron", "schedule", "排程", "每隔", "每天跑", "任务面板",
+        "定时任务", "定时", "cron", "schedule", "排程", "每隔", "每天跑",
+        "每三天", "任务面板", "提醒", "闹钟",
     ),
-    # reminders deprecated — do not boost
-    "search_ai_news": ("资讯", "新闻", "热点", "科技", "ai新闻", "tech news"),
-    "run_py": ("运行脚本", "跑python", "run py", "pip", "装包", "安装包"),
+    "get_current_time": (
+        "几点", "现在几点", "当前时间", "几点了", "现在时间", "what time", "date now",
+        "今天几号", "现在是",
+    ),
     "create_tool": ("创建工具", "新建工具", "create tool", "新 skill", "做成工具"),
-    "integrations": (
-        "集成", "连接配置", "凭证", "api key", "密码配置", "主机表",
-        "设定集成", "ssh配置", "保存主机", "integrations",
+    "capability_groups": (
+        "技能分类", "工具分类", "能力分组", "改分类", "新建分组", "分组",
     ),
-    "netops": (
-        "netops", "ping", "ssh", "端口扫描", "网段扫描", "运维", "tracert", "scp",
+    "integrations": (
+        "集成", "连接配置", "密码配置", "主机表",
+        "设定集成", "ssh", "ssh配置", "保存主机", "密钥", "账号密码",
+        "integrations",
+    ),
+    "llms": (
+        "llm", "大模型", "对话模型", "设定llm", "设定模型", "换模型", "默认模型",
+        "openai", "deepseek", "grok", "xai", "api key", "api_key", "base_url",
+    ),
+    "reload_runtime": (
+        "热重载", "重载运行时", "reload runtime", "刷新工具",
+        "重新加载技能", "重载配置",
+    ),
+    "list_api_models": (
+        "模型列表", "可用模型", "远程模型", "/models",
+        "中转站模型", "拉取模型", "供应商模型",
+    ),
+    "server_health_check": (
+        "健康检查", "服务器状态", "cpu占用", "内存占用",
+        "磁盘空间", "本机健康", "health check",
+    ),
+    "terminal": (
+        "终端", "命令行", "执行命令", "pip", "pip install", "npm",
+        "跑脚本", "安装依赖", "git clone", "cmd", "powershell",
+    ),
+    "document": (
+        "word", "excel", "ppt", "pdf", "markdown", "docx", "xlsx", "pptx",
+        "文档", "表格", "幻灯片", "读写excel", "编辑word", "做ppt", "看pdf",
+        "办公文档", "markdown文档",
     ),
 }
 
@@ -297,11 +328,12 @@ def _dynamic_path() -> Path:
     try:
         from app.config import get_settings
 
-        return Path(get_settings().data_dir) / "tool_meta_dynamic.json"
+        return get_settings().paths().tool_meta_dynamic
     except Exception:
         from app.config import PROJECT_ROOT
 
-        return PROJECT_ROOT / "data" / "tool_meta_dynamic.json"
+        # Fallback before settings fully bootstrapped
+        return PROJECT_ROOT / "data" / "tools" / "meta_dynamic.json"
 
 
 def load_dynamic_meta(*, force: bool = False) -> dict[str, dict[str, Any]]:
@@ -368,11 +400,15 @@ def upsert_dynamic_meta(
         s = str(k).strip()
         if s and s not in keywords:
             keywords.append(s)
+    existing = load_dynamic_meta().get(safe) or {}
+    g_in = (group or "").strip() or str(existing.get("group") or "")
     group_n = resolve_group(
         safe,
-        group,
+        g_in or "other",
         description_hint or "",
         keywords,
+        infer=False,
+        create=True,
     )
     tag_n = (tag or safe).strip()[:32]
     entry = {
@@ -434,7 +470,8 @@ def remove_dynamic_meta(name: str) -> bool:
 def meta_for(name: str) -> dict[str, Any]:
     """Static TOOL_META first, then dynamic create_tool entries.
 
-    Dynamic ``group=other`` does not wipe a better static/inferred group.
+    Stored ``group`` (including ``other``) is kept. Keyword inference is
+    not re-run on read, so Eva/user classification is not overwritten.
     """
     base = dict(TOOL_META.get(name) or {})
     dyn = load_dynamic_meta().get(name)
@@ -443,33 +480,35 @@ def meta_for(name: str) -> dict[str, Any]:
     if dyn:
         out = dict(base)
         dyn_clean = {k: v for k, v in dyn.items() if v is not None and v != ""}
-        # Prefer non-other group from static or re-resolve
-        dyn_g = str(dyn_clean.get("group") or "").lower()
-        base_g = str(out.get("group") or "").lower()
-        if dyn_g in ("", "other") and base_g and base_g != "other":
-            dyn_clean.pop("group", None)
         out.update(dyn_clean)
-        # Final group resolution
+        stored = str(out.get("group") or "").strip()
         out["group"] = resolve_group(
             name,
-            out.get("group"),
+            stored or None,
             str(out.get("description_hint") or out.get("tag") or ""),
             list(out.get("scene_keywords") or []),
+            infer=False,
         )
         if dyn_clean.get("dynamic") is not False:
-            # Only mark dynamic when entry originated from create_tool file
             out["dynamic"] = True
         return out
     if base:
-        if not base.get("group"):
-            base["group"] = resolve_group(name, None, str(base.get("tag") or ""), None)
+        stored = str(base.get("group") or "").strip()
+        base["group"] = resolve_group(
+            name,
+            stored or None,
+            str(base.get("tag") or ""),
+            None,
+            infer=False,
+        )
         return base
     return base
 
 
 def decorate_description(name: str, description: str | None) -> str:
     """Return description with routing prefix for LLM / catalog display."""
-    desc = (description or "").strip()
+    desc = description if isinstance(description, str) else str(description or "")
+    desc = desc.strip()
     if not desc:
         return desc
     if desc.startswith(_PREFIX_MARKERS):
@@ -483,21 +522,61 @@ def decorate_description(name: str, description: str | None) -> str:
     return f"{prefix}{desc}"
 
 
-def user_prompt_override(name: str, *, skill_id: str | None = None) -> str | None:
-    """Config-stored user edit of tool/skill prompt (no code change)."""
+def user_prompt_meta(name: str, *, skill_id: str | None = None) -> dict[str, Any] | None:
+    """Config-stored user edit (description / how_to_call / extra keywords).
+
+    When ``skill_id`` is omitted, returns the *tool* override only.
+    When given, tool fields overlay the skill-package override (non-empty wins;
+    keywords are unioned).
+    """
     try:
-        from app.config_store import get_config_store
+        from app.config_store import get_config_store, prompt_meta_active
 
         store = get_config_store()
-        o = store.get_tool_prompt_override(name)
-        if o:
-            return o
-        if skill_id:
-            return store.get_skill_prompt_override(skill_id)
-        # skill package often shares id with tool name
-        return store.get_skill_prompt_override(name)
+        tool_m = store.get_tool_prompt_meta(name)
+        if skill_id is None:
+            return tool_m
+        skill_m = store.get_skill_prompt_meta(skill_id) or store.get_skill_prompt_meta(
+            name
+        )
+        if not tool_m:
+            return skill_m
+        if not skill_m:
+            return tool_m
+        desc = str(tool_m.get("description") or "").strip() or str(
+            skill_m.get("description") or ""
+        ).strip()
+        how = str(tool_m.get("how_to_call") or "").strip() or str(
+            skill_m.get("how_to_call") or ""
+        ).strip()
+        kws: list[str] = []
+        for src in (skill_m.get("scene_keywords"), tool_m.get("scene_keywords")):
+            for k in src or []:
+                s = str(k).strip()
+                if s and s not in kws:
+                    kws.append(s)
+        merged = {
+            "description": desc,
+            "how_to_call": how,
+            "scene_keywords": kws,
+        }
+        return merged if prompt_meta_active(merged) else None
     except Exception:
         return None
+
+
+def user_prompt_override(name: str, *, skill_id: str | None = None) -> str | None:
+    """Config-stored user edit of tool/skill prompt (no code change)."""
+    meta = user_prompt_meta(name, skill_id=skill_id)
+    if not meta:
+        # skill_id omitted → still fall back to same-name skill description
+        # so existing tool-only lookups keep working.
+        if skill_id is None:
+            meta = user_prompt_meta(name, skill_id=name)
+        if not meta:
+            return None
+    text = str(meta.get("description") or "").strip()
+    return text or None
 
 
 def effective_description(
@@ -507,10 +586,16 @@ def effective_description(
     skill_id: str | None = None,
 ) -> str:
     """Description actually shown to the LLM / UI (override + routing prefix)."""
-    base = user_prompt_override(name, skill_id=skill_id)
-    if base is None:
-        base = (description or "").strip()
-    return decorate_description(name, base)
+    meta = user_prompt_meta(name, skill_id=skill_id)
+    if meta is None and skill_id is None:
+        meta = user_prompt_meta(name, skill_id=name)
+    desc_ovr = str((meta or {}).get("description") or "").strip()
+    base = desc_ovr or (description or "").strip()
+    out = decorate_description(name, base)
+    how = str((meta or {}).get("how_to_call") or "").strip()
+    if how and how not in out:
+        out = (out.rstrip() + f"\n用户可能这样喊：{how}").strip()
+    return out
 
 
 def tool_role(name: str) -> str:
@@ -529,7 +614,8 @@ def role_score_boost(name: str) -> int:
     }.get(role, 0)
 
 
-def _scene_phrases_for(name: str) -> tuple[str, ...]:
+def builtin_scene_keywords(name: str) -> tuple[str, ...]:
+    """Code + create_tool keywords (not user extras)."""
     static = list(SCENE_KEYWORDS.get(name) or ())
     dyn = load_dynamic_meta().get(name) or {}
     for k in dyn.get("scene_keywords") or []:
@@ -539,6 +625,24 @@ def _scene_phrases_for(name: str) -> tuple[str, ...]:
     tag = str(dyn.get("tag") or (TOOL_META.get(name) or {}).get("tag") or "").strip()
     if tag and tag not in static:
         static.append(tag)
+    return tuple(static)
+
+
+def _user_scene_keywords(name: str) -> list[str]:
+    meta = user_prompt_meta(name, skill_id=name) or {}
+    out: list[str] = []
+    for k in meta.get("scene_keywords") or []:
+        s = str(k).strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def _scene_phrases_for(name: str) -> tuple[str, ...]:
+    static = list(builtin_scene_keywords(name))
+    for s in _user_scene_keywords(name):
+        if s not in static:
+            static.append(s)
     return tuple(static)
 
 
@@ -560,53 +664,96 @@ DEFAULT_TOOL_TOP_N = 20
 MIN_CONFIDENT_MATCH_SCORE = 6
 
 
-def routing_instruction() -> str:
-    """Short system add-on: one primary tool per capability."""
+def routing_instruction_core() -> str:
+    """Always-on routing: persist + cores. Skill-dev rules are separate."""
     return (
         "TOOL ROUTING:\n"
-        "HARD RULES (must follow):\n"
-        "1. 通用 HTTP / API / 抓网页 / 代理 / Cloudflare：只能用 `http` "
-        "（use_proxy / use_flaresolverr）。禁止为此新建 skill。\n"
-        "2. 禁止为单次请求 create_tool；已有工具能完成则禁止创建。\n"
-        "3. create_tool 仅当用户明确要求「做成固定工具 / 新建 skill」且现有工具无法覆盖。\n"
-        "4. 本地文件：只能用 `workspace`（action=list|read|write|delete|find|rename|info）。"
-        "路径相对项目 workspace/ 根，勿加 workspace/ 前缀。\n"
-        "5. 识图 → analyze_image_auto；生图/视频 → grok_media；"
-        "办公文档 → office；资讯 → search_ai_news；跑脚本/pip → run_py。\n"
-        "6. 持久化智能分发（用户说记住/保存/别忘了时）：\n"
-        "  · 短偏好/习惯/规则/一句话事实 → memory remember\n"
-        "  · 库表/字段/清单/手册/SOP/长结构 → kb create_page|update_page|append|delete\n"
-        "  · 可重复多步骤自动化 → workflow create|update|delete\n"
-        "  · **主机/账号/密码/Token/API 地址/SSH 主机表 → integrations（禁止塞进 kb）**\n"
-        "  · 禁止一律只写 memory；禁止只口头「好的记住了」。\n"
-        "  产品图多轮：识图后按 kb「产品内容流水线SOP」(collection=sop) 推进；"
-        "摘要不全时 kb get 全文，禁止编造阶段步骤。\n"
-        "\n"
-        "能力地图（每类唯一入口）:\n"
-        "  · 产品识图 → analyze_image_auto\n"
-        "  · 生图/视频 → grok_media\n"
-        "  · 长期记忆 → memory；知识库标准(sop/product/handbook/reference) → kb；工作流 → workflow\n"
-        "  · **连接配置/密钥 → integrations**（设定→集成）\n"
-        "  · 通用 HTTP → http\n"
-        "  · 本地文件 → workspace\n"
-        "  · 办公文档 → office\n"
-        "  · 定时任务（设定→任务面板）→ scheduled_task；勿用已停用的 reminders\n"
-        "  · 资讯 → search_ai_news\n"
-        "  · NAS → nas；NocoDB → nocodb；BT下载 → qb_manager；网络运维 → netops\n"
-        "  · 跑脚本/装包 → run_py\n"
-        "- Soft Top-N may limit tools per turn; always-include cores stay available.\n"
-        "- create_tool / delete_tool 策略:\n"
-        "  · 不可动：builtin（workspace/memory/时间计算/create_tool…）与受保护系统 skill"
-        "（reload_runtime、list_api_models、server_health_check）。\n"
-        "  · 可 create/update/delete：其余业务 skill（http、office、nas、grok_media、netops 等）"
-        "及用户新建 skill。\n"
-        "  · 勿用 create_tool 包装 workspace/http 已覆盖的能力。\n"
-        "  · **凭证与主机表：create_tool 只写代码逻辑；配置用 integrations upsert**"
-        "（与 skill 同名或 catalog：nas/nocodb/qbittorrent/http/netops）。"
-        "代码内 from app.services.credentials 读取；禁止硬编码密钥，禁止把密钥写进 kb。\n"
-        "  · **修/改已有能力：必须 read_skill(主入口名) → create_tool(name=同一主入口, update=true)**；"
-        "禁止新建 nas_v2 / xxx_fixed / xxx_new 等等价 skill。\n"
-        "  · 新建时务必传 group（vision|media|network|infra|office|dev…），"
-        "description 含中文场景词；Python 优先写 async def handle + 让系统包 register，"
-        "或 register 内 registry.register 的名字必须与 create_tool 的 name 完全一致。\n"
+        "- Use only tools listed this turn. Cores always listed: "
+        "memory/kb/workspace/time. "
+        "If a scrape/http skill is installed, use that for URLs. "
+        "workflow / scheduled_task / integrations / llms / terminal / document / "
+        "reload_runtime / list_api_models / server_health_check appear when needed "
+        "(or the user says 全部工具). "
+        "CLI/pip/npm/scripts → terminal (workspace; long jobs action=bg). "
+        "Word/Excel/PPT/PDF/Markdown → document.\n"
+        "- Persist 记住/保存: short prefs→memory; long docs→kb; "
+        "automation→workflow; business tables→an installed data skill if any; "
+        "chat model keys→llms; business API secrets→integrations "
+        "(single fields or items table). Never only say 记住了.\n"
+        "- Local files: dirs/rename/txt/code/images → `workspace`; "
+        ".docx .xlsx .pptx .pdf → `document`; "
+        ".md either (short note→workspace, structured edit→document). "
+        "Paths relative to workspace/, no workspace/ prefix.\n"
+        "- Do not create_tool for a one-off if an existing tool can do it.\n"
+        "- Missing capability → spec card then create_tool; "
+        "don't invent 'no permission'."
     )
+
+
+def routing_instruction_skilldev() -> str:
+    """Injected only when create/read/list skill tools are unlocked this turn."""
+    return (
+        "SKILL LIFECYCLE:\n"
+        "- Protected: builtin + reload_runtime / list_api_models / server_health_check / terminal / document.\n"
+        "- Shell/pip/npm/scripts → terminal (cwd=workspace; long jobs action=bg). "
+        "Not a full admin shell.\n"
+        "- Office files → document; do not create_tool for docx/xlsx/pptx/pdf/md.\n"
+        "- Spec card first; vague 好/行/随便 is not confirmation.\n"
+        "- New skills default live and callable this turn; copy usage.tell_user.\n"
+        "- create_tool group: pick from capability_groups (id or 中文名). "
+        "Omit → 其它. Do not guess from keywords.\n"
+        "- Chat model creds → llms; business API → integrations "
+        "(single url/token, or items table for many rows); "
+        "never bake secrets into handler/kb.\n"
+        "- Fix existing: read_skill → restate → create_tool(name=same, update=true). "
+        "No _v2/_fixed names.\n"
+        "- Delete: restate name+purpose → delete_tool(confirm_name=same).\n"
+        "- Action-style skills: parameters.action.enum of every branch; "
+        "list/query/search include limit (default 50). Never register empty properties:{}.\n"
+        "- LAN APIs: app.services.skill_http.request + integration_config; "
+        "never spoof Host=localhost. "
+        "HTTP 502 → check 设定→集成; do not rewrite the skill or delete it."
+    )
+
+
+def routing_instruction(*, skilldev: bool = True) -> str:
+    """Short system add-on: one primary tool per capability."""
+    parts = [routing_instruction_core()]
+    if skilldev:
+        parts.append(routing_instruction_skilldev())
+    return "\n".join(parts)
+
+
+def llm_catalog_instruction() -> str:
+    """Compact 设定→LLM snapshot so the agent can pick a model without guessing."""
+    try:
+        from app.services.credentials import list_llms_public
+
+        items = list_llms_public()
+    except Exception:
+        items = []
+    if not items:
+        return (
+            "LLM CATALOG (设定→LLM): 目前没有已保存的对话模型。"
+            "用户若提供供应商 key/地址/模型名，必须用工具 llms action=upsert 写入设定→LLM，"
+            "禁止写入 integrations。"
+        )
+    lines = ["LLM CATALOG (设定→LLM) — 技能调模型用 llm_credentials(id)，不要问用户重复贴已保存的 key："]
+    for row in items[:12]:
+        flag = []
+        if row.get("is_default"):
+            flag.append("默认")
+        if not row.get("enabled", True):
+            flag.append("停用")
+        if not row.get("api_key_set"):
+            flag.append("无key")
+        tag = f" [{' '.join(flag)}]" if flag else ""
+        lines.append(
+            f"  · id={row.get('id')} name={row.get('name') or '-'} "
+            f"model={row.get('model') or '-'} provider={row.get('provider') or '-'}{tag}"
+        )
+    lines.append(
+        "新供应商凭据 → llms upsert；本机已保存 → llms list；"
+        "拉远程 /models → list_api_models（任意站点）或 llms action=models（已保存项）。"
+    )
+    return "\n".join(lines)

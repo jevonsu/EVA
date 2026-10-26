@@ -40,7 +40,9 @@ async def http_request(
     net = http_network_config()
 
     if use_flaresolverr:
-        fs_url = net.get("flaresolverr_url") or "http://127.0.0.1:8191/v1"
+        fs_url = (net.get("flaresolverr_url") or "").strip()
+        if not fs_url:
+            return {"ok": False, "error": "未配置 FlareSolverr（设定 → 集成 → HTTP 网络）"}
         payload: dict[str, Any] = {
             "cmd": "request.get" if method == "GET" else "request.post",
             "url": url,
@@ -51,7 +53,9 @@ async def http_request(
         if use_proxy and net.get("proxy_url"):
             payload["proxy"] = {"url": net["proxy_url"]}
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as client:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(90.0), trust_env=False
+            ) as client:
                 resp = await client.post(fs_url, json=payload)
                 data = resp.json()
             if data.get("status") != "ok" and data.get("solution", {}).get("status", 0) not in (
@@ -81,6 +85,7 @@ async def http_request(
     client_kwargs: dict[str, Any] = {
         "timeout": httpx.Timeout(timeout),
         "follow_redirects": True,
+        "trust_env": False,
     }
     # httpx 0.28+ uses `proxy=` single URL
     if proxy:

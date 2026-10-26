@@ -28,6 +28,9 @@ class WorkflowBody(BaseModel):
     version: str | None = None
     inputs: dict[str, Any] = Field(default_factory=dict)
     steps: list[dict[str, Any]] = Field(default_factory=list)
+    schedule: dict[str, Any] | None = None
+    default_session_id: str = ""
+    always_new_session: bool = False
     # full raw optional
     raw: dict[str, Any] | None = None
 
@@ -36,6 +39,8 @@ class WorkflowRunBody(BaseModel):
     inputs: dict[str, Any] = Field(default_factory=dict)
     trigger: str = "manual"
     background: bool = False
+    session_id: str | None = None
+    always_new_session: bool = False
 
 
 class WorkflowResumeBody(BaseModel):
@@ -59,6 +64,9 @@ def _definition_summary(data: dict[str, Any]) -> dict[str, Any]:
         "updated_at": data.get("updated_at") or "",
         "has_agent_steps": has_agent,
         "builtin": bool(data.get("builtin")),
+        "schedule": data.get("schedule") if isinstance(data.get("schedule"), dict) else {},
+        "default_session_id": str(data.get("default_session_id") or ""),
+        "always_new_session": bool(data.get("always_new_session")),
     }
 
 
@@ -188,15 +196,49 @@ async def upsert_workflow(body: WorkflowBody) -> dict[str, Any]:
             enabled=body.enabled,
             wf_id=body.id,
             version=body.version,
+            schedule=body.schedule,
+            default_session_id=body.default_session_id,
+            always_new_session=body.always_new_session,
         )
+    if body.schedule is not None or isinstance(data.get("schedule"), dict):
+        from app.scheduler.link import sync_workflow_schedule
+
+        try:
+            sched = await sync_workflow_schedule(
+                data, body.schedule if body.schedule is not None else data.get("schedule")
+            )
+            data["schedule"] = sched
+            data = await store.save_definition(
+                name=str(data.get("name") or body.name),
+                description=str(data.get("description") or ""),
+                steps=list(data.get("steps") or []),
+                inputs=dict(data.get("inputs") or {}),
+                enabled=bool(data.get("enabled", True)),
+                wf_id=str(data.get("id") or ""),
+                version=str(data.get("version") or "") or None,
+                schedule=sched,
+                default_session_id=str(data.get("default_session_id") or ""),
+                always_new_session=bool(data.get("always_new_session")),
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     return data
 
 
 @router.delete("/{wf_id}")
 async def delete_workflow(wf_id: str) -> dict[str, Any]:
-    result = await get_workflow_store().delete_definition(wf_id)
+    store = get_workflow_store()
+    existing = await store.get_definition(wf_id)
+    result = await store.delete_definition(wf_id)
     if not result.get("ok"):
         raise HTTPException(404, result.get("error") or "Workflow not found")
+    if existing:
+        from app.scheduler.link import unsync_workflow_schedule
+
+        try:
+            await unsync_workflow_schedule(str(existing.get("id") or wf_id))
+        except Exception:
+            logger.exception("unsync schedule after workflow delete")
     return result
 
 
@@ -211,8 +253,17 @@ async def run_workflow(wf_id: str, body: WorkflowRunBody | None = None) -> dict[
     inputs = body.inputs or {}
     trigger = body.trigger or "manual"
 
+    sid = (body.session_id or "").strip() or None
+    always_new = bool(body.always_new_session)
+
     if body.background:
-        prepared = await engine.prepare_run(wf_id, inputs=inputs, trigger=trigger)
+        prepared = await engine.prepare_run(
+            wf_id,
+            inputs=inputs,
+            trigger=trigger,
+            session_id=sid,
+            always_new_session=always_new,
+        )
         if not prepared.get("ok"):
             if prepared.get("run"):
                 return prepared
@@ -248,7 +299,13 @@ async def run_workflow(wf_id: str, body: WorkflowRunBody | None = None) -> dict[
             "message": "started in background; poll GET /api/workflows/runs/{id}",
         }
 
-    result = await engine.run(wf_id, inputs=inputs, trigger=trigger)
+    result = await engine.run(
+        wf_id,
+        inputs=inputs,
+        trigger=trigger,
+        session_id=sid,
+        always_new_session=always_new,
+    )
     if not result.get("ok") and not result.get("run"):
         raise HTTPException(400, result.get("error") or "run failed")
     return result

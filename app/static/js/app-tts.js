@@ -202,27 +202,42 @@
  return bestScore > 0 ? best : voices[0] || null;
  }
 
+ function _speakBtnIcon(btn, speakingNow) {
+ if (!btn) return;
+ const icon = speakingNow ? "stop" : "volume-notice";
+ const label = speakingNow ? "停止朗读" : "朗读";
+ btn.setAttribute("title", label);
+ btn.setAttribute("aria-label", label);
+ if (typeof L.ipk === "function") {
+ btn.innerHTML = L.ipk(icon, "ipk-sm") || label;
+ if (typeof L.hydrateIconPark === "function") {
+ try {
+ L.hydrateIconPark(btn);
+ } catch (_) {}
+ }
+ } else if (!btn.querySelector(".ipk")) {
+ btn.textContent = speakingNow ? "⏹" : "朗读";
+ }
+ }
+
  function setSpeakingUI(on, btn) {
  speaking = !!on;
  document.body.classList.toggle("tts-speaking", speaking);
  if (activeBtn && activeBtn !== btn) {
  activeBtn.classList.remove("speaking");
- activeBtn.textContent = activeBtn.dataset.labelIdle || "朗读";
+ _speakBtnIcon(activeBtn, false);
  }
  activeBtn = on ? btn || activeBtn : null;
  if (btn) {
  btn.classList.toggle("speaking", on);
- btn.textContent = on
- ? btn.dataset.labelStop || "⏹ 停止"
- : btn.dataset.labelIdle || "朗读";
+ _speakBtnIcon(btn, on);
  btn.setAttribute("aria-pressed", on ? "true" : "false");
  }
- // 同步其它朗读按钮
  document.querySelectorAll(".btn-speak").forEach((b) => {
  if (b === btn) return;
  if (!on) {
  b.classList.remove("speaking");
- b.textContent = b.dataset.labelIdle || "朗读";
+ _speakBtnIcon(b, false);
  b.setAttribute("aria-pressed", "false");
  }
  });
@@ -349,52 +364,63 @@
  const wrap = document.createElement("span");
  wrap.className = "speak-wrap";
 
- const sel = document.createElement("select");
- sel.className = "speak-lang";
- sel.title = "朗读语言";
- sel.setAttribute("aria-label", "朗读语言");
- [
+ const langs = [
  ["auto", "自动"],
  ["zh-CN", "普通话"],
  ["zh-HK", "粤语"],
  ["en-US", "English"],
- ].forEach(([v, label]) => {
- const o = document.createElement("option");
- o.value = v;
- o.textContent = label;
- sel.appendChild(o);
- });
+ ];
+ let lang = "auto";
  try {
  const saved = localStorage.getItem("lily_tts_lang");
- if (saved && [...sel.options].some((o) => o.value === saved)) {
- sel.value = saved;
- }
+ if (saved && langs.some(([v]) => v === saved)) lang = saved;
  } catch (_) {}
- sel.addEventListener("change", () => {
+
+ const langBtn = document.createElement("button");
+ langBtn.type = "button";
+ langBtn.className = "btn-speak-lang msg-icon-btn";
+ const syncLangTitle = () => {
+ const label = (langs.find(([v]) => v === lang) || langs[0])[1];
+ langBtn.title = "朗读语言：" + label;
+ langBtn.setAttribute("aria-label", "朗读语言：" + label);
+ };
+ syncLangTitle();
+ langBtn.innerHTML =
+ (typeof L.ipk === "function" ? L.ipk("voice", "ipk-sm") : "") || "文";
+ langBtn.addEventListener("click", (e) => {
+ e.stopPropagation();
+ const i = langs.findIndex(([v]) => v === lang);
+ lang = langs[(i + 1) % langs.length][0];
  try {
- localStorage.setItem("lily_tts_lang", sel.value);
+ localStorage.setItem("lily_tts_lang", lang);
  } catch (_) {}
+ syncLangTitle();
  });
- // 点击 select 不触发放开冒泡到消息
- sel.addEventListener("click", (e) => e.stopPropagation());
 
  const btn = document.createElement("button");
  btn.type = "button";
- btn.className = "btn-speak btn-copy";
+ btn.className = "btn-speak btn-copy msg-icon-btn";
  btn.dataset.labelIdle = "朗读";
- btn.dataset.labelStop = "⏹ 停止";
- btn.textContent = "朗读";
- btn.title = "朗读（可按语言分段）";
+ btn.dataset.labelStop = "停止朗读";
+ btn.title = "朗读";
+ btn.setAttribute("aria-label", "朗读");
  btn.setAttribute("aria-pressed", "false");
+ btn.innerHTML =
+ (typeof L.ipk === "function" ? L.ipk("volume-notice", "ipk-sm") : "") || "朗读";
  btn.addEventListener("click", (e) => {
  e.stopPropagation();
  const text = typeof getText === "function" ? getText() : "";
- speakText(text, { forceLang: sel.value || "auto", button: btn });
+ speakText(text, { forceLang: lang || "auto", button: btn });
  });
 
- wrap.appendChild(sel);
+ wrap.appendChild(langBtn);
  wrap.appendChild(btn);
  actionsEl.appendChild(wrap);
+ if (typeof L.hydrateIconPark === "function") {
+ try {
+ L.hydrateIconPark(wrap);
+ } catch (_) {}
+ }
  return wrap;
  }
 

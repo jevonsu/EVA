@@ -3,8 +3,8 @@
 <head>
  <meta charset="UTF-8" />
  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
- <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
- <meta name="theme-color" content="#0d1117" />
+ <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+ <meta name="theme-color" content="#171717" />
  <meta name="apple-mobile-web-app-capable" content="yes" />
  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
  <meta name="mobile-web-app-capable" content="yes" />
@@ -13,12 +13,13 @@
  <meta name="force-rendering" content="webkit" />
  <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
  <title>AI 助手</title>
- <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48' fill='none'%3E%3Crect x='9' y='18' width='30' height='24' rx='2' stroke='%233fb950' stroke-width='4'/%3E%3Ccircle cx='17' cy='26' r='2' fill='%233fb950'/%3E%3Ccircle cx='31' cy='26' r='2' fill='%233fb950'/%3E%3Cpath d='M24 10V18' stroke='%233fb950' stroke-width='4' stroke-linecap='round'/%3E%3Ccircle cx='24' cy='8' r='2' stroke='%233fb950' stroke-width='4'/%3E%3C/svg%3E" />
+ <link rel="icon" type="image/png" href="/static/logo.png" />
  <link rel="stylesheet" href="/static/css/base.css" />
  <link rel="stylesheet" href="/static/css/sidebar.css" />
  <link rel="stylesheet" href="/static/css/messages.css" />
  <link rel="stylesheet" href="/static/css/modals.css" />
  <link rel="stylesheet" href="/static/css/mobile.css" />
+ <link rel="stylesheet" href="/static/css/llama-theme.css" />
  <style>
  /* 先 100vh 再 100dvh：旧 WebView 不识别 dvh 时仍有可用高度，避免首屏 height 失效 */
  :root { --app-height: 100vh; }
@@ -30,7 +31,7 @@
   max-height: var(--app-height, 100vh);
   overflow: hidden;
  }
- .composer { position: sticky; bottom: 0; }
+ /* composer 位置由 messages.css / mobile.css 控制（主页 absolute / 对话 grid 底栏） */
  </style>
 </head>
 <body>
@@ -40,9 +41,9 @@
  <div class="app">
  <aside class="sidebar">
  <div class="brand">
- <div class="logo logo-ipk" data-ipk="robot-one" data-ipk-class="ipk-lg" aria-hidden="true"></div>
+ <div class="logo logo-img" aria-hidden="true"><img src="/static/logo.png" alt="" /></div>
  <div>
- <div class="brand-title" id="agentName">AgentOS</div>
+ <div class="brand-title" id="agentName">Eva</div>
  <div class="brand-sub" id="agentMeta">加载中…</div>
  </div>
  </div>
@@ -53,24 +54,28 @@
  <div class="quick-row">
  <button type="button" class="btn ghost-sm icon-inline" id="btnQuickTasks" title="打开任务"><span data-ipk="alarm-clock" data-ipk-class="ipk-xs"></span> 任务</button>
  <button type="button" class="btn ghost-sm icon-inline" id="btnQuickMemory" title="打开记忆"><span data-ipk="brain" data-ipk-class="ipk-xs"></span> 记忆</button>
+ <button type="button" class="btn ghost-sm icon-inline" id="btnQuickKb" title="打开知识库"><span data-ipk="book-open" data-ipk-class="ipk-xs"></span> 知识库</button>
+ <button type="button" class="btn ghost-sm icon-inline" id="btnQuickWorkspace" title="打开工作区"><span data-ipk="folder-open" data-ipk-class="ipk-xs"></span> 工作区</button>
  </div>
 
  <div class="section-label icon-inline"><span data-ipk="list" data-ipk-class="ipk-xs"></span> 对话纪录</div>
  <div class="session-search-wrap">
- <input type="search" id="sessionSearch" class="session-search" placeholder="搜索对话…" autocomplete="off" />
+ <input type="search" id="sessionSearch" class="session-search" placeholder="搜索标题或正文…" autocomplete="off" />
  </div>
  <div class="session-list" id="sessionList"></div>
 
  <div class="sidebar-footer">
- <a href="/docs" target="_blank" rel="noopener" class="icon-inline"><span data-ipk="book-open" data-ipk-class="ipk-xs"></span> API Docs</a>
- <a href="/health" target="_blank" rel="noopener" class="icon-inline"><span data-ipk="like" data-ipk-class="ipk-xs"></span> Health</a>
+ <div class="sidebar-brand-mark" title="Ruyi Studio">
+  <span class="sidebar-brand-label">Powered by</span>
+  <span class="sidebar-brand-name">Ruyi Studio</span>
+ </div>
  </div>
  </aside>
 
  <main class="main">
  <header class="topbar">
  <div class="topbar-left">
- <button type="button" class="btn icon-btn" id="btnMenu" title="菜单" aria-label="菜单"><span data-ipk="hamburger-button" data-ipk-class="ipk-md"></span></button>
+ <button type="button" class="btn icon-btn" id="btnMenu" title="菜单" aria-label="菜单" aria-expanded="true" aria-controls="sessionList"><span data-ipk="hamburger-button" data-ipk-class="ipk-md"></span></button>
  <div>
  <h1 id="chatTitle" class="icon-inline"><span data-ipk="comment" data-ipk-class="ipk-sm"></span> <span id="chatTitleText">新对话</span></h1>
  <p class="hint" id="sessionHint">输入消息开始对话</p>
@@ -80,8 +85,8 @@
  <!-- 工具 / 记忆默认开启，界面不展示开关；保留隐藏 checkbox 供逻辑读取 -->
  <input type="checkbox" id="useTools" class="sr-only" checked tabindex="-1" aria-hidden="true" />
  <input type="checkbox" id="useMemory" class="sr-only" checked tabindex="-1" aria-hidden="true" />
- <span class="hint-chip top-hint-chip" id="voiceHint" title="连续听写：点一次开始、再点停止。识别语言跟随设定→人设→语言（粤语/普通话/英语；「跟随用户」时才自动切换）。建议 Chrome/Edge">语音：待机</span>
- <span class="hint-chip top-hint-chip" id="modeHint" title="默认开启工具=可调用技能（完整模式）；关闭工具=流式回复。可在设定中调整相关能力。">模式：工具开启 · 完整回复</span>
+ <span class="hint-chip top-hint-chip is-idle" id="voiceHint" hidden title="连续听写：点一次开始、再点停止。识别语言跟随设定→人设→语言（粤语/普通话/英语；「跟随用户」时才自动切换）。建议 Chrome/Edge">语音：待机</span>
+ <button type="button" class="hint-chip top-hint-chip mode-chip" id="modeHint" title="点一下切换：工具开启=可调用技能（完整回复）；关闭=流式回复。">模式：工具开启 · 完整回复</button>
  </div>
  </header>
 
@@ -91,6 +96,18 @@
  </div>
 
  <footer class="composer" id="composer">
+ <!-- 空会话：产品名；左上角才是用户给 Agent 的名字。没模型时引导去添加 -->
+ <div class="home-hero-head" id="homeHeroHead" hidden>
+  <h2 class="home-hero-title" id="homeHeroTitle">EVA System OS</h2>
+  <p class="home-hero-sub" id="homeHeroSub">有什么可以帮你的？</p>
+ </div>
+ <div class="home-setup hidden" id="homeSetup">
+  <p class="home-setup-title">还没有对话模型</p>
+  <p class="home-setup-hint">先添加一个本地或云端模型，才能开始聊天。</p>
+  <button type="button" class="btn primary icon-inline" id="btnHomeAddLlm">
+   <span data-ipk="lightning" data-ipk-class="ipk-xs"></span> 添加模型
+  </button>
+ </div>
  <div class="attach-bar hidden" id="attachBar" aria-live="polite">
  <div class="attach-list" id="attachList"></div>
  </div>
@@ -117,21 +134,36 @@
  id="input"
  rows="1"
  placeholder="有什么可以帮你的？"
- autofocus
+ enterkeyhint="send"
+ autocomplete="off"
+ autocapitalize="sentences"
+ autocorrect="on"
+ spellcheck="true"
  ></textarea>
  <div class="composer-toolbar" role="toolbar" aria-label="输入工具">
  <div class="composer-toolbar-left">
- <button type="button" class="btn composer-icon-btn" id="btnAttach" title="上传或选用已有文件" aria-label="附件"><span class="ci" data-ipk="paperclip" data-ipk-class="ipk-sm"></span></button>
- <div class="voice-group" id="voiceGroup">
- <button type="button" class="btn composer-icon-btn" id="btnVoice" title="语音输入（跟随人设语言：粤语/普通话/英语）" aria-label="语音输入" aria-pressed="false"><span class="ci ci-mic" data-ipk="voice" data-ipk-class="ipk-sm"></span></button>
- <label class="voice-meet-wrap" title="会议模式：连续听写、按句加时间戳，适合会议记录">
+ <div class="composer-plus-wrap" id="composerPlusWrap">
+ <button type="button" class="btn composer-icon-btn" id="btnComposerPlus" title="添加" aria-label="添加" aria-haspopup="menu" aria-expanded="false" aria-controls="composerPlusMenu"><span class="ci" data-ipk="plus" data-ipk-class="ipk-sm"></span></button>
+ <div class="composer-plus-menu hidden" id="composerPlusMenu" role="menu">
+ <button type="button" class="composer-plus-item" id="btnAttach" role="menuitem" title="上传或选用已有文件"><span data-ipk="paperclip" data-ipk-class="ipk-sm"></span><span>附件</span></button>
+ <button type="button" class="composer-plus-item" id="btnVoice" role="menuitem" title="语音输入（跟随人设语言：粤语/普通话/英语）" aria-label="语音输入" aria-pressed="false"><span class="ci ci-mic" data-ipk="voice" data-ipk-class="ipk-sm"></span><span id="btnVoiceLabel">语音输入</span></button>
+ <label class="composer-plus-item voice-meet-wrap" title="会议模式：连续听写、按句加时间戳，适合会议记录">
+ <span data-ipk="people" data-ipk-class="ipk-sm"></span>
+ <span class="voice-meet-label">会议模式</span>
  <input type="checkbox" id="voiceMeeting" />
- <span class="voice-meet-label">会议</span>
  </label>
  </div>
  </div>
+ </div>
  <div class="composer-toolbar-right">
- <button type="button" class="btn primary btn-send" id="btnSend" title="发送（Enter）" aria-label="发送"><span class="ci ci-send" data-ipk="send" data-ipk-class="ipk-sm"></span><span class="btn-send-label sr-only">发送</span>
+ <button type="button" class="btn primary btn-send is-empty" id="btnSend" title="发送（Enter）" aria-label="发送">
+  <span class="btn-send-face btn-send-face--go" aria-hidden="true">
+   <span class="ci ci-send" data-ipk="send" data-ipk-class="ipk-sm"></span>
+  </span>
+  <span class="btn-send-face btn-send-face--stop" aria-hidden="true">
+   <span class="btn-send-stop-sq"></span>
+  </span>
+  <span class="btn-send-label sr-only">发送</span>
  </button>
  </div>
  </div>
@@ -140,6 +172,8 @@
  <div class="status" id="status"></div>
  </div>
  </div>
+ <!-- 空会话快捷建议（居中模式挂在输入框下方） -->
+ <div class="home-hero-chips hidden" id="homeHeroChips" aria-label="快速开始"></div>
  <div class="drop-overlay hidden" id="dropOverlay" aria-hidden="true">
  <div class="drop-overlay-inner">松开以上传到 workspace</div>
  </div>
@@ -184,13 +218,6 @@
  })();
  </script>
 
- <!-- Anime.js v4 (local UMD) — empty-state only; missing file must not break app -->
- <!-- 部署时请确保 app/static/vendor/anime.umd.min.js 一并拷贝；加载失败会静默回退静态 UI -->
- <script
-  defer
-  src="/static/vendor/anime.umd.min.js"
-  onerror="console.warn('[AgentOS] anime.umd.min.js failed to load — empty-state animations disabled'); window.anime=null;"
- ></script>
  <script defer src="/static/js/icons.js"></script>
  <script defer src="/static/js/app-core.js"></script>
  <script defer src="/static/js/app-render.js"></script>
@@ -199,6 +226,7 @@
  <script defer src="/static/js/app-voice.js"></script>
  <script defer src="/static/js/app-tts.js"></script>
  <script defer src="/static/js/app-panels.js"></script>
+ <script defer src="/static/js/app-workspace.js"></script>
  <script defer src="/static/js/app-config.js"></script>
  <script defer src="/static/js/app-init.js"></script>
 </body>

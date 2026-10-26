@@ -157,18 +157,27 @@ class ChatRunManager:
         use_tools: bool = True,
         use_memory: bool = True,
         model: str | None = None,
+        session_title: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from app.agent.core import get_agent
 
+        from app.memory.session import suggest_session_title
+
         agent = get_agent()
+        title = (
+            (session_title or "").strip()
+            or suggest_session_title(message)
+            or "对话"
+        )[:80]
         # Ensure session exists up front so client can switch and still find it
         if session_id:
             session = await agent.sessions.get(session_id)
             if session is None:
-                session = await agent.sessions.create(title=message[:60])
+                session = await agent.sessions.create(title=title)
                 session_id = session["session_id"]
         else:
-            session = await agent.sessions.create(title=message[:60])
+            session = await agent.sessions.create(title=title)
             session_id = session["session_id"]
 
         # One active run per session: cancel previous
@@ -185,6 +194,7 @@ class ChatRunManager:
             "use_tools": use_tools,
             "use_memory": use_memory,
             "model": model,
+            "metadata": dict(metadata or {}),
             "error": None,
             "result": None,
             "started_at": _now(),
@@ -197,7 +207,9 @@ class ChatRunManager:
         self._gc_finished()
 
         task = asyncio.create_task(
-            self._execute(run_id, message, session_id, use_tools, use_memory, model),
+            self._execute(
+                run_id, message, session_id, use_tools, use_memory, model, metadata
+            ),
             name=f"chat-run-{run_id[:8]}",
         )
         run["_task"] = task
@@ -214,6 +226,7 @@ class ChatRunManager:
         use_tools: bool,
         use_memory: bool,
         model: str | None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         from app.agent.core import get_agent
 
@@ -245,6 +258,10 @@ class ChatRunManager:
                     use_tools=use_tools,
                     use_memory=use_memory,
                     model=model,
+                    allow_deputy=True,
+                    use_deputy=bool((metadata or {}).get("use_deputy")),
+                    skip_deputy=bool((metadata or {}).get("skip_deputy")),
+                    form_reply=(metadata or {}).get("form_reply"),
                 )
             )
             while not chat_task.done():
@@ -264,12 +281,34 @@ class ChatRunManager:
                     {
                         "id": t.id,
                         "name": t.name,
-                        "arguments": t.arguments,
-                        "result": t.result,
+                        "arguments": (
+                            {
+                                k: (
+                                    v
+                                    if not isinstance(v, str) or len(v) <= 80
+                                    else v[:80] + "…"
+                                )
+                                for k, v in (t.arguments or {}).items()
+                            }
+                            if isinstance(t.arguments, dict)
+                            else {}
+                        ),
+                        "result": (
+                            (t.result or "")[:200]
+                            if not str(t.result or "").lstrip().startswith(
+                                ("def ", "import ", "from ", "async def")
+                            )
+                            else "ok（源码已省略）"
+                        ),
                     }
                     for t in (result.tool_calls or [])
                 ],
                 "usage": result.usage,
+                "ask_deputy": bool(getattr(result, "ask_deputy", False)),
+                "used_deputy": bool(getattr(result, "used_deputy", False)),
+                "llm_name": getattr(result, "llm_name", None),
+                "deputy_reason": getattr(result, "deputy_reason", None),
+                "form": getattr(result, "form", None),
             }
             run["status"] = "completed"
             run["result"] = result_data

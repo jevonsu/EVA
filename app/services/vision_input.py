@@ -33,6 +33,16 @@ def main_llm_supports_vision(
     return looks_like_vision_model(model or "", base_url=base_url or "", name=name or "")
 
 
+def vision_skill_tool_name(tools: Any = None) -> str:
+    """Installed vision-group skill tool name. Empty = none loaded."""
+    try:
+        from app.tools.lookup import first_in_group
+
+        return first_in_group("vision")
+    except Exception:
+        return ""
+
+
 def extract_image_paths_from_message(text: str, *, max_paths: int = 6) -> list[str]:
     """Collect workspace-relative image paths mentioned in a user message."""
     if not text:

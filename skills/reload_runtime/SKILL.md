@@ -1,3 +1,11 @@
-# Reload Runtime
+# 热重载运行时
 
-Reload all tools, skills, MCP, and LLM from disk. Call after manually modifying handler.py files. No parameters needed.
+系统技能。从磁盘重新加载工具、技能、MCP 与 LLM。
+
+**怎么喊：** 热重载、重载运行时、刷新工具。
+
+**何时用：** 手动改过 `handler.py`、导入了技能包、或刚改完设定，需要立刻生效、又不想重启进程。
+
+**不要用：** 日常对话、改代码后的完整重启（改的是 `app/` 源码时仍须重启进程）。
+
+无需参数。改 `app/` 源码仍须重启进程。受保护，不能卸载或 `create_tool` 覆盖。

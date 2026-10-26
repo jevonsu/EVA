@@ -1,6 +1,6 @@
 """Persistent multi-endpoint webhook configuration.
 
-Stored at ``data/webhooks.json``::
+Stored at ``data/webhooks/endpoints.json`` (legacy: ``data/webhooks.json``)::
 
     {
       "endpoints": [
@@ -95,7 +95,7 @@ def public_endpoint(row: dict[str, Any]) -> dict[str, Any]:
 class WebhookStore:
     def __init__(self, path: Path | None = None) -> None:
         settings = get_settings()
-        self.path = path or (settings.data_dir / "webhooks.json")
+        self.path = path or settings.paths().webhooks_endpoints
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._data: dict[str, Any] = {"endpoints": []}

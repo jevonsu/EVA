@@ -41,12 +41,28 @@ logger = logging.getLogger(__name__)
 
 
 def skills_root() -> Path:
-    return Path(__file__).resolve().parents[2] / "skills"
+    from app.config import PROJECT_ROOT, RESOURCE_ROOT
+
+    # Writable sidecar next to the exe wins so a portable 开发包 can edit skills.
+    live = Path(PROJECT_ROOT) / "skills"
+    if live.is_dir():
+        return live
+    bundled = Path(RESOURCE_ROOT) / "skills"
+    if bundled.is_dir():
+        return bundled
+    live.mkdir(parents=True, exist_ok=True)
+    return live
 
 
 def scan_skills() -> list[dict[str, Any]]:
     root = skills_root()
-    root.mkdir(parents=True, exist_ok=True)
+    try:
+        from app.config import PROJECT_ROOT
+
+        if root.resolve() == (Path(PROJECT_ROOT) / "skills").resolve():
+            root.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
     disabled = get_config_store().disabled_skills()
     results: list[dict[str, Any]] = []
 
@@ -66,6 +82,7 @@ def scan_skills() -> list[dict[str, Any]]:
             "has_skill_md": (path / "SKILL.md").exists(),
             "tool_count": 0,
             "tools": [],
+            "protected": False,
         }
         if manifest_path.exists():
             try:
@@ -79,7 +96,13 @@ def scan_skills() -> list[dict[str, Any]]:
                 info["tool_count"] = len(tools)
                 info["enabled"] = info["id"] not in disabled and skill_id not in disabled
                 if isinstance(data.get("agentos_meta"), dict):
-                    info["metadata"] = dict(data["agentos_meta"])
+                    meta = dict(data["agentos_meta"])
+                    info["metadata"] = meta
+                    spec = meta.get("spec") if isinstance(meta.get("spec"), dict) else {}
+                    info["how_to_call"] = (
+                        str(meta.get("how_to_call") or spec.get("trigger") or "").strip()
+                    )
+                    info["spec"] = spec
             except Exception as exc:
                 info["description"] = f"Invalid manifest: {exc}"
         elif (path / "SKILL.md").exists():
@@ -100,18 +123,49 @@ def scan_skills() -> list[dict[str, Any]]:
             # Prefer Chinese label over English Title Case from create_tool
             if label and label != sid.replace("_", " ").title():
                 info["name"] = label
-            # User prompt override for package description
+            # User prompt override for package description / trigger
             try:
+                from app.config_store import prompt_meta_active
+                from app.tools.tool_meta import builtin_scene_keywords
+
                 base_desc = (info.get("description") or "").strip()
-                ovr = get_config_store().get_skill_prompt_override(sid)
+                base_how = str(info.get("how_to_call") or "").strip()
+                base_kws = list(builtin_scene_keywords(sid))
+                for k in (info.get("metadata") or {}).get("scene_keywords") or []:
+                    s = str(k).strip()
+                    if s and s not in base_kws:
+                        base_kws.append(s)
+                store = get_config_store()
+                meta = store.get_skill_prompt_meta(sid) or {}
+                desc_ovr = str(meta.get("description") or "").strip()
+                how_ovr = str(meta.get("how_to_call") or "").strip()
+                kw_ovr = list(meta.get("scene_keywords") or [])
                 info["base_description"] = base_desc
-                info["prompt_override"] = ovr or ""
-                info["has_prompt_override"] = bool(ovr)
-                if ovr:
-                    info["description"] = ovr
+                info["base_how_to_call"] = base_how
+                info["base_scene_keywords"] = base_kws
+                info["prompt_override"] = desc_ovr
+                info["prompt_meta"] = {
+                    "description": desc_ovr,
+                    "how_to_call": how_ovr,
+                    "scene_keywords": kw_ovr,
+                }
+                info["has_prompt_override"] = prompt_meta_active(meta)
+                if desc_ovr:
+                    info["description"] = desc_ovr
+                if how_ovr:
+                    info["how_to_call"] = how_ovr
+                info["scene_keywords"] = kw_ovr
             except Exception:
                 info.setdefault("base_description", info.get("description") or "")
+                info.setdefault("base_how_to_call", info.get("how_to_call") or "")
+                info.setdefault("base_scene_keywords", [])
+                info.setdefault("prompt_meta", {
+                    "description": "",
+                    "how_to_call": "",
+                    "scene_keywords": [],
+                })
                 info.setdefault("has_prompt_override", False)
+                info.setdefault("scene_keywords", [])
         except Exception:
             info.setdefault("display_name", info.get("name") or skill_id)
 
@@ -121,12 +175,27 @@ def scan_skills() -> list[dict[str, Any]]:
 
             imap = skill_to_integration()
             sid = str(info.get("id") or skill_id)
-            iid = imap.get(sid) or imap.get(skill_id)
+            iid = (
+                (info.get("spec") or {}).get("integration_id")
+                or ((info.get("metadata") or {}).get("integration_id"))
+                or imap.get(sid)
+                or imap.get(skill_id)
+            )
             if iid:
                 info["integration_id"] = iid
                 try:
+                    from app.services.integrations_meta import OPTIONAL_INTEGRATIONS
+
                     pub = get_config_store().get_integration_public(iid)
-                    info["integration_status"] = (pub or {}).get("status") or "empty"
+                    st = str((pub or {}).get("status") or "empty")
+                    if iid in OPTIONAL_INTEGRATIONS and st in (
+                        "",
+                        "empty",
+                        "missing",
+                        "unknown",
+                    ):
+                        st = "ready"
+                    info["integration_status"] = st
                     info["integration_name"] = (pub or {}).get("name") or iid
                 except Exception:
                     info["integration_status"] = "unknown"
@@ -134,6 +203,14 @@ def scan_skills() -> list[dict[str, Any]]:
         except Exception:
             pass
 
+        try:
+            from app.tools.protection import is_protected_skill
+
+            info["protected"] = is_protected_skill(skill_id) or is_protected_skill(
+                str(info.get("id") or "")
+            )
+        except Exception:
+            info["protected"] = False
         results.append(info)
     return results
 
@@ -192,34 +269,40 @@ def register_skills(
         handler_py = path / "handler.py"
         if handler_py.exists():
             try:
+                from app.services.skill_lifecycle import load_handler_module
+
                 mod_name = f"skills_{path.name}_handler"
-                spec = importlib.util.spec_from_file_location(mod_name, handler_py)
-                if spec and spec.loader:
-                    mod = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(mod)
-                    if hasattr(mod, "register") and callable(mod.register):
-                        before = {t.name for t in registry.list_tools()}
-                        mod.register(registry)
-                        # Force source="skill" + skill_id on newly registered tools
-                        for t in registry.list_tools():
-                            if t.name not in before:
-                                t.source = "skill"
-                                md = dict(t.metadata or {})
-                                md.setdefault("skill_id", skill_id)
-                                t.metadata = md
-                        count += len({t.name for t in registry.list_tools()} - before)
-                    elif hasattr(mod, "TOOLS"):
-                        for tool_def in getattr(mod, "TOOLS") or []:
-                            # expected dict with name, description, handler, parameters
-                            registry.register(
-                                tool_def["name"],
-                                tool_def.get("description", ""),
-                                tool_def["handler"],
-                                tool_def.get("parameters"),
-                                source="skill",
-                                metadata={"skill_id": skill_id},
+                mod, load_err = load_handler_module(handler_py, mod_name)
+                if load_err:
+                    raise RuntimeError(load_err)
+                if hasattr(mod, "register") and callable(mod.register):
+                    before = {t.name for t in registry.list_tools()}
+                    mod.register(registry)
+                    for t in registry.list_tools():
+                        if t.name not in before:
+                            t.source = "skill"
+                            md = dict(t.metadata or {})
+                            md.setdefault("skill_id", skill_id)
+                            how = (
+                                skill.get("base_how_to_call")
+                                or skill.get("how_to_call")
+                                or ""
                             )
-                            count += 1
+                            if how and not md.get("how_to_call"):
+                                md["how_to_call"] = how
+                            t.metadata = md
+                    count += len({t.name for t in registry.list_tools()} - before)
+                elif hasattr(mod, "TOOLS"):
+                    for tool_def in getattr(mod, "TOOLS") or []:
+                        registry.register(
+                            tool_def["name"],
+                            tool_def.get("description", ""),
+                            tool_def["handler"],
+                            tool_def.get("parameters"),
+                            source="skill",
+                            metadata={"skill_id": skill_id},
+                        )
+                        count += 1
             except Exception as _skill_err:
                 logger.exception(
                     "Failed loading skill handler: %s - %s", path, _skill_err

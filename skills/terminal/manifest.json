@@ -1,0 +1,26 @@
+{
+  "id": "terminal",
+  "name": "受控终端",
+  "description": "在 workspace 或 Eva 目录执行本机命令。装库/克隆用 bg；pip/python 走 .venv。不能当任意管理员 shell。",
+  "version": "1.0.0",
+  "tools": [],
+  "agentos_meta": {
+    "role": "primary",
+    "tag": "终端",
+    "group": "dev",
+    "how_to_call": "执行命令 / pip 安装 / 跑脚本 / 后台任务",
+    "scene_keywords": [
+      "终端",
+      "命令行",
+      "执行命令",
+      "pip",
+      "pip install",
+      "npm",
+      "跑脚本",
+      "安装依赖",
+      "git clone",
+      "cmd",
+      "powershell"
+    ]
+  }
+}

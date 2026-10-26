@@ -10,6 +10,8 @@
  const setMsg = (...a) => L.setMsg(...a);
  const setStatus = (...a) => L.setStatus(...a);
  const setSidebarOpen = (...a) => L.setSidebarOpen(...a);
+ const isSidebarOpen = (...a) => L.isSidebarOpen(...a);
+ const closeMobileSidebar = (...a) => L.closeMobileSidebar(...a);
  const nearBottom = (...a) => L.nearBottom(...a);
  const scrollMessages = (...a) => L.scrollMessages(...a);
  const autoResize = (...a) => L.autoResize(...a);
@@ -30,17 +32,17 @@
  function updateModeHint() {
  const chip = $("modeHint");
  if (!chip) return;
- // 工具/记忆默认开启且界面不展示开关；仍按隐藏 checkbox 状态刷新文案
  const toolsOn = !els.useTools || els.useTools.checked;
  const narrow =
   typeof window.matchMedia === "function" &&
   window.matchMedia("(max-width: 640px)").matches;
+ chip.setAttribute("aria-pressed", toolsOn ? "true" : "false");
  if (toolsOn) {
  chip.textContent = narrow ? "工具开" : "模式：工具开启 · 完整回复";
- chip.title = "默认可调用技能/工具；回复为完整模式（含进度日志）";
+ chip.title = "点一下关闭工具，改为流式回复";
  } else {
  chip.textContent = narrow ? "流式" : "模式：工具关闭 · 流式回复";
- chip.title = "关闭工具时使用流式输出，响应更快";
+ chip.title = "点一下开启工具，可调用技能（完整回复）";
  }
  }
 
@@ -53,7 +55,7 @@
 
  // ==================== Tabs / memory / tasks 事件绑定 ====================
  // config-modal.html 是异步注入的：本机 LAN 快时常在 init 前就就绪，
- // 远程/跨机访问（如 10.11.11.x）时 fetch 更慢，querySelector 绑定时 DOM 还不存在。
+ // 远程/跨机访问时 fetch 更慢，querySelector 绑定时 DOM 还不存在。
  // 统一用 document 事件委托，注入后再点也能响应。
  const onMemSearch = debounce(() => {
   loadMemory($("memSearch")?.value?.trim() || "");
@@ -69,11 +71,7 @@
        language: $("cfgLanguage")?.value || "跟随用户",
        language_style: L.getMsSelection?.("language_style") || [],
        background: $("cfgBackground")?.value || "",
-       decision_tree: $("cfgDecisionTree")?.value || "",
-       language_calibrator: $("cfgLanguageCalibrator")?.value || "",
-       sop: $("cfgSop")?.value || "",
-       hard_boundaries: $("cfgHardBoundaries")?.value || "",
-       greeting: $("cfgGreeting")?.value || "",
+
        max_tool_rounds: parseInt($("cfgMaxRounds")?.value, 10) || 8,
        max_history_messages: parseInt($("cfgMaxHistory")?.value, 10) || 40,
        evolution_enabled: ($("cfgEvoEnabled")?.value || "1") !== "0",
@@ -121,6 +119,7 @@
     if (typeof L.refreshVoiceLangFromPersona === "function") {
      L.refreshVoiceLangFromPersona();
     }
+    if (typeof L.refreshHomeHero === "function") L.refreshHomeHero();
    } catch (_) {}
    loadHealth();
   } catch (e) {
@@ -133,11 +132,25 @@
   const t = e.target;
   if (!(t instanceof Element)) return;
 
+  const groupBtn = t.closest("#configGroups .cfg-group[data-group]");
+  if (groupBtn) {
+   const g = groupBtn.dataset.group;
+   if (g && typeof L.switchConfigGroup === "function") L.switchConfigGroup(g);
+   else if (g) switchTab(g === "capability" ? "skills" : g === "system" ? "mcp" : "agent");
+   return;
+  }
+
   // 设定顶栏选项卡（#configTabs 内 .tab[data-tab]）
   const tabBtn = t.closest("#configTabs .tab[data-tab], #configModal .tabs .tab[data-tab]");
   if (tabBtn) {
    const name = tabBtn.dataset.tab;
    if (name) switchTab(name);
+   return;
+  }
+
+  if (t.id === "btnHomeAddLlm" || t.closest("#btnHomeAddLlm")) {
+   e.preventDefault();
+   if (typeof L.goAddLlm === "function") L.goAddLlm();
    return;
   }
 
@@ -169,13 +182,34 @@
  });
 
  // ==================== Sidebar / quick / 移动端手势 ====================
+ if (typeof L.initSidebarLayout === "function") L.initSidebarLayout();
  $("btnMenu")?.addEventListener("click", () => {
- setSidebarOpen(!document.body.classList.contains("sidebar-open"));
+  setSidebarOpen(!isSidebarOpen());
  });
  $("sidebarScrim")?.addEventListener("click", () => setSidebarOpen(false));
 
- $("btnQuickTasks")?.addEventListener("click", () => openConfig("tasks"));
- $("btnQuickMemory")?.addEventListener("click", () => openConfig("memory"));
+ $("btnQuickTasks")?.addEventListener("click", () => {
+  openConfig("tasks");
+  closeMobileSidebar();
+ });
+ $("btnQuickMemory")?.addEventListener("click", () => {
+  openConfig("memory");
+  closeMobileSidebar();
+ });
+ $("btnQuickKb")?.addEventListener("click", () => {
+  openConfig("kb");
+  closeMobileSidebar();
+ });
+ $("btnQuickWorkspace")?.addEventListener("click", () => {
+  openConfig("workspace");
+  closeMobileSidebar();
+ });
+ $("modeHint")?.addEventListener("click", () => {
+  if (!els.useTools) return;
+  els.useTools.checked = !els.useTools.checked;
+  els.useTools.dispatchEvent(new Event("change", { bubbles: true }));
+ });
+
 
  let touchStartX = 0;
  let touchStartY = 0;
@@ -235,13 +269,32 @@
  root.style.setProperty("--app-height", `${Math.round(height)}px`);
  if (vv) {
  root.style.setProperty("--vv-offset", `${Math.round(vv.offsetTop || 0)}px`);
- // 键盘弹出：可视高度明显小于布局高度
- const full = window.innerHeight || height;
- const open = height < full - 120;
+ root.style.setProperty("--vv-top", `${Math.round(vv.offsetTop || 0)}px`);
+ // 键盘弹出：可视高度明显小于布局高度（短屏阈值更低）
+ const full = Math.max(window.innerHeight || 0, screen?.height || 0, height);
+ const threshold = full < 700 ? 80 : 120;
+ const open = height < full - threshold;
  document.body.classList.toggle("kb-open", open);
  } else {
  document.body.classList.remove("kb-open");
  }
+ }
+
+ function ensureComposerVisible() {
+  const composer = document.querySelector(".composer");
+  if (!composer) return;
+  // 主页键盘模式已用 CSS 贴底，不必 scrollIntoView（会抖）
+  if (document.body.classList.contains("home-hero")) return;
+  try {
+   composer.scrollIntoView({ block: "end", behavior: "smooth" });
+  } catch (_) {
+   try {
+    composer.scrollIntoView(false);
+   } catch (__) {}
+  }
+  if (state.stickToBottom && typeof scrollMessages === "function") {
+   scrollMessages(true);
+  }
  }
 
  syncMobileViewport();
@@ -256,16 +309,11 @@
  const onVvChange = () => {
  const view = window.visualViewport;
  syncMobileViewport();
- const diff = lastHeight - view.height;
- if (diff > 80) {
- // 键盘升起：把输入区滚进可视区
- const composer = document.querySelector(".composer");
- if (composer) {
- setTimeout(() => {
- composer.scrollIntoView({ block: "end", behavior: "smooth" });
- if (state.stickToBottom) scrollMessages(true);
- }, 60);
- }
+ const diff = lastHeight - (view?.height || lastHeight);
+ if (diff > 60) {
+ // 键盘升起
+ setTimeout(ensureComposerVisible, 40);
+ setTimeout(ensureComposerVisible, 220);
  } else if (diff < -40 && state.stickToBottom) {
  scrollMessages(false);
  }
@@ -277,20 +325,31 @@
 
  // 输入框聚焦时再同步一次（部分 WebView 只在 focus 后改高度）
  els.input?.addEventListener("focus", () => {
+ document.body.classList.add("input-focused");
  setTimeout(syncMobileViewport, 50);
- setTimeout(syncMobileViewport, 300);
+ setTimeout(syncMobileViewport, 280);
+ setTimeout(ensureComposerVisible, 300);
  });
  els.input?.addEventListener("blur", () => {
+ document.body.classList.remove("input-focused");
  setTimeout(syncMobileViewport, 50);
- setTimeout(() => document.body.classList.remove("kb-open"), 200);
+ setTimeout(() => {
+  // 失焦后若高度已恢复，清键盘态
+  const vv = window.visualViewport;
+  if (!vv || vv.height >= (window.innerHeight || vv.height) - 80) {
+   document.body.classList.remove("kb-open");
+  }
+ }, 200);
  });
 
- // Enter 发送；Shift+Enter 换行
+ // Enter 发送；Shift+Enter 换行（桌面 / 手机一致）
+ // keyCode 229：中文等 IME 组字中，避免误发
  els.input?.addEventListener("keydown", (e) => {
- if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
- e.preventDefault();
- send();
- }
+  if (e.key !== "Enter") return;
+  if (e.shiftKey) return; // 换行
+  if (e.isComposing || e.keyCode === 229) return;
+  e.preventDefault();
+  send();
  });
 
  if (els.sessionSearch) {
@@ -316,13 +375,71 @@
  els.btnNewChat?.addEventListener("click", newChat);
  els.btnSend?.addEventListener("click", send);
  els.input?.addEventListener("input", autoResize);
+ els.input?.addEventListener("keyup", (e) => {
+  if (
+   e.key === "ArrowUp" ||
+   e.key === "ArrowDown" ||
+   e.key === "ArrowLeft" ||
+   e.key === "ArrowRight" ||
+   e.key === "Home" ||
+   e.key === "End" ||
+   e.key === "PageUp" ||
+   e.key === "PageDown"
+  ) {
+   L.scrollInputCaretIntoView?.(els.input);
+  }
+ });
+ els.input?.addEventListener("click", () => {
+  L.scrollInputCaretIntoView?.(els.input);
+ });
+ // 初始同步发送按钮空/有内容态
+ if (typeof L.syncSendButtonState === "function") L.syncSendButtonState();
+
+ function bindComposerPlus() {
+  const wrap = $("composerPlusWrap");
+  const btn = $("btnComposerPlus");
+  const menu = $("composerPlusMenu");
+  if (!wrap || !btn || !menu) return;
+
+  const setOpen = (open) => {
+   menu.classList.toggle("hidden", !open);
+   wrap.classList.toggle("is-open", !!open);
+   btn.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+  const isOpen = () => !menu.classList.contains("hidden");
+  L.closeComposerPlusMenu = () => setOpen(false);
+
+  btn.addEventListener("click", (e) => {
+   e.preventDefault();
+   e.stopPropagation();
+   if (btn.disabled) return;
+   const next = !isOpen();
+   if (next && typeof L.closeUploadPicker === "function") L.closeUploadPicker();
+   setOpen(next);
+  });
+  menu.addEventListener("click", (e) => {
+   if (e.target.closest("#btnAttach, #btnVoice")) setOpen(false);
+  });
+  document.addEventListener("click", (e) => {
+   if (!isOpen()) return;
+   if (wrap.contains(e.target)) return;
+   setOpen(false);
+  });
+  document.addEventListener("keydown", (e) => {
+   if (e.key === "Escape" && isOpen()) setOpen(false);
+  });
+ }
 
  // 文件上传（选择 / 拖拽 / 粘贴）
  if (typeof L.bindUploadUI === "function") L.bindUploadUI();
  // 语音输入（语言跟随人设）
  if (typeof L.bindVoiceUI === "function") L.bindVoiceUI();
+ bindComposerPlus();
 
- els.btnOpenConfig?.addEventListener("click", () => openConfig());
+ els.btnOpenConfig?.addEventListener("click", () => {
+  closeMobileSidebar();
+  openConfig();
+ });
 
  // config modal 可能异步注入，统一用事件委托
  document.addEventListener("click", (e) => {
@@ -337,21 +454,57 @@
  }
  });
 
+ function nestedEditorOpen(id) {
+  const el = $(id);
+  return !!(el && !el.classList.contains("hidden"));
+ }
+
+ function closeTopNestedEditor() {
+  const steps = [
+   ["promptEditorModal", () => L.closePromptEditor?.()],
+   ["llmEditorModal", () => L.closeLlmEditor?.()],
+   ["customToolEditorModal", () => L.closeCustomToolEditor?.()],
+   ["mcpEditorModal", () => L.closeMcpEditor?.()],
+   ["integrationEditorModal", () => L.closeIntegrationEditor?.()],
+   ["webhookEditorModal", () => L.closeWebhookEditor?.()],
+   ["memoryAddModal", () => L.closeMemoryAddModal?.()],
+   ["wsNameDialog", () => L.closeWsNameDialog?.()],
+   ["wsFileModal", () => L.closeWsFileModal?.()],
+   ["kbPageModal", () => L.closeKbPageModal?.()],
+   ["taskPageModal", () => L.closeTaskEditor?.()],
+   ["wfRunDetailModal", () => L.closeWfRunDetailModal?.()],
+   ["wfRunModal", () => L.closeWfRunModal?.()],
+  ];
+  for (const [id, fn] of steps) {
+   if (!nestedEditorOpen(id)) continue;
+   if (typeof fn === "function") fn();
+   else $(id)?.classList.add("hidden");
+   return true;
+  }
+  // 工作流编辑器有「返回选模板」的 Esc，交给它自己处理
+  if (nestedEditorOpen("wfPageModal")) return "wf";
+  return false;
+ }
+
+ // capture：先关叠在设定上的编辑窗，不要把整页设定一起关掉
+ document.addEventListener(
+  "keydown",
+  (e) => {
+   if (e.key !== "Escape") return;
+   const which = closeTopNestedEditor();
+   if (which === true) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+   } else if (which === "wf") {
+    e._evaWfEsc = true;
+   }
+  },
+  true
+ );
+
  document.addEventListener("keydown", (e) => {
  if (e.key !== "Escape") return;
- // 知识页 / 任务新建 子弹优先关闭（叠在设定之上）
- const taskModal = $("taskPageModal");
- if (taskModal && !taskModal.classList.contains("hidden")) {
- if (typeof L.closeTaskEditor === "function") L.closeTaskEditor();
- else taskModal.classList.add("hidden");
- return;
- }
- const kbModal = $("kbPageModal");
- if (kbModal && !kbModal.classList.contains("hidden")) {
- if (typeof L.closeKbPageModal === "function") L.closeKbPageModal();
- else kbModal.classList.add("hidden");
- return;
- }
+ if (e._evaWfEsc) return;
  const modal = $("configModal");
  if (modal && !modal.classList.contains("hidden")) {
  closeConfig();
@@ -417,23 +570,33 @@
    if (typeof L.refreshVoiceLangFromPersona === "function") {
     L.refreshVoiceLangFromPersona();
    }
+   if (typeof L.refreshHomeHero === "function") L.refreshHomeHero();
   } catch (_) {}
  })();
- // 打开站点地址：始终空白新对话，不自动恢复上次会话
- try {
-  localStorage.removeItem("session_id");
- } catch (_) {}
- state.sessionId = null;
- if (typeof newChat === "function") {
-  // newChat 会清会话并 showEmpty / 问候语
+ // 恢复上次会话；没有或已删除则空白新对话
+ (async () => {
+  let last = "";
   try {
-   newChat();
+   last = localStorage.getItem("session_id") || "";
+  } catch (_) {}
+  try {
+   if (last && typeof openSession === "function") {
+    await openSession(last);
+   } else if (typeof newChat === "function") {
+    newChat();
+   } else {
+    showEmpty();
+   }
   } catch (_) {
-   showEmpty();
+   try {
+    localStorage.removeItem("session_id");
+   } catch (__) {}
+   if (typeof newChat === "function") {
+    try { newChat(); } catch (__) { showEmpty(); }
+   } else {
+    showEmpty();
+   }
   }
- } else {
-  showEmpty();
- }
- // 仅刷新侧栏列表，不 openSession
- loadSessions().catch(() => {});
+  loadSessions().catch(() => {});
+ })();
 })(window.Lily);

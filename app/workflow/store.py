@@ -27,13 +27,18 @@ def _slug(name: str) -> str:
 class WorkflowStore:
     def __init__(self, root: Path | None = None) -> None:
         settings = get_settings()
-        self.root = root or (settings.data_dir / "workflows")
-        self.defs = self.root / "definitions"
-        self.runs = self.root / "runs"
+        paths = settings.paths()
+        self.root = root or paths.workflows_dir
+        self.defs = self.root / "definitions" if root else paths.workflow_defs
+        self.runs = self.root / "runs" if root else paths.workflow_runs
         self.defs.mkdir(parents=True, exist_ok=True)
         self.runs.mkdir(parents=True, exist_ok=True)
         # Builtin ids the user deleted — do not auto re-seed these
-        self._removed_path = self.root / "removed_builtins.json"
+        self._removed_path = (
+            self.root / "removed_builtins.json"
+            if root
+            else paths.workflow_removed_builtins
+        )
 
     def _def_path(self, wf_id: str) -> Path:
         return self.defs / f"{wf_id}.json"
@@ -96,6 +101,7 @@ class WorkflowStore:
                     and str(s.get("type") or "").lower() == "agent"
                     for s in steps
                 )
+                sched = data.get("schedule") if isinstance(data.get("schedule"), dict) else {}
                 items.append(
                     {
                         "id": data.get("id") or path.stem,
@@ -107,6 +113,9 @@ class WorkflowStore:
                         "updated_at": data.get("updated_at") or "",
                         "has_agent_steps": has_agent,
                         "builtin": bool(data.get("builtin")),
+                        "schedule": sched,
+                        "default_session_id": str(data.get("default_session_id") or ""),
+                        "always_new_session": bool(data.get("always_new_session")),
                     }
                 )
             except Exception:
@@ -153,6 +162,9 @@ class WorkflowStore:
         wf_id: str | None = None,
         version: str | None = None,
         raw: dict[str, Any] | None = None,
+        schedule: dict[str, Any] | None = None,
+        default_session_id: str | None = None,
+        always_new_session: bool | None = None,
     ) -> dict[str, Any]:
         if raw:
             data = dict(raw)
@@ -202,6 +214,26 @@ class WorkflowStore:
                 "created_at": (existing or {}).get("created_at") or now,
                 "updated_at": now,
             }
+            if schedule is not None:
+                data["schedule"] = schedule
+            elif existing and isinstance(existing.get("schedule"), dict):
+                data["schedule"] = existing.get("schedule")
+            if default_session_id is not None:
+                data["default_session_id"] = str(default_session_id).strip()
+            elif existing:
+                data["default_session_id"] = str(
+                    existing.get("default_session_id") or ""
+                ).strip()
+            else:
+                data["default_session_id"] = ""
+            if always_new_session is not None:
+                data["always_new_session"] = bool(always_new_session)
+            elif existing:
+                data["always_new_session"] = bool(existing.get("always_new_session"))
+            else:
+                data["always_new_session"] = False
+            if data.get("always_new_session"):
+                data["default_session_id"] = ""
             if existing:
                 # preserve builtin flag etc.
                 if "builtin" in existing and "builtin" not in data:
@@ -294,7 +326,14 @@ class WorkflowStore:
         *,
         inputs: dict[str, Any] | None = None,
         trigger: str = "manual",
+        session_id: str | None = None,
     ) -> dict[str, Any]:
+        from sqlalchemy import insert
+
+        from app.storage.engine import db_connect
+        from app.storage.schema import workflow_runs as runs_t
+        from app.storage.util import dumps, run_db
+
         run_id = uuid.uuid4().hex
         now = _now().isoformat()
         run = {
@@ -305,35 +344,93 @@ class WorkflowStore:
             "inputs": inputs or {},
             "steps": [],
             "current_step": None,
+            "session_id": str(session_id).strip() if session_id else None,
             "error": None,
             "created_at": now,
             "updated_at": now,
             "finished_at": None,
         }
-        async with aiofiles.open(self._run_path(run_id), "w", encoding="utf-8") as f:
-            await f.write(json.dumps(run, ensure_ascii=False, indent=2))
+
+        def _do() -> None:
+            with db_connect() as conn:
+                conn.execute(
+                    insert(runs_t).values(
+                        id=run_id,
+                        workflow_id=workflow_id,
+                        status="pending",
+                        created_at=now,
+                        updated_at=now,
+                        finished_at=None,
+                        payload_json=dumps(run),
+                    )
+                )
+
+        await run_db(_do)
         return run
 
     async def get_run(self, run_id: str) -> dict[str, Any] | None:
-        path = self._run_path(run_id)
-        if not path.exists():
-            return None
-        async with aiofiles.open(path, "r", encoding="utf-8") as f:
-            return json.loads(await f.read())
+        from app.storage.engine import db_connect
+        from app.storage.schema import workflow_runs as runs_t
+        from app.storage.util import loads, run_db
+        from sqlalchemy import select
+
+        def _do() -> dict[str, Any] | None:
+            with db_connect() as conn:
+                row = conn.execute(
+                    select(runs_t).where(runs_t.c.id == run_id)
+                ).first()
+                if not row:
+                    return None
+                data = loads(row.payload_json, {})
+                return data if isinstance(data, dict) else None
+
+        return await run_db(_do)
 
     async def save_run(self, run: dict[str, Any]) -> dict[str, Any]:
+        from app.storage.engine import db_connect
+        from app.storage.schema import workflow_runs as runs_t
+        from app.storage.util import dumps, run_db
+        from sqlalchemy import insert, select, update
+
         run["updated_at"] = _now().isoformat()
-        async with aiofiles.open(self._run_path(run["id"]), "w", encoding="utf-8") as f:
-            await f.write(json.dumps(run, ensure_ascii=False, indent=2, default=str))
+        rid = str(run.get("id") or "")
+
+        def _do() -> None:
+            vals = dict(
+                workflow_id=str(run.get("workflow_id") or ""),
+                status=str(run.get("status") or "pending"),
+                created_at=str(run.get("created_at") or ""),
+                updated_at=str(run.get("updated_at") or ""),
+                finished_at=run.get("finished_at"),
+                payload_json=dumps(run),
+            )
+            with db_connect() as conn:
+                exists = conn.execute(
+                    select(runs_t.c.id).where(runs_t.c.id == rid)
+                ).first()
+                if exists:
+                    conn.execute(update(runs_t).where(runs_t.c.id == rid).values(**vals))
+                else:
+                    conn.execute(insert(runs_t).values(id=rid, **vals))
+
+        await run_db(_do)
         return run
 
     async def list_runs(self, *, workflow_id: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
-        paths = sorted(self.runs.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        for path in paths:
-            try:
-                async with aiofiles.open(path, "r", encoding="utf-8") as f:
-                    data = json.loads(await f.read())
+        from app.storage.engine import db_connect
+        from app.storage.schema import workflow_runs as runs_t
+        from app.storage.util import loads, run_db
+        from sqlalchemy import select
+
+        def _do() -> list[dict[str, Any]]:
+            with db_connect() as conn:
+                q = select(runs_t).order_by(runs_t.c.updated_at.desc())
+                rows = conn.execute(q).all()
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                data = loads(row.payload_json, {})
+                if not isinstance(data, dict):
+                    continue
                 if workflow_id and data.get("workflow_id") != workflow_id:
                     continue
                 items.append(
@@ -348,23 +445,27 @@ class WorkflowStore:
                         "error": data.get("error"),
                         "step_count": len(data.get("steps") or []),
                         "current_step": data.get("current_step"),
+                        "session_id": data.get("session_id") or None,
                     }
                 )
                 if len(items) >= limit:
                     break
-            except Exception:
-                continue
-        return items
+            return items
+
+        return await run_db(_do)
 
     async def delete_run(self, run_id: str) -> bool:
-        path = self._run_path(run_id)
-        if not path.exists():
-            return False
-        try:
-            path.unlink()
-            return True
-        except OSError:
-            return False
+        from app.storage.engine import db_connect
+        from app.storage.schema import workflow_runs as runs_t
+        from app.storage.util import run_db
+        from sqlalchemy import delete
+
+        def _do() -> bool:
+            with db_connect() as conn:
+                res = conn.execute(delete(runs_t).where(runs_t.c.id == run_id))
+                return bool(res.rowcount)
+
+        return await run_db(_do)
 
     async def delete_runs(self, run_ids: list[str]) -> dict[str, Any]:
         deleted: list[str] = []
@@ -385,19 +486,25 @@ class WorkflowStore:
         }
 
     async def clear_runs(self, *, workflow_id: str | None = None) -> dict[str, Any]:
-        """Delete run history files. If workflow_id set, only that workflow's runs."""
-        deleted = 0
-        for path in list(self.runs.glob("*.json")):
-            try:
+        """Delete run history. If workflow_id set, only that workflow's runs."""
+        from app.storage.engine import db_connect
+        from app.storage.schema import workflow_runs as runs_t
+        from app.storage.util import run_db
+        from sqlalchemy import delete, select
+
+        def _do() -> int:
+            with db_connect() as conn:
                 if workflow_id:
-                    async with aiofiles.open(path, "r", encoding="utf-8") as f:
-                        data = json.loads(await f.read())
-                    if data.get("workflow_id") != workflow_id:
-                        continue
-                path.unlink()
-                deleted += 1
-            except Exception:
-                continue
+                    res = conn.execute(
+                        delete(runs_t).where(runs_t.c.workflow_id == workflow_id)
+                    )
+                    return int(res.rowcount or 0)
+                # count then delete all
+                n = len(conn.execute(select(runs_t.c.id)).all())
+                conn.execute(delete(runs_t))
+                return n
+
+        deleted = await run_db(_do)
         return {"ok": True, "count": deleted}
 
     async def ensure_seed(self) -> None:

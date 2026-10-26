@@ -1,7 +1,22 @@
 {
   "id": "server_health_check",
-  "name": "Server Health Check",
-  "description": "检查服务器健康状态，包括系统资源（CPU、内存、磁盘、进程数、运行时间等），返回健康评估报告。",
-  "version": "0.1.0",
-  "tools": []
+  "name": "本机健康检查",
+  "description": "检查本机健康状态，包括 CPU、内存、磁盘、进程数、运行时间，返回健康评估。Agent/Python/当前 LLM 概况请用 system_info。",
+  "version": "0.1.1",
+  "tools": [],
+  "agentos_meta": {
+    "role": "primary",
+    "tag": "健康检查",
+    "group": "dev",
+    "how_to_call": "健康检查 / 服务器状态",
+    "scene_keywords": [
+      "健康检查",
+      "服务器状态",
+      "cpu占用",
+      "内存占用",
+      "磁盘空间",
+      "本机健康",
+      "health check"
+    ]
+  }
 }

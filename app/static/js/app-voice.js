@@ -206,10 +206,13 @@
  function setVoiceHint(text, type) {
  const el = $("voiceHint");
  if (el) {
+ const show = type === "live" || type === "error";
  el.textContent = text;
  el.title = text;
  el.classList.toggle("is-live", type === "live");
  el.classList.toggle("is-err", type === "error");
+ el.classList.toggle("is-idle", !show);
+ el.hidden = !show;
  }
  if (typeof L.setStatus === "function" && type === "error") {
  L.setStatus(text, "error");
@@ -222,6 +225,8 @@
  document.body.classList.toggle("voice-listening", listening);
  document.body.classList.toggle("voice-meeting", listening && isMeetingMode());
  const btn = $("btnVoice");
+ const plus = $("btnComposerPlus");
+ const label = $("btnVoiceLabel");
  if (btn) {
  btn.classList.toggle("listening", listening);
  btn.setAttribute("aria-pressed", listening ? "true" : "false");
@@ -234,6 +239,8 @@
  ? `会议听写（连续 · ${langPart}）`
  : `语音输入（连续 · ${langPart} · 再点停止）`;
  }
+ if (label) label.textContent = listening ? "停止语音" : "语音输入";
+ if (plus) plus.classList.toggle("listening", listening);
  }
 
  function needsSpace(lang, left, right) {

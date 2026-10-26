@@ -71,17 +71,16 @@ def format_balance_display(amount: float | None, *, unit: str = "", currency: st
     if amount is None:
         return "—"
     u = (unit or currency or "").strip().upper()
-    if not u:
-        if abs(amount) < 10000 and (abs(amount) < 1 or "." in f"{amount}"):
-            u = "USD"
-        else:
-            u = ""
+    # Do NOT invent USD when unit unknown — many CN gateways return bare numbers
     if u in ("USD", "$", "US$"):
         return f"${amount:,.2f}"
-    if u in ("CNY", "RMB", "¥"):
+    if u in ("CNY", "RMB", "¥", "元"):
         return f"¥{amount:,.2f}"
     if u:
         return f"{amount:,.4g} {u}"
+    # Unknown unit: plain number with 2 decimals when it looks monetary
+    if abs(amount) < 1e6:
+        return f"{amount:,.2f}"
     return f"{amount:,.4g}"
 
 
@@ -106,13 +105,28 @@ def _pick_deepseek(payload: Any) -> dict[str, Any] | None:
         if total is None:
             continue
         cur = str(item.get("currency") or "").upper() or "CNY"
+        if cur in ("RMB", "元"):
+            cur = "CNY"
+        granted = _num(item.get("granted_balance"))
+        topped = _num(item.get("topped_up_balance"))
+        avail = item.get("is_available", payload.get("is_available"))
+        avail_s = "可用" if avail in (True, "true", "True", 1, "1") else (
+            "不可用" if avail in (False, "false", "False", 0, "0") else ""
+        )
+        note_bits = [avail_s] if avail_s else []
+        if topped is not None:
+            note_bits.append(f"充值 ¥{topped:,.2f}" if cur == "CNY" else f"充值 {topped:,.2f}")
+        if granted is not None:
+            note_bits.append(f"赠金 ¥{granted:,.2f}" if cur == "CNY" else f"赠金 {granted:,.2f}")
         row = {
             "amount": total,
-            "unit": cur if cur in ("CNY", "USD", "RMB") else cur,
+            "unit": cur if cur in ("CNY", "USD") else cur,
             "field": "balance_infos.total_balance",
-            "note": f"可用={item.get('is_available', payload.get('is_available'))}",
+            "note": " · ".join(note_bits),
+            "granted_balance": granted,
+            "topped_up_balance": topped,
         }
-        if cur in ("CNY", "RMB") or best is None:
+        if cur in ("CNY",) or best is None:
             best = row
         if cur == "CNY":
             break
@@ -288,85 +302,91 @@ def _walk_numbers(obj: Any, keys: tuple[str, ...], depth: int = 0) -> list[tuple
     return found
 
 
+def _join_url(prefix: str, path: str) -> str:
+    """Join prefix + path without producing /v1/v1/..."""
+    pfx = (prefix or "").rstrip("/")
+    pth = "/" + (path or "").lstrip("/")
+    # If both sides contribute a /v1 segment, drop one
+    if re.search(r"/v1$", pfx, flags=re.I) and re.match(r"/v1(/|$)", pth, flags=re.I):
+        pth = pth[3:] or "/"
+        if not pth.startswith("/"):
+            pth = "/" + pth
+    return pfx + pth
+
+
 def _candidate_urls(base_url: str, provider: str = "") -> list[str]:
+    """Short, host-aware balance probe list (avoid spray of 404 noise)."""
     base = (base_url or "").strip().rstrip("/")
     if not base:
         return []
     host = _host(base)
     root = re.sub(r"/v1$", "", base, flags=re.I)
-    api_root = re.sub(r"/api/v1$", "", base, flags=re.I)
-    api_root = re.sub(r"/api$", "", api_root, flags=re.I)
-
-    # Provider-first paths (most reliable)
     urls: list[str] = []
-    if "deepseek.com" in host:
-        urls += [
-            f"{root}/user/balance",
-            "https://api.deepseek.com/user/balance",
-        ]
-    if "openrouter.ai" in host:
-        urls += [
-            "https://openrouter.ai/api/v1/key",
-            "https://openrouter.ai/api/v1/credits",
-            f"{base}/key" if base.endswith("/v1") else f"{base}/v1/key",
-            f"{api_root}/api/v1/key",
-            f"{api_root}/api/v1/credits",
-        ]
-    if "chatanywhere" in host:
-        # 官方以控制台为主；部分版本兼容 NewAPI / 旧 billing
-        urls += [
-            f"{root}/v1/dashboard/billing/credit_grants",
-            f"{root}/dashboard/billing/credit_grants",
-            f"{root}/api/user/self",
-            f"{root}/v1/user/balance",
-            f"{root}/user/balance",
-        ]
-    if "siliconflow" in host:
-        urls += [
-            f"{root}/v1/user/info",
-            f"{root}/user/info",
-        ]
-    if "x.ai" in host:
-        # xAI 余额主要在 console.x.ai，公开 API 通常无余额路由
-        urls += [
-            f"{root}/v1/api-key",
-            f"{base}/api-key",
-        ]
 
-    # Generic probes
-    generic_paths = [
-        "/user/balance",
-        "/v1/user/balance",
-        "/api/v1/key",
-        "/v1/key",
-        "/api/v1/credits",
-        "/v1/credits",
-        "/v1/dashboard/billing/credit_grants",
-        "/dashboard/billing/credit_grants",
-        "/v1/dashboard/billing/subscription",
-        "/api/user/self",
-        "/api/user/balance",
-        "/v1/user/info",
-        "/user/info",
-        "/v1/billing/balance",
-        "/billing/balance",
-    ]
-    for p in generic_paths:
-        for prefix in (root, base, api_root):
-            if not prefix:
-                continue
-            u = prefix.rstrip("/") + p
-            if u not in urls:
+    def add(*items: str) -> None:
+        for u in items:
+            u = (u or "").strip().rstrip("/")
+            if u and u not in urls:
                 urls.append(u)
 
-    # de-dupe
-    seen: set[str] = set()
-    out: list[str] = []
-    for u in urls:
-        if u not in seen:
-            seen.add(u)
-            out.append(u)
-    return out[:24]
+    # --- Host-specific (preferred, few requests) ---
+    if "deepseek.com" in host:
+        add(f"{root}/user/balance", "https://api.deepseek.com/user/balance")
+        return urls
+
+    if "openrouter.ai" in host:
+        add(
+            "https://openrouter.ai/api/v1/key",
+            "https://openrouter.ai/api/v1/credits",
+        )
+        return urls
+
+    if "siliconflow" in host:
+        add(_join_url(root, "/v1/user/info"), _join_url(root, "/user/info"))
+        return urls
+
+    if "x.ai" in host:
+        # Public API usually has no balance route
+        return urls
+
+    # NewAPI / OneAPI style gateways (yunwu, chatanywhere, many CN relays)
+    if any(
+        x in host
+        for x in (
+            "yunwu",
+            "chatanywhere",
+            "api2d",
+            "closeai",
+            "openai-sb",
+            "aihubmix",
+            "gate",
+        )
+    ) or host.endswith(".ai") or "api." in host:
+        # Paths known to work on NewAPI forks (order matters)
+        add(
+            _join_url(root, "/dashboard/billing/credit_grants"),
+            _join_url(base, "/dashboard/billing/subscription"),
+            _join_url(root, "/api/user/self"),
+            _join_url(base, "/dashboard/billing/credit_grants"),
+            _join_url(root, "/v1/dashboard/billing/credit_grants"),
+        )
+        return urls[:6]
+
+    # Generic: only a few high-value endpoints (no cross product of prefixes)
+    for p in (
+        "/dashboard/billing/credit_grants",
+        "/v1/dashboard/billing/credit_grants",
+        "/dashboard/billing/subscription",
+        "/user/balance",
+        "/v1/user/balance",
+        "/api/user/self",
+    ):
+        add(_join_url(root, p))
+        if base != root:
+            # only when path does not already start with /v1 or base has no /v1
+            if not (base.lower().endswith("/v1") and p.lower().startswith("/v1")):
+                add(_join_url(base, p))
+    return urls[:8]
 
 
 async def fetch_llm_balance(
@@ -376,6 +396,7 @@ async def fetch_llm_balance(
     provider: str = "",
     timeout: float = 12.0,
     use_cache: bool = True,
+    use_proxy: bool = False,
 ) -> dict[str, Any]:
     """Probe balance endpoints. Always returns a dict with ok True/False."""
     base = (base_url or "").strip().rstrip("/")
@@ -420,69 +441,180 @@ async def fetch_llm_balance(
         if time.time() - ts < _CACHE_TTL:
             return dict(cached)
 
+    # Sanitize key for HTTP headers (latin-1)
+    try:
+        key.encode("latin-1")
+    except UnicodeEncodeError:
+        key = key.encode("latin-1", "ignore").decode("latin-1")
+
     headers = {
         "Authorization": f"Bearer {key}",
         "Accept": "application/json",
-        "User-Agent": "AgentOS-LLM-Balance/1.1",
+        "User-Agent": "Eva-LLM-Balance/1.3",
     }
-    headers_alt_list = [
-        headers,
-        {**headers, "HTTP-Referer": "https://agentos.local", "X-Title": "AgentOS"},
-        {**headers, "New-Api-User": "0", "token": key},
-    ]
+    # Prefer a single header set; only retry NewAPI extras if first pass finds nothing
+    headers_primary = headers
+    headers_newapi = {
+        **headers,
+        "New-Api-User": "0",
+        "token": key,
+    }
 
     tried: list[dict[str, Any]] = []
     last_err = ""
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        for url in _candidate_urls(base, prov):
-            for hdr in headers_alt_list:
+    auth_fail = False  # 401/403 seen on a real balance route
+    auth_detail = ""
+    client_kw: dict[str, Any] = {
+        "timeout": timeout,
+        "follow_redirects": True,
+        "trust_env": False,
+    }
+    if use_proxy:
+        try:
+            from app.services.model_meta import resolve_app_proxy_url
+
+            proxy = resolve_app_proxy_url()
+        except Exception:
+            proxy = ""
+        if not proxy:
+            return {
+                "ok": False,
+                "error": "已勾选使用代理，但未配置代理地址",
+                "display": "代理未配置",
+                "hint": "设定 → 集成 → HTTP 网络 填写代理，或取消该 LLM 的「使用代理」",
+                "provider": prov,
+                "host": host,
+            }
+        try:
+            proxy.encode("ascii")
+            client_kw["proxy"] = proxy
+        except UnicodeEncodeError:
+            return {
+                "ok": False,
+                "error": "代理地址含非英文字符",
+                "display": "代理无效",
+                "hint": "请使用 ascii 代理 URL，如 http://127.0.0.1:7890",
+                "provider": prov,
+                "host": host,
+            }
+    async def _try_urls(
+        client: httpx.AsyncClient, urls: list[str], hdr: dict[str, str]
+    ) -> dict[str, Any] | None:
+        nonlocal last_err, auth_fail, auth_detail, tried
+        for url in urls:
+            try:
+                resp = await client.get(url, headers=hdr)
+            except Exception as exc:
+                last_err = str(exc) or type(exc).__name__
+                tried.append({"url": url, "error": last_err})
+                continue
+            tried.append({"url": url, "status": resp.status_code})
+            if resp.status_code in (401, 403):
+                auth_fail = True
+                detail = ""
                 try:
-                    resp = await client.get(url, headers=hdr)
-                except Exception as exc:
-                    last_err = str(exc)
-                    tried.append({"url": url, "error": last_err})
-                    continue
-                tried.append({"url": url, "status": resp.status_code})
-                if resp.status_code in (401, 403):
-                    last_err = f"HTTP {resp.status_code}（密钥无权限或接口需管理密钥）"
-                    # still try other URLs
-                    continue
-                if resp.status_code == 404:
-                    continue
-                if resp.status_code >= 400:
-                    last_err = f"HTTP {resp.status_code}"
-                    continue
-                try:
-                    payload = resp.json()
+                    body = resp.json()
+                    if isinstance(body, dict):
+                        err = body.get("error")
+                        if isinstance(err, dict):
+                            detail = str(err.get("message") or "")
+                        elif isinstance(err, str):
+                            detail = err
+                        else:
+                            detail = str(body.get("message") or "")
                 except Exception:
-                    last_err = "非 JSON 响应"
-                    continue
-                picked = _pick_balance(payload)
-                if not picked:
-                    last_err = "响应中无余额字段"
-                    continue
-                amount = float(picked["amount"])
-                unit = str(picked.get("unit") or "")
-                if isinstance(payload, dict) and "total_available" in payload:
-                    amount = _num(payload.get("total_available")) or amount
-                    unit = unit or "USD"
-                display = format_balance_display(amount, unit=unit)
-                result = {
-                    "ok": True,
-                    "amount": amount,
-                    "unit": unit or ("USD" if display.startswith("$") else ("CNY" if display.startswith("¥") else "")),
-                    "display": display,
-                    "source": url,
-                    "field": picked.get("field"),
-                    "note": picked.get("note") or "",
-                    "provider": prov,
-                    "host": host,
-                }
-                _CACHE[ck] = (time.time(), result)
-                return result
+                    detail = (resp.text or "")[:160]
+                auth_detail = detail or f"HTTP {resp.status_code}"
+                last_err = f"HTTP {resp.status_code}（密钥无效或无权限）"
+                continue
+            if resp.status_code == 404:
+                continue
+            if resp.status_code >= 400:
+                last_err = f"HTTP {resp.status_code}"
+                continue
+            try:
+                payload = resp.json()
+            except Exception:
+                last_err = "非 JSON 响应"
+                continue
+            picked = _pick_balance(payload)
+            if not picked:
+                last_err = "响应中无余额字段"
+                continue
+            amount = float(picked["amount"])
+            unit = str(picked.get("unit") or "").strip().upper()
+            if unit in ("RMB", "元"):
+                unit = "CNY"
+            if not unit and isinstance(payload, dict):
+                infos = payload.get("balance_infos")
+                if isinstance(infos, list) and infos and isinstance(infos[0], dict):
+                    unit = str(infos[0].get("currency") or "").upper() or unit
+            display = format_balance_display(amount, unit=unit)
+            if unit == "CNY" and not display.startswith("¥"):
+                display = f"¥{amount:,.2f}"
+            return {
+                "ok": True,
+                "amount": amount,
+                "unit": unit,
+                "display": display,
+                "source": url,
+                "field": picked.get("field"),
+                "note": picked.get("note") or "",
+                "provider": prov,
+                "host": host,
+            }
+        return None
+
+    # Default direct (ignore system HTTP_PROXY) unless this LLM opts into proxy
+    urls = _candidate_urls(base, prov)
+    async with httpx.AsyncClient(**client_kw) as client:
+        hit = await _try_urls(client, urls, headers_primary)
+        if hit:
+            _CACHE[ck] = (time.time(), hit)
+            return hit
+        # One optional NewAPI-style header retry (not 3× header explosion)
+        if any(
+            x in host
+            for x in ("yunwu", "api", "gate", "closeai", "aihubmix", "chatanywhere")
+        ):
+            hit = await _try_urls(client, urls, headers_newapi)
+            if hit:
+                _CACHE[ck] = (time.time(), hit)
+                return hit
+
+    # Auth failed on reachable routes → prefer key error over "no balance API"
+    if auth_fail and (
+        "deepseek.com" in host
+        or "siliconflow" in host
+        or any(
+            t.get("status") in (401, 403) and "/user/balance" in str(t.get("url") or "")
+            for t in tried
+        )
+    ):
+        result = {
+            "ok": False,
+            "error": last_err or "API Key 无效",
+            "display": "密钥无效",
+            "tried": len(tried),
+            "hint": (
+                f"服务商返回鉴权失败：{auth_detail or last_err}。"
+                "请到设定 → LLM 检查并重新粘贴正确的 API Key（DeepSeek 在 platform.deepseek.com 创建）。"
+            ),
+            "provider": prov,
+            "host": host,
+            "auth_error": True,
+        }
+        # short negative cache only
+        _CACHE[ck] = (time.time() - _CACHE_TTL + 15.0, result)
+        return result
 
     # Friendly reasons by host
-    if "openrouter.ai" in host:
+    if "deepseek.com" in host or "deepseek" in prov:
+        hint = (
+            "DeepSeek 支持 GET /user/balance；若仍不可查，请确认 API Key 正确，"
+            "并到 platform.deepseek.com 查看账户余额。"
+        )
+    elif "openrouter.ai" in host:
         hint = (
             "OpenRouter 账户总余额接口 /credits 需要 Management Key；"
             "普通 API Key 仅可能返回 Key 限额。请到 openrouter.ai/credits 查看总余额。"
@@ -497,6 +629,11 @@ async def fetch_llm_balance(
         hint = "OpenAI 已不对普通 API Key 开放 billing 余额接口，请到 platform.openai.com 查看。"
     elif _is_local_host(host):
         hint = "本地/内网地址一般没有云端余额概念。"
+    elif auth_fail:
+        hint = (
+            f"鉴权失败（{auth_detail or last_err}）。请检查 API Key；"
+            "部分厂商余额接口还需要管理密钥，普通对话 Key 可能不够。"
+        )
     else:
         hint = (
             "该服务商未提供可用的余额 API（OpenAI 兼容接口只保证对话，不保证余额）。"
@@ -506,11 +643,13 @@ async def fetch_llm_balance(
     result = {
         "ok": False,
         "error": last_err or "未找到可用余额接口",
-        "display": "暂不可查",
+        "display": "密钥无效" if auth_fail else "暂不可查",
         "tried": len(tried),
         "hint": hint,
         "provider": prov,
         "host": host,
+        "auth_error": auth_fail,
     }
-    _CACHE[ck] = (time.time(), result)
+    # Failures: short TTL so a fixed network path recovers quickly
+    _CACHE[ck] = (time.time() - _CACHE_TTL + 20.0, result)
     return result

@@ -4,24 +4,45 @@
  <header class="modal-header">
  <div>
  <h2 id="cfgTitle" class="icon-inline"><span data-ipk="setting-two" data-ipk-class="ipk-md"></span> 设定</h2>
- <p class="hint">Tab 可横向滑动；列表 / 表单在下方滚动。改完即时热加载。</p>
+ <p class="hint">日常改人设和模型；能力管技能与知识库；系统较少动。改完即时热加载。</p>
  </div>
  <button type="button" class="btn icon-inline" id="btnCloseConfig"><span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭</button>
  </header>
 
- <nav class="tabs" id="configTabs" aria-label="设定分类">
- <button type="button" class="tab active icon-inline" data-tab="agent"><span data-ipk="robot-one" data-ipk-class="ipk-xs"></span> Agent</button>
- <button type="button" class="tab icon-inline" data-tab="llm"><span data-ipk="lightning" data-ipk-class="ipk-xs"></span> LLM</button>
- <button type="button" class="tab icon-inline" data-tab="tools"><span data-ipk="tool" data-ipk-class="ipk-xs"></span> Tools</button>
- <button type="button" class="tab icon-inline" data-tab="skills"><span data-ipk="puzzle" data-ipk-class="ipk-xs"></span> Skills</button>
- <button type="button" class="tab icon-inline" data-tab="mcp"><span data-ipk="api" data-ipk-class="ipk-xs"></span> MCP</button>
- <button type="button" class="tab icon-inline" data-tab="integrations"><span data-ipk="connection" data-ipk-class="ipk-xs"></span> 集成</button>
- <button type="button" class="tab icon-inline" data-tab="tasks"><span data-ipk="alarm-clock" data-ipk-class="ipk-xs"></span> 任务</button>
- <button type="button" class="tab icon-inline" data-tab="memory"><span data-ipk="brain" data-ipk-class="ipk-xs"></span> 记忆</button>
- <button type="button" class="tab icon-inline" data-tab="kb"><span data-ipk="book-open" data-ipk-class="ipk-xs"></span> 知识库</button>
- <button type="button" class="tab icon-inline" data-tab="workflows"><span data-ipk="network-tree" data-ipk-class="ipk-xs"></span> 工作流</button>
- <button type="button" class="tab icon-inline" data-tab="workspace"><span data-ipk="folder-open" data-ipk-class="ipk-xs"></span> 工作区</button>
- <button type="button" class="tab icon-inline" data-tab="webhooks"><span data-ipk="link" data-ipk-class="ipk-xs"></span> Webhook</button>
+ <div class="cfg-layout">
+ <nav class="cfg-nav" id="configTabs" aria-label="设定">
+ <div class="cfg-side" id="configGroups">
+ <div class="cfg-side-block is-active" data-side-group="daily">
+ <button type="button" class="cfg-group active" data-group="daily" role="tab" aria-selected="true">日常</button>
+ <div class="cfg-side-items" role="tablist" aria-label="日常">
+ <button type="button" class="tab active icon-inline" data-tab="agent" data-group="daily"><span data-ipk="robot-one" data-ipk-class="ipk-xs"></span> 人设</button>
+ <button type="button" class="tab icon-inline" data-tab="llm" data-group="daily"><span data-ipk="lightning" data-ipk-class="ipk-xs"></span> 模型</button>
+ <button type="button" class="tab icon-inline" data-tab="integrations" data-group="daily"><span data-ipk="connection" data-ipk-class="ipk-xs"></span> 集成</button>
+ </div>
+ </div>
+ <div class="cfg-side-block" data-side-group="capability">
+ <button type="button" class="cfg-group" data-group="capability" role="tab" aria-selected="false">能力</button>
+ <div class="cfg-side-items" role="tablist" aria-label="能力">
+ <button type="button" class="tab icon-inline" data-tab="skills" data-group="capability"><span data-ipk="puzzle" data-ipk-class="ipk-xs"></span> 技能</button>
+ <button type="button" class="tab icon-inline" data-tab="tasks" data-group="capability"><span data-ipk="alarm-clock" data-ipk-class="ipk-xs"></span> 任务</button>
+ <button type="button" class="tab icon-inline" data-tab="memory" data-group="capability"><span data-ipk="brain" data-ipk-class="ipk-xs"></span> 记忆</button>
+ <button type="button" class="tab icon-inline" data-tab="kb" data-group="capability"><span data-ipk="book-open" data-ipk-class="ipk-xs"></span> 知识库</button>
+ <button type="button" class="tab icon-inline" data-tab="workspace" data-group="capability"><span data-ipk="folder-open" data-ipk-class="ipk-xs"></span> 工作区</button>
+ <button type="button" class="tab icon-inline" data-tab="workflows" data-group="capability"><span data-ipk="network-tree" data-ipk-class="ipk-xs"></span> 工作流</button>
+ </div>
+ </div>
+ <div class="cfg-side-block" data-side-group="system">
+ <button type="button" class="cfg-group" data-group="system" role="tab" aria-selected="false">系统</button>
+ <div class="cfg-side-items" role="tablist" aria-label="系统">
+ <button type="button" class="tab icon-inline" data-tab="tools" data-group="system"><span data-ipk="tool" data-ipk-class="ipk-xs"></span> 工具函数</button>
+ <button type="button" class="tab icon-inline" data-tab="mcp" data-group="system"><span data-ipk="api" data-ipk-class="ipk-xs"></span> MCP</button>
+ <button type="button" class="tab icon-inline" data-tab="webhooks" data-group="system"><span data-ipk="link" data-ipk-class="ipk-xs"></span> Webhook</button>
+ <button type="button" class="tab icon-inline" data-tab="storage" data-group="system"><span data-ipk="folder-open" data-ipk-class="ipk-xs"></span> 数据库</button>
+ <button type="button" class="tab icon-inline" data-tab="office" data-group="system"><span data-ipk="office-building" data-ipk-class="ipk-xs"></span> 办公室</button>
+ <button type="button" class="tab icon-inline" data-tab="update" data-group="system"><span data-ipk="upload" data-ipk-class="ipk-xs"></span> 更新</button>
+ </div>
+ </div>
+ </div>
  </nav>
 
  <div class="modal-body">
@@ -32,15 +53,18 @@
  <strong class="icon-inline"><span data-ipk="robot-one" data-ipk-class="ipk-sm"></span> Agent 角色设定</strong>
  <p class="hint" style="margin:4px 0 0">
  <strong>① 身份与人设</strong>：名称、语言、角色背景；需要沉浸时打开「启用角色扮演」。
- 工作方法见 ②～⑥。超长手册放<strong>知识库</strong> / <strong>工作流</strong>。
+ <strong>② 演化人格</strong>：当前会话压缩后长什么样。可用「导出 / 导入」备份整份设定。
  </p>
  </div>
- <div class="row-actions agent-banner-actions" style="margin:0">
- <button type="button" class="btn ghost-sm icon-inline" id="btnAgentGoKb" title="打开知识库">
- <span data-ipk="book-open" data-ipk-class="ipk-xs"></span> 知识库
+ </div>
+ <input type="file" id="cfgImportInput" class="hidden" accept="application/json,.json" />
+ <div class="cfg-toolbar" role="toolbar" aria-label="人设操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool" id="btnExportSettings" title="导出人设、LLM、集成等设定">
+ <span data-ipk="download" data-ipk-class="ipk-xs"></span><span>导出</span>
  </button>
- <button type="button" class="btn ghost-sm icon-inline" id="btnAgentGoWf" title="打开工作流">
- <span data-ipk="network-tree" data-ipk-class="ipk-xs"></span> 工作流
+ <button type="button" class="cfg-tool" id="btnImportSettings" title="从文件导入设定">
+ <span data-ipk="upload" data-ipk-class="ipk-xs"></span><span>导入</span>
  </button>
  </div>
  </div>
@@ -57,7 +81,7 @@
  <div id="agentBaseFields" class="agent-base-fields">
  <div class="agent-row agent-row-top">
  <label class="agent-field">名称
- <input id="cfgAgentName" type="text" placeholder="Lily" />
+ <input id="cfgAgentName" type="text" placeholder="Eva" />
  </label>
  <label class="agent-field">语言
  <select id="cfgLanguage"></select>
@@ -155,78 +179,21 @@
  </details>
  </div>
 
- <!-- ② 隐性决策树 -->
- <div class="agent-section">
+ <!-- ② 演化人格（当前会话压缩结果，只读） -->
+ <div class="agent-section" id="evoPersonaSection">
  <div class="agent-section-head">
- <span class="agent-section-title">② 隐性决策树</span>
- <span class="agent-section-hint">内部判断路径 · 不直接对用户复述</span>
+ <span class="agent-section-title">② 演化人格</span>
+ <span class="agent-section-hint">当前会话压缩后的人格与要点</span>
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool" id="btnRefreshEvolution" title="刷新演化结果">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>刷新</span>
+ </button>
  </div>
- <label class="agent-field">
- <textarea id="cfgDecisionTree" class="agent-ta" rows="5" placeholder="例：
-若用户目标不明 → 先澄清 1～3 个关键点，再行动
-若信息不足 → 区分可确认 / 推测 / 需补充，禁止编造
-若可多路径完成 → 优先成本低、可验证的路径
-若冲突（安全 vs 便利）→ 安全优先"></textarea>
- </label>
  </div>
-
- <!-- ③ 动态语言校准器 -->
- <div class="agent-section">
- <div class="agent-section-head">
- <span class="agent-section-title">③ 动态语言校准器</span>
- <span class="agent-section-hint">如何随场景调节语气与措辞</span>
+ <p class="evo-persona-meta" id="evoPersonaMeta"></p>
+ <div id="evoPersonaBody" class="evo-persona-body">
+ <p class="evo-persona-empty">打开一个会话后，演化结果会出现在这里。</p>
  </div>
- <label class="agent-field">
- <textarea id="cfgLanguageCalibrator" class="agent-ta" rows="4" placeholder="例：
-任务/交付：简洁、可执行、少套话
-闲聊：跟随用户语气，可更口语
-高压/投诉：先共情再给方案，避免辩解
-专业场景：术语准确，必要时给一句话白话解释"></textarea>
- </label>
- </div>
-
- <!-- ④ 标准化作业流程 -->
- <div class="agent-section">
- <div class="agent-section-head">
- <span class="agent-section-title">④ 标准化作业流程（SOP）</span>
- <span class="agent-section-hint">可复用的分步工作法</span>
- </div>
- <label class="agent-field">
- <textarea id="cfgSop" class="agent-ta" rows="6" placeholder="例：
-1. 理解目标与约束
-2. 收集 / 核验必要信息
-3. 制定方案并说明取舍
-4. 执行（工具 / 输出）
-5. 验收要点与下一步建议
-（复杂流水线也可放到「工作流」面板编排）"></textarea>
- </label>
- </div>
-
- <!-- ⑤ 硬性边界 -->
- <div class="agent-section">
- <div class="agent-section-head">
- <span class="agent-section-title">⑤ 硬性边界</span>
- <span class="agent-section-hint">通用红线 · 不可突破</span>
- </div>
- <label class="agent-field">
- <textarea id="cfgHardBoundaries" class="agent-ta" rows="5" placeholder="例：
-- 不编造事实、数据、来源
-- 不协助违法、伤害、欺诈
-- 不当/虚假/误导内容拒绝并说明理由
-- 涉及隐私与凭证时最小化暴露
-- 与系统安全规则冲突时以系统为准"></textarea>
- </label>
- </div>
-
- <!-- ⑥ 通用开机语 -->
- <div class="agent-section">
- <div class="agent-section-head">
- <span class="agent-section-title">⑥ 通用开机语</span>
- <span class="agent-section-hint">新对话默认开场；同时写入人设</span>
- </div>
- <label class="agent-field">
- <textarea id="cfgGreeting" class="agent-ta-sm" rows="3" placeholder="例：你好，我是 Lily。今天想先处理哪件事？"></textarea>
- </label>
  </div>
 
  <details class="agent-fixed-details">
@@ -234,8 +201,12 @@
  <pre class="agent-fixed-pre" id="cfgSystemFixedRules"></pre>
  </details>
 
- <div class="agent-form-actions">
- <button type="button" class="btn primary icon-inline" id="btnSaveAgent"><span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存人设</button>
+ <div class="agent-form-actions cfg-toolbar" style="margin-bottom:0">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnSaveAgent">
+ <span data-ipk="save" data-ipk-class="ipk-xs"></span><span>保存人设</span>
+ </button>
+ </div>
  <span class="form-msg" id="msgAgent"></span>
  </div>
  </div>
@@ -246,10 +217,18 @@
  <div class="panel-banner">
  <div>
  <strong class="icon-inline"><span data-ipk="lightning" data-ipk-class="ipk-sm"></span> LLM 配置</strong>
- <p class="hint" style="margin:4px 0 0">数据源 <code>/api/config/llms</code>。可添加、编辑、测试、设默认、删除。</p>
+ <p class="hint" style="margin:4px 0 0">
+ 数据源 <code>/api/config/llms</code>。
+ <strong>默认</strong>是日常主模型；
+ <strong>副模型</strong>在这一轮要调用技能时自动顶上，日常聊天仍走默认；主模型硬失败时也会顶上。不改默认。
+ </p>
  </div>
- <div class="row-actions" style="margin:0">
- <button type="button" class="btn primary icon-inline" id="btnAddLlm"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 添加 LLM</button>
+ </div>
+ <div class="cfg-toolbar" role="toolbar" aria-label="模型操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnAddLlm">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>添加模型</span>
+ </button>
  </div>
  </div>
  <span class="form-msg" id="msgLlm"></span>
@@ -260,19 +239,20 @@
  <section class="tab-panel" data-panel="tools">
  <div class="panel-banner">
  <div>
- <strong class="icon-inline"><span data-ipk="tool" data-ipk-class="ipk-sm"></span> 工具开关</strong>
+ <strong class="icon-inline"><span data-ipk="tool" data-ipk-class="ipk-sm"></span> 工具函数</strong>
  <p class="hint" style="margin:4px 0 0">
- 此处为 <strong>LLM 实际可调用的函数</strong>（function calling）。
- 数据源 <code>/api/config/tools</code>。开关即时生效；下方可加自订 HTTP 工具。
- </p>
- <p class="hint panel-relation-hint" style="margin:6px 0 0">
- <strong>Skill = 能力包</strong>，<strong>Tool = 可调用接口</strong>。多数 Skill 会注册 1 个 Tool，
- 两个面板数字<strong>不要相加</strong>。角标「主入口 / 等价 / 后备」仅作推荐指引。
- 分组<strong>默认折叠</strong>，点标题展开。
+ 给模型看的函数名（高级）。日常开/关请用「能力」。分类与能力页共用，可新建、改名、把卡片移组。也可加自订 HTTP 工具。
  </p>
  </div>
- <div class="row-actions" style="margin:0">
- <button type="button" class="btn primary icon-inline" id="btnAddCustomTool"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 添加 HTTP 工具</button>
+ </div>
+ <div class="cfg-toolbar" role="toolbar" aria-label="工具操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnAddCustomTool">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>添加 HTTP 工具</span>
+ </button>
+ <button type="button" class="cfg-tool" id="btnAddToolGroup" title="新增技能/工具分类">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>新建分组</span>
+ </button>
  </div>
  </div>
  <span class="form-msg" id="msgTools"></span>
@@ -287,19 +267,31 @@
  <section class="tab-panel" data-panel="skills">
  <div class="panel-banner">
  <div>
- <strong class="icon-inline"><span data-ipk="puzzle" data-ipk-class="ipk-sm"></span> Skills</strong>
+ <strong class="icon-inline"><span data-ipk="puzzle" data-ipk-class="ipk-sm"></span> 能力</strong>
  <p class="hint" style="margin:4px 0 0">
- 此处为 <strong>能力包目录</strong>（安装/开关单元），不是 LLM 直接调用的函数名。
- 数据源 <code>/api/config/skills</code> · 目录 <code>skills/&lt;id&gt;/</code>。
+ 助手会的本事。开/关、下次怎么喊、缺配置去填。分类可新建、改名、把卡片移到别的组。
+ 系统内置叠在下面。勾选后可导出；系统能力不能卸载。
  </p>
- <p class="hint panel-relation-hint" style="margin:6px 0 0">
- 关闭某个 Skill 会卸载其注册的 Tool；开启后重新出现在 Tools 列表。
- 与 Tools 面板数字不叠加。分组<strong>默认折叠</strong>，点标题展开。
- </p>
+ </div>
+ </div>
+ <input type="file" id="cfgSkillImportInput" class="hidden" accept=".evaskill,.zip,application/zip" />
+ <div class="cfg-toolbar" role="toolbar" aria-label="技能操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnImportSkills" title="从 .evaskill 安装">
+ <span data-ipk="upload" data-ipk-class="ipk-xs"></span><span>导入</span>
+ </button>
+ <button type="button" class="cfg-tool" id="btnExportSkills" title="只导出已勾选的技能">
+ <span data-ipk="download" data-ipk-class="ipk-xs"></span><span>导出所选</span>
+ </button>
+ </div>
+ <div class="cfg-tool-cluster cfg-tool-cluster-end">
+ <button type="button" class="cfg-tool" id="btnAddSkillGroup" title="新增技能/工具分类">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>新建分组</span>
+ </button>
+ <button type="button" class="cfg-tool" id="btnSelectAllSkills" title="全选业务技能">全选</button>
  </div>
  </div>
  <span class="form-msg" id="msgSkills"></span>
- <h3 class="panel-title">能力包（按场景分组）</h3>
  <div class="card-list" id="skillList"></div>
  </section>
 
@@ -313,9 +305,17 @@
  多数预设需要本机已安装 <strong>Node.js</strong>。
  </p>
  </div>
- <div class="row-actions" style="margin:0">
- <button type="button" class="btn primary icon-inline" id="btnAddMcp"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 自定义添加</button>
- <button type="button" class="btn icon-inline" id="btnReloadMcp"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 重新连接</button>
+ </div>
+ <div class="cfg-toolbar" role="toolbar" aria-label="MCP 操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnAddMcp">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>自定义添加</span>
+ </button>
+ </div>
+ <div class="cfg-tool-cluster cfg-tool-cluster-end">
+ <button type="button" class="cfg-tool" id="btnReloadMcp">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>重新连接</span>
+ </button>
  </div>
  </div>
  <span class="form-msg" id="msgMcp"></span>
@@ -336,16 +336,24 @@
  <div>
  <strong class="icon-inline"><span data-ipk="connection" data-ipk-class="ipk-sm"></span> 集成连接</strong>
  <p class="hint" style="margin:4px 0 0">
- 技能（NocoDB / NAS / qB / HTTP 代理等）的<strong>连接参数</strong>。存于 <code>config.json → integrations</code>，
+ 技能与 HTTP 代理的<strong>连接参数</strong>。存于 <code>config.json → integrations</code>，
  前端可增改删，无需手改文件。密码/Token 脱敏；留空保存表示不修改已有密钥。
  </p>
  <p class="hint panel-relation-hint" style="margin:6px 0 0">
  Skills 面板可看到是否已配置；调用技能时实时读取此处配置。
  </p>
  </div>
- <div class="row-actions" style="margin:0">
- <button type="button" class="btn primary icon-inline" id="btnAddIntegration"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 自定义集成</button>
- <button type="button" class="btn icon-inline" id="btnRefreshIntegrations"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新</button>
+ </div>
+ <div class="cfg-toolbar" role="toolbar" aria-label="集成操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnAddIntegration">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>自定义集成</span>
+ </button>
+ </div>
+ <div class="cfg-tool-cluster cfg-tool-cluster-end">
+ <button type="button" class="cfg-tool" id="btnRefreshIntegrations">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>刷新</span>
+ </button>
  </div>
  </div>
  <span class="form-msg" id="msgIntegrations"></span>
@@ -358,13 +366,21 @@
  <div>
  <strong class="icon-inline"><span data-ipk="alarm-clock" data-ipk-class="ipk-sm"></span> 定时任务</strong>
  <p class="hint" style="margin:4px 0 0">
- 与技能 <code>scheduled_task</code> 同一数据源。到点由 Agent 执行下方「要做什么」。
+ 与工具 <code>scheduled_task</code> 同一数据源。到点执行「要做什么」，或自动跑已绑定的工作流。
  旧版 reminders 已停用。
  </p>
  </div>
- <div class="row-actions" style="margin:0">
- <button type="button" class="btn primary icon-inline" id="btnNewTask"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 新建任务</button>
- <button type="button" class="btn icon-inline" id="btnRefreshTasks"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新</button>
+ </div>
+ <div class="cfg-toolbar" role="toolbar" aria-label="任务操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnNewTask">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>新建任务</span>
+ </button>
+ </div>
+ <div class="cfg-tool-cluster cfg-tool-cluster-end">
+ <button type="button" class="cfg-tool" id="btnRefreshTasks">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>刷新</span>
+ </button>
  </div>
  </div>
  <span class="form-msg" id="msgTasks"></span>
@@ -383,11 +399,21 @@
  </div>
  </div>
 
- <div class="row-actions mem-toolbar">
+ <div class="cfg-toolbar" role="toolbar" aria-label="记忆操作">
  <input type="search" id="memSearch" class="mem-search" placeholder="搜索记忆…" />
- <button type="button" class="btn icon-inline" id="btnSearchMemory"><span data-ipk="search" data-ipk-class="ipk-xs"></span> 搜索</button>
- <button type="button" class="btn icon-inline" id="btnRefreshMemory"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新</button>
- <button type="button" class="btn primary icon-inline" id="btnOpenMemAdd"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 新增记忆</button>
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool" id="btnSearchMemory">
+ <span data-ipk="search" data-ipk-class="ipk-xs"></span><span>搜索</span>
+ </button>
+ <button type="button" class="cfg-tool" id="btnRefreshMemory">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>刷新</span>
+ </button>
+ </div>
+ <div class="cfg-tool-cluster cfg-tool-cluster-end">
+ <button type="button" class="cfg-tool is-primary" id="btnOpenMemAdd">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>新增记忆</span>
+ </button>
+ </div>
  <span class="form-msg" id="msgMemory"></span>
  </div>
  <div class="mem-list-head">已保存</div>
@@ -404,14 +430,24 @@
  </p>
  </div>
  </div>
- <div class="row-actions mem-toolbar">
+ <div class="cfg-toolbar" role="toolbar" aria-label="知识库操作">
  <input type="search" id="kbSearch" class="mem-search" placeholder="搜索标题、标签、正文…" />
  <select id="kbFilterCollection" title="按分类筛选" class="kb-filter-select">
  <option value="">全部分类</option>
  </select>
- <button type="button" class="btn icon-inline" id="btnSearchKb"><span data-ipk="search" data-ipk-class="ipk-xs"></span> 搜索</button>
- <button type="button" class="btn icon-inline" id="btnRefreshKb"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新</button>
- <button type="button" class="btn primary icon-inline" id="btnNewKbPage"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 新建页</button>
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool" id="btnSearchKb">
+ <span data-ipk="search" data-ipk-class="ipk-xs"></span><span>搜索</span>
+ </button>
+ <button type="button" class="cfg-tool" id="btnRefreshKb">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>刷新</span>
+ </button>
+ </div>
+ <div class="cfg-tool-cluster cfg-tool-cluster-end">
+ <button type="button" class="cfg-tool is-primary" id="btnNewKbPage">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>新建页</span>
+ </button>
+ </div>
  <span class="form-msg" id="msgKb"></span>
  </div>
 
@@ -427,11 +463,20 @@
  <p class="hint" style="margin:4px 0 0">
  把「常做的几步事」做成清单，点一下按顺序自动做完。
  也可以让流程中途<strong>停下来问你一声</strong>再继续。
+ 编辑时可选「定时运行」，到点自动跑。
  </p>
  </div>
- <div class="row-actions" style="margin:0">
- <button type="button" class="btn primary icon-inline" id="btnNewWorkflow"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 新建流程</button>
- <button type="button" class="btn icon-inline" id="btnRefreshWorkflows"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新</button>
+ </div>
+ <div class="cfg-toolbar" role="toolbar" aria-label="工作流操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnNewWorkflow">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>新建流程</span>
+ </button>
+ </div>
+ <div class="cfg-tool-cluster cfg-tool-cluster-end">
+ <button type="button" class="cfg-tool" id="btnRefreshWorkflows">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>刷新</span>
+ </button>
  </div>
  </div>
  <span class="form-msg" id="msgWorkflows"></span>
@@ -443,12 +488,14 @@
  <input type="checkbox" id="wfRunSelectAll" />
  <span>全选</span>
  </label>
- <button type="button" class="btn ghost-sm danger" id="btnWfDeleteSelectedRuns" disabled>
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-danger" id="btnWfDeleteSelectedRuns" disabled>
  删除所选
  </button>
- <button type="button" class="btn ghost-sm danger" id="btnWfClearRuns" title="清空全部运行记录">
+ <button type="button" class="cfg-tool is-danger" id="btnWfClearRuns" title="清空全部运行记录">
  一键清理
  </button>
+ </div>
  </div>
  </div>
  <div class="card-list" id="workflowRunList"></div>
@@ -456,30 +503,60 @@
 
  <!-- Workspace files -->
  <section class="tab-panel" data-panel="workspace">
- <div class="panel-banner">
- <div>
+ <div class="panel-banner ws-banner">
+ <div class="ws-banner-copy">
  <strong class="icon-inline"><span data-ipk="folder-open" data-ipk-class="ipk-sm"></span> 工作区</strong>
- <p class="hint" style="margin:4px 0 0">
- 浏览 <code>workspace/</code>。可上传/下载、在线编辑文本、新建/删除。
- 对话附件默认在 <code>uploads/</code>；面板上传写入<strong>当前目录</strong>。
+ <p class="hint" id="wsBannerHint" style="margin:4px 0 0">
+ 接到 Hub 后，这里与 Hub「工作区」是<strong>同一份公司文件</strong>。
+ 新建、上传都写入当前打开的目录。单击打开，Ctrl 多选。
  </p>
+ <p class="ws-root-chip hidden" id="wsRootChip" hidden></p>
  </div>
- <div class="row-actions" style="margin:0">
+ </div>
  <input type="file" id="wsUploadInput" class="hidden" multiple />
- <button type="button" class="btn primary icon-inline" id="btnWsUpload" title="上传到当前目录">
- <span data-ipk="upload" data-ipk-class="ipk-xs"></span> 上传
+ <input type="file" id="wsUploadDirInput" class="hidden" webkitdirectory directory multiple />
+ <div class="cfg-toolbar ws-toolbar" role="toolbar" aria-label="工作区操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool ws-tool is-primary" id="btnWsUpload" title="上传文件到当前目录">
+ <span data-ipk="upload" data-ipk-class="ipk-xs"></span><span>上传</span>
  </button>
- <button type="button" class="btn icon-inline" id="btnWsNewFile"><span data-ipk="plus" data-ipk-class="ipk-xs"></span> 新建文件</button>
- <button type="button" class="btn icon-inline" id="btnWsNewDir"><span data-ipk="folder-open" data-ipk-class="ipk-xs"></span> 新建文件夹</button>
- <button type="button" class="btn icon-inline" id="btnRefreshWorkspace"><span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新</button>
+ <button type="button" class="cfg-tool ws-tool" id="btnWsUploadDir" title="上传整个文件夹到当前目录">
+ <span>文件夹</span>
+ </button>
+ </div>
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool ws-tool" id="btnWsNewFile" title="在当前目录新建文件">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>文件</span>
+ </button>
+ <button type="button" class="cfg-tool ws-tool" id="btnWsNewDir" title="在当前目录新建文件夹">
+ <span data-ipk="folder-open" data-ipk-class="ipk-xs"></span><span>文件夹</span>
+ </button>
+ </div>
+ <div class="cfg-tool-cluster cfg-tool-cluster-end">
+ <button type="button" class="cfg-tool ws-tool" id="btnWsUndo" title="撤销上一步" disabled>撤销</button>
+ <button type="button" class="cfg-tool ws-tool" id="btnRefreshWorkspace" title="刷新当前目录">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>刷新</span>
+ </button>
+ <button type="button" class="cfg-tool ws-tool" id="btnWsView" title="切换列表 / 图标">列表</button>
+ </div>
+ </div>
+ <div class="ws-alert hidden" id="wsNestedAlert" hidden>
+ <div class="ws-alert-body">
+ <strong>发现嵌套工作区</strong>
+ <p id="wsNestedAlertText">根目录里还有一个名为 workspace 的文件夹，点进去会看到相同内容。</p>
+ </div>
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnWsFlatten">整理重复目录</button>
  </div>
  </div>
  <div class="ws-pathbar">
  <button type="button" class="btn ghost-sm" id="btnWsUp" title="上级目录" disabled>↑ 上级</button>
  <div class="ws-breadcrumb" id="wsBreadcrumb" aria-label="当前路径"></div>
+ <input type="search" id="wsFilter" class="ws-filter" placeholder="筛选当前目录…" autocomplete="off" />
  </div>
  <span class="form-msg" id="msgWorkspace"></span>
- <div class="ws-grid" id="workspaceList" tabindex="0" title="可将文件拖到此处上传"></div>
+ <div class="ws-grid" id="workspaceList" tabindex="0" title="可将文件拖到此处上传；右键打开菜单"></div>
+ <div id="wsContextMenu" class="ws-menu hidden" role="menu" hidden></div>
  </section>
 
  <!-- Webhooks multi-channel -->
@@ -492,25 +569,174 @@
  调用 <code>POST /api/webhook/{slug}/chat</code>，请求头 <code>X-Webhook-Token</code>。
  </p>
  </div>
- <div class="row-actions" style="margin:0">
- <button type="button" class="btn primary icon-inline" id="btnNewWebhook">
- <span data-ipk="plus" data-ipk-class="ipk-xs"></span> 新建通道
+ </div>
+ <div class="cfg-toolbar" role="toolbar" aria-label="Webhook 操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnNewWebhook">
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>新建通道</span>
  </button>
- <button type="button" class="btn icon-inline" id="btnRefreshWebhooks">
- <span data-ipk="refresh" data-ipk-class="ipk-xs"></span> 刷新
+ </div>
+ <div class="cfg-tool-cluster cfg-tool-cluster-end">
+ <button type="button" class="cfg-tool" id="btnRefreshWebhooks">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>刷新</span>
  </button>
  </div>
  </div>
  <span class="form-msg" id="msgWebhooks"></span>
  <div class="card-list" id="webhookList"></div>
  </section>
- <!-- Workspace text editor modal -->
+
+ <!-- Storage / database — inline in 设定 (same window as tasks/memory) -->
+ <section class="tab-panel" data-panel="storage">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="folder-open" data-ipk-class="ipk-sm"></span> 数据库配置</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 会话、记忆、知识库、任务、工作流运行记录写入数据库。
+ 默认<strong>本地 SQLite</strong>（<code>data/eva.db</code>）；也可接 PostgreSQL / MySQL / MariaDB / SQL Server。
+ LLM 密钥与离线授权仍在本机文件，不进此库。
+ </p>
+ </div>
+ </div>
+ <p class="hint" id="storageTabSummary" style="margin:10px 0 12px">当前后端：加载中…</p>
+ <div class="form-grid" id="storageForm">
+ <label class="full">存储方式
+ <select id="stBackend">
+ <option value="sqlite">本地 SQLite（推荐 · 零配置）</option>
+ <option value="postgresql">PostgreSQL</option>
+ <option value="mysql">MySQL</option>
+ <option value="mariadb">MariaDB</option>
+ <option value="mssql">SQL Server</option>
+ </select>
+ </label>
+ <label id="stSqliteWrap" class="full">SQLite 文件（相对 data/）
+ <input type="text" id="stSqlitePath" placeholder="eva.db" autocomplete="off" />
+ </label>
+ <label class="stRemoteOnly" style="display:none">主机
+ <input type="text" id="stHost" placeholder="127.0.0.1" autocomplete="off" />
+ </label>
+ <label class="stRemoteOnly" style="display:none">端口
+ <input type="number" id="stPort" placeholder="0 = 使用默认端口" min="0" max="65535" />
+ </label>
+ <label class="stRemoteOnly" style="display:none">数据库名
+ <input type="text" id="stDatabase" placeholder="eva" autocomplete="off" />
+ </label>
+ <label class="stRemoteOnly" style="display:none">用户名
+ <input type="text" id="stUsername" placeholder="" autocomplete="username" />
+ </label>
+ <label class="stRemoteOnly" style="display:none">密码
+ <input type="password" id="stPassword" placeholder="已保存则留空不改" autocomplete="new-password" />
+ </label>
+ <label class="stRemoteOnly full" style="display:none;align-items:center;gap:8px">
+ <input type="checkbox" id="stSsl" /> 启用 SSL（部分云库需要）
+ </label>
+ </div>
+ <div class="cfg-toolbar" role="toolbar" aria-label="数据库操作" style="margin-top:14px">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool" id="btnTestStorage">
+ <span data-ipk="check" data-ipk-class="ipk-xs"></span><span>测试连接</span>
+ </button>
+ <button type="button" class="cfg-tool is-primary" id="btnSaveStorage">
+ <span data-ipk="save" data-ipk-class="ipk-xs"></span><span>保存并应用</span>
+ </button>
+ </div>
+ </div>
+ <p class="hint" style="margin-top:12px">
+ · 连接配置保存在本机 <code>data/storage.json</code><br />
+ · 首次切换 SQL 会自动导入旧版 JSON 会话/记忆/知识库等<br />
+ · 远程库请先建好空库并授权
+ </p>
+ <span class="form-msg" id="msgStorage"></span>
+ </section>
+
+ <section class="tab-panel" data-panel="office">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="office-building" data-ipk-class="ipk-sm"></span> 接入办公室</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 卡密只在 Eva 登录。Hub 添加本机时填下面的<strong>连接码</strong>，不必再填卡密。
+ 连接码 30 分钟内一次性有效；用过后或失效时点刷新即可，不必重新卡密登录。
+ </p>
+ </div>
+ </div>
+ <div class="form-grid" style="margin-top:14px">
+ <label class="full">当前连接码
+ <input type="text" id="officePairCode" readonly autocomplete="off" placeholder="登录后自动生成" />
+ </label>
+ <p class="hint" id="officePairMeta">未登录或连接码已失效。</p>
+ </div>
+ <div class="cfg-toolbar" role="toolbar" aria-label="办公室操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnOfficeCopy">复制连接码</button>
+ <button type="button" class="cfg-tool" id="btnOfficeRefresh">刷新连接码</button>
+ </div>
+ </div>
+ <span class="form-msg" id="msgOffice"></span>
+ </section>
+
+ <section class="tab-panel" data-panel="update">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="upload" data-ipk-class="ipk-sm"></span> 程序更新</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 从私有 GitHub 检查新版本。升级只替换程序文件，<strong>不改</strong> <code>data/</code>、工作区、<code>.env</code>。
+ 下载后请在启动器停止服务，再点「更新」，然后重新启动。
+ </p>
+ </div>
+ </div>
+ <p class="hint" id="updSummary" style="margin:10px 0 12px">当前版本：加载中…</p>
+ <div class="form-grid" id="updForm">
+ <label class="full">仓库
+ <input type="text" id="updRepo" placeholder="jevonsu/EVA" autocomplete="off" />
+ </label>
+ <label class="full">GitHub Token（私有仓库，可选；已保存则留空）
+ <input type="password" id="updToken" placeholder="ghp_… 或 github_pat_…" autocomplete="new-password" />
+ </label>
+ </div>
+ <div class="cfg-toolbar" role="toolbar" aria-label="更新操作" style="margin-top:14px">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool" id="btnSaveUpdChannel">
+ <span data-ipk="save" data-ipk-class="ipk-xs"></span><span>保存仓库</span>
+ </button>
+ <button type="button" class="cfg-tool" id="btnCheckUpdate">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>检查更新</span>
+ </button>
+ <button type="button" class="cfg-tool is-primary" id="btnApplyUpdate">
+ <span data-ipk="upload" data-ipk-class="ipk-xs"></span><span>下载并应用</span>
+ </button>
+ </div>
+ </div>
+ <pre class="hint" id="updNotes" style="margin-top:12px;white-space:pre-wrap;max-height:220px;overflow:auto"></pre>
+ <span class="form-msg" id="msgUpdate"></span>
+ </section>
+
+ </div>
+ </div>
+ </div>
+ </div>
+
+ <!-- 工作区命名 / 文本编辑：必须在设定窗外面，否则会被 overflow/isolation 裁掉，打开后无法关闭 -->
+ <div class="ws-name-backdrop hidden" id="wsNameDialog" role="dialog" aria-modal="true" aria-labelledby="wsNameTitle">
+ <div class="ws-name-card">
+ <h3 id="wsNameTitle">新建</h3>
+ <p class="hint" id="wsNameWhere">将创建于当前目录</p>
+ <label class="full">名称
+ <input type="text" id="wsNameInput" autocomplete="off" />
+ </label>
+ <span class="form-msg" id="msgWsName"></span>
+ <div class="row-actions" style="margin-top:12px">
+ <button type="button" class="btn primary" id="btnWsNameOk">确定</button>
+ <button type="button" class="btn" id="btnWsNameCancel">取消</button>
+ </div>
+ </div>
+ </div>
+
  <div class="modal-backdrop kb-page-backdrop cfg-editor-backdrop hidden" id="wsFileModal" role="dialog" aria-modal="true" aria-labelledby="wsFileTitle">
  <div class="modal cfg-editor-modal cfg-editor-modal-lg">
  <header class="modal-header kb-page-modal-header">
  <div class="kb-editor-head-main">
  <h2 class="icon-inline" id="wsFileTitle"><span data-ipk="edit" data-ipk-class="ipk-sm"></span> 编辑文件</h2>
- <p class="hint kb-editor-lead" id="wsFileLead">路径相对于 workspace/。保存后立即写入磁盘。</p>
+ <p class="hint kb-editor-lead" id="wsFileLead">保存后立即写入当前文件。</p>
  </div>
  <button type="button" class="btn icon-inline" id="btnCloseWsFile" title="关闭">
  <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
@@ -519,8 +745,8 @@
  <div class="modal-body kb-page-modal-body">
  <input type="hidden" id="wsEditMode" value="edit" />
  <div class="form-grid">
- <label class="full">路径
- <input type="text" id="wsFilePath" placeholder="例如 notes/todo.md" autocomplete="off" />
+ <label class="full">位置
+ <input type="text" id="wsFilePath" placeholder="当前目录下的文件名" autocomplete="off" readonly />
  </label>
  <label class="full">内容
  <textarea id="wsFileContent" rows="16" class="ws-file-textarea" spellcheck="false" placeholder="文件内容…"></textarea>
@@ -539,44 +765,76 @@
  </div>
  </div>
 
- <!-- 共享：编辑 Tool / Skill 关键提示词（存 config，不改代码） -->
- <div class="subcard hidden" id="promptEditor">
- <h3 class="icon-inline" id="promptEditorTitle"><span data-ipk="edit" data-ipk-class="ipk-sm"></span> 编辑提示词</h3>
- <p class="hint" id="promptEditorHint" style="margin:0 0 10px">
- 这里改的是模型看到的工具说明（function description）。保存到配置，无需改代码；留空并点「恢复默认」可清除覆盖。
- </p>
+ <!-- 共享：编辑 Tool / Skill 描述与触发（必须在设定窗外面，否则会被 overflow/isolation 裁掉） -->
+ <div class="modal-backdrop kb-page-backdrop cfg-editor-backdrop hidden" id="promptEditorModal" role="dialog" aria-modal="true" aria-labelledby="promptEditorTitle">
+ <div class="modal cfg-editor-modal">
+ <header class="modal-header kb-page-modal-header">
+ <div class="kb-editor-head-main">
+ <h2 class="icon-inline" id="promptEditorTitle"><span data-ipk="edit" data-ipk-class="ipk-sm"></span> 编辑说明与触发</h2>
+ <p class="hint kb-editor-lead" id="promptEditorHint">保存到配置，不改代码。描述给模型看；触发方式决定用户怎么喊、模型何时选中它。</p>
+ </div>
+ <button type="button" class="btn icon-inline" id="btnClosePromptEditor" title="关闭">
+ <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ </button>
+ </header>
+ <div class="modal-body kb-page-modal-body">
  <input type="hidden" id="promptTargetKind" value="tool" />
  <input type="hidden" id="promptTargetId" value="" />
  <div class="form-grid">
  <label class="full">目标
- <input id="promptTargetLabel" type="text" readonly />
+ <input id="promptTargetLabel" type="text" readonly class="prompt-readonly" />
  </label>
- <label class="full">代码默认说明（只读）
+ <label>分类
+ <select id="promptGroup"></select>
+ <span class="field-hint">技能和工具函数共用这套分类。可在设定里新增或改名。</span>
+ </label>
+ <input type="hidden" id="promptTargetGroup" value="" />
+ </div>
+ <section class="prompt-section">
+ <h3>描述</h3>
+ <p class="field-hint">模型选工具时看到的说明。留空则用代码默认。</p>
+ <div class="form-grid">
+ <label class="full">代码默认（只读）
  <textarea id="promptBaseDesc" rows="3" readonly class="prompt-readonly"></textarea>
  </label>
- <label class="full">自定义提示词（给 LLM 看）
- <textarea id="promptCustomDesc" rows="6" placeholder="写清楚：什么时候用这个工具、参数怎么填、不要用它做什么…"></textarea>
+ <label class="full">描述
+ <textarea id="promptCustomDesc" rows="5" placeholder="写清楚：什么时候用、参数怎么填、不要用它做什么。"></textarea>
  </label>
  </div>
- <div class="row-actions">
+ </section>
+ <section class="prompt-section">
+ <h3>触发方式</h3>
+ <p class="field-hint">用户怎么喊，以及哪些词会让模型更容易选中它。关键词是加在代码默认上的，不会覆盖原有词。</p>
+ <div class="form-grid">
+ <label class="full">触发说法
+ <input id="promptHowToCall" type="text" maxlength="200" placeholder="例如：帮我查一下这个快递单号" autocomplete="off" />
+ <span class="field-hint" id="promptHowHint">会出现在卡片「下次这样说」，也会提示模型。</span>
+ </label>
+ <label class="full">额外触发关键词
+ <input id="promptSceneKeywords" type="text" placeholder="逗号分隔，例如：查库存, 看看库存" autocomplete="off" />
+ <span class="field-hint" id="promptKwHint">没有代码默认关键词。</span>
+ </label>
+ </div>
+ </section>
+ </div>
+ <footer class="kb-form-footer kb-page-modal-footer">
+ <div class="kb-form-footer-btns">
  <button type="button" class="btn primary icon-inline" id="btnSavePrompt"><span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存</button>
  <button type="button" class="btn" id="btnResetPrompt">恢复默认</button>
  <button type="button" class="btn" id="btnCancelPrompt">取消</button>
  <span class="form-msg" id="msgPrompt"></span>
  </div>
- </div>
- </div>
+ </footer>
  </div>
  </div>
 
- 
  <!-- nested editor: llmEditorModal -->
  <div class="modal-backdrop kb-page-backdrop cfg-editor-backdrop hidden" id="llmEditorModal" role="dialog" aria-modal="true" aria-labelledby="llmEditorTitle">
  <div class="modal cfg-editor-modal">
  <header class="modal-header kb-page-modal-header">
  <div class="kb-editor-head-main">
  <h2 class="icon-inline" id="llmEditorTitle"><span data-ipk="lightning" data-ipk-class="ipk-sm"></span> 编辑 LLM</h2>
- <p class="hint kb-editor-lead">添加或修改模型提供商与 API Key。</p>
+ <p class="hint kb-editor-lead">默认走 API。也可改成 CLI，用本机命令当模型（例如 Grok Build 的 grok）。</p>
  </div>
  <button type="button" class="btn icon-inline" id="btnCloseLlmEditor" title="关闭">
  <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
@@ -587,17 +845,39 @@
  <input type="hidden" id="llmId" />
  <div class="form-grid">
  <label>显示名称<input id="llmName" type="text" placeholder="xAI Grok" /></label>
- <label>Provider
+ <label>连接方式
+ <select id="llmTransport">
+ <option value="api" selected>API（默认）</option>
+ <option value="cli">CLI 命令</option>
+ </select>
+ </label>
+ <label class="llm-api-only">Provider
  <select id="llmProvider">
  <option value="openai">OpenAI 兼容</option>
  <option value="xai">xAI</option>
  <option value="custom">Custom</option>
  </select>
  </label>
- <label class="full">Base URL<input id="llmBaseUrl" type="text" placeholder="https://api.x.ai/v1" /></label>
- <label class="full">API Key<input id="llmApiKey" type="password" placeholder="留空表示不修改已有 Key" autocomplete="off" /></label>
+ <label class="full llm-api-only">Base URL<input id="llmBaseUrl" type="text" placeholder="https://api.x.ai/v1" /></label>
+ <label class="full llm-api-only">API Key<input id="llmApiKey" type="password" placeholder="留空表示不修改已有 Key" autocomplete="off" /></label>
+ <label class="full llm-cli-only" hidden>CLI 预设
+ <select id="llmCliPreset">
+ <option value="">自定义</option>
+ <option value="grok_build">Grok Build（grok CLI）</option>
+ </select>
+ </label>
+ <label class="full llm-cli-only" hidden>命令
+ <input id="llmCliCommand" type="text" placeholder="grok 或可执行文件完整路径" autocomplete="off" />
+ </label>
+ <label class="full llm-cli-only" hidden>参数模板
+ <input id="llmCliArgs" type="text" placeholder="--prompt-file {prompt_file} --output-format plain --max-turns 32 --always-approve" autocomplete="off" />
+ <span class="field-hint">可用 {prompt}、{prompt_file}、{model}。Grok Build 建议用 --prompt-file {prompt_file}。</span>
+ </label>
+ <label class="full llm-cli-only" hidden>工作目录（可选）
+ <input id="llmCliCwd" type="text" placeholder="留空= Eva 工作区" autocomplete="off" />
+ </label>
  <label class="full">Model
- <div class="llm-model-row">
+ <div class="llm-model-row llm-api-only">
  <select id="llmModelSelect" class="llm-model-select" title="从接口拉取后选择">
  <option value="">— 先填 Base URL / Key，再点拉取 —</option>
  </select>
@@ -609,7 +889,16 @@
  <p class="field-hint llm-modality-hint" id="llmModalityHint">选择模型后显示：文本 / 全模态(识图) 等</p>
  </label>
  <label class="check"><input id="llmEnabled" type="checkbox" checked /> 启用</label>
- <label class="check"><input id="llmDefault" type="checkbox" /> 设为默认</label>
+ <label class="check"><input id="llmDefault" type="checkbox" /> 设为默认（主模型）</label>
+ <label class="check" title="这一轮要调技能时自动用，日常聊天仍走默认主模型">
+ <input id="llmDeputy" type="checkbox" /> 设为副模型
+ </label>
+ <label class="check full llm-api-only" title="勾选后该 LLM 的对话/拉模型/余额走「设定→集成→HTTP 网络」中的代理；不勾选则直连">
+ <input id="llmUseProxy" type="checkbox" /> 使用代理（仅此模型）
+ </label>
+ <p class="field-hint full llm-api-only" style="margin-top:-4px;margin-bottom:4px">
+ 代理地址在「集成 → HTTP 网络」配置。未勾选时默认直连，不走系统代理。
+ </p>
  </div>
  <span class="form-msg" id="msgLlmEditor"></span>
 
@@ -720,32 +1009,44 @@
 
  <!-- nested editor: integrationEditorModal -->
  <div class="modal-backdrop kb-page-backdrop cfg-editor-backdrop hidden" id="integrationEditorModal" role="dialog" aria-modal="true" aria-labelledby="integEditorTitle">
- <div class="modal cfg-editor-modal">
+ <div class="modal cfg-editor-modal cfg-editor-modal-lg">
  <header class="modal-header kb-page-modal-header">
  <div class="kb-editor-head-main">
  <h2 class="icon-inline" id="integEditorTitle"><span data-ipk="connection" data-ipk-class="ipk-sm"></span> 编辑集成</h2>
  <p class="hint kb-editor-lead">配置技能连接参数；密钥留空表示不修改。</p>
  </div>
- <button type="button" class="btn icon-inline" id="btnCloseIntegEditor" title="关闭">
- <span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool" id="btnCloseIntegEditor" title="关闭">
+ <span data-ipk="close" data-ipk-class="ipk-xs"></span><span>关闭</span>
  </button>
+ </div>
  </header>
  <div class="modal-body kb-page-modal-body">
 
  <input type="hidden" id="integId" value="" />
  <p class="hint" id="integEditorDesc" style="margin:0 0 10px"></p>
- <div class="form-grid" id="integFields"></div>
- <span class="form-msg" id="msgIntegEditor"></span>
+ <div class="form-grid integ-form" id="integFields"></div>
 
  </div>
  <footer class="kb-form-footer kb-page-modal-footer">
- <div class="kb-form-footer-btns">
-
- <button type="button" class="btn primary icon-inline" id="btnSaveInteg"><span data-ipk="save" data-ipk-class="ipk-xs"></span> 保存</button>
- <button type="button" class="btn icon-inline" id="btnTestInteg"><span data-ipk="connection" data-ipk-class="ipk-xs"></span> 测试</button>
- <button type="button" class="btn danger icon-inline" id="btnDeleteInteg"><span data-ipk="delete" data-ipk-class="ipk-xs"></span> 清空/删除</button>
- <button type="button" class="btn" id="btnCancelInteg">取消</button>
-
+ <span class="form-msg" id="msgIntegEditor"></span>
+ <div class="cfg-toolbar" role="toolbar" aria-label="集成表单操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnSaveInteg">
+ <span data-ipk="save" data-ipk-class="ipk-xs"></span><span>保存</span>
+ </button>
+ <button type="button" class="cfg-tool" id="btnTestInteg">
+ <span data-ipk="connection" data-ipk-class="ipk-xs"></span><span>测试</span>
+ </button>
+ </div>
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-danger" id="btnDeleteInteg">
+ <span data-ipk="delete" data-ipk-class="ipk-xs"></span><span>清空/删除</span>
+ </button>
+ </div>
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool" id="btnCancelInteg">取消</button>
+ </div>
  </div>
  </footer>
  </div>
@@ -955,7 +1256,7 @@
  </div>
  <div class="kb-form-row">
  <label class="kb-label">标题 <em class="kb-req">必填</em>
- <input id="kbTitle" type="text" placeholder="例：产品内容流水线SOP" autocomplete="off" />
+ <input id="kbTitle" type="text" placeholder="例：入门说明" autocomplete="off" />
  </label>
  <label class="kb-pin-toggle" title="置顶页面">
  <input id="kbPinned" type="checkbox" />
@@ -1079,11 +1380,13 @@
  <span class="kb-step">4</span>
  <div>
  <div class="kb-form-section-title">结果发到哪个对话</div>
- <p class="kb-sec-desc" id="taskSessionHint">任务跑完后，AI 回复会出现在选定的聊天里</p>
+ <p class="kb-sec-desc" id="taskSessionHint">从列表里选一个聊天，不用填 ID。任务跑完后回复会出现在那里。</p>
  </div>
  </div>
- <div class="task-session-chips" id="taskSessionChips" role="group" aria-label="目标对话"></div>
- <div id="taskSessionFields" class="task-session-fields"></div>
+ <div class="session-select-row">
+ <select id="taskSessionSelect" class="task-session-select" aria-label="选择接收结果的对话"></select>
+ <button type="button" class="btn ghost-sm" id="btnRefreshTaskSessions" title="重新加载对话列表">刷新</button>
+ </div>
  </section>
  <label class="kb-check-line task-enabled-line">
  <input id="taskEnabled" type="checkbox" checked /> 创建后立即启用
@@ -1131,11 +1434,10 @@
  <div class="wf-tpl-filters" id="wfTplFilters" role="tablist">
  <button type="button" class="btn ghost-sm is-active" data-wf-tpl-group="all">全部</button>
  <button type="button" class="btn ghost-sm" data-wf-tpl-group="simple">简单上手</button>
- <button type="button" class="btn ghost-sm" data-wf-tpl-group="commercial">商业内容</button>
  <button type="button" class="btn ghost-sm" data-wf-tpl-group="blank">空白</button>
  </div>
  <div class="wf-tpl-grid" id="wfTemplateGrid"></div>
- <p class="field-hint wf-pick-tip">推荐从「看文件夹并留言」试手；做产品内容选「商业内容流水线」。</p>
+ <p class="field-hint wf-pick-tip">推荐从「看文件夹并留言」试手，或选空白自己加步骤。</p>
  </div>
 
  <!-- 阶段 2：编辑（新建选完模板 / 改已有流程） -->
@@ -1172,6 +1474,22 @@
  <input id="wfEnabled" type="checkbox" checked /> 启用（关掉后不会被误点运行）
  </label>
  </details>
+ </section>
+
+ <section class="wf-block" id="wfSectionSchedule">
+ <div class="wf-block-label">定时运行</div>
+ <p class="field-hint" id="wfSchedHint" style="margin:4px 0 8px">可选。保存后会写入「设定 → 定时任务」，到点自动跑这个流程。</p>
+ <div class="task-sched-chips" id="wfSchedChips" role="group" aria-label="工作流调度"></div>
+ <div id="wfSchedFields" class="task-sched-fields"></div>
+ </section>
+
+ <section class="wf-block" id="wfSectionSession">
+ <div class="wf-block-label">结果写到哪个对话</div>
+ <p class="field-hint" id="wfSessionHint" style="margin:4px 0 8px">本轮所有步骤共用一个对话，不会每步新开。定时跑也用这个。</p>
+ <div class="session-select-row">
+ <select id="wfDefaultSessionSelect" class="task-session-select" aria-label="工作流默认对话"></select>
+ <button type="button" class="btn ghost-sm" id="btnRefreshWfSessions" title="重新加载对话列表">刷新</button>
+ </div>
  </section>
 
  <section class="wf-block" id="wfSectionSteps">
@@ -1276,6 +1594,13 @@
  </header>
  <div class="modal-body task-page-modal-body">
  <input type="hidden" id="wfRunId" value="" />
+ <label class="kb-label" style="margin:0 0 12px">结果写到哪个对话
+ <p class="field-hint" id="wfRunSessionHint" style="margin:4px 0 6px">本轮所有步骤都发到同一个对话，不会每步新开。</p>
+ <div class="session-select-row">
+ <select id="wfRunSessionSelect" class="task-session-select" aria-label="运行写入的对话"></select>
+ <button type="button" class="btn ghost-sm" id="btnRefreshWfRunSessions" title="重新加载对话列表">刷新</button>
+ </div>
+ </label>
  <div id="wfRunInputsHost" class="wf-run-inputs"></div>
  <div class="wf-run-result-wrap">
  <div class="kb-form-section-title" style="margin:12px 0 6px">执行进度</div>
@@ -1298,6 +1623,7 @@
  <footer class="kb-form-footer kb-page-modal-footer">
  <span class="form-msg" id="msgWfRun"></span>
  <div class="kb-form-footer-btns">
+ <button type="button" class="btn icon-inline hidden" id="btnWfOpenRunSession">打开对话</button>
  <button type="button" class="btn" id="btnCancelWfRun">关闭</button>
  <button type="button" class="btn primary icon-inline" id="btnDoWfRun">
  <span data-ipk="play" data-ipk-class="ipk-xs"></span> 开始

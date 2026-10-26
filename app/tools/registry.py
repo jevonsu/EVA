@@ -7,6 +7,7 @@ import functools
 import inspect
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 ToolHandler = Callable[..., Awaitable[str] | str]
 
 # Valid source values; any other value is rejected by register().
-_VALID_SOURCES = frozenset({"builtin", "skill", "custom"})
+_VALID_SOURCES = frozenset({"builtin", "skill", "custom", "mcp"})
 
 
 @dataclass
@@ -81,9 +82,20 @@ class ToolRegistry:
                 return
             logger.warning("Overwriting tool: %s", name)
 
-        params = parameters or {"type": "object", "properties": {}}
+        if callable(description) and not callable(handler):
+            description, handler = handler, description
+        if not isinstance(description, str):
+            description = str(description or "")
+        if not callable(handler):
+            logger.error("Tool %s registered without a callable handler", name)
+
+            async def _missing_handler(**_kwargs: Any) -> str:
+                return json.dumps({"error": f"tool {name} has no handler"}, ensure_ascii=False)
+
+            handler = _missing_handler
+        params = parameters if isinstance(parameters, dict) else {"type": "object", "properties": {}}
         self._tools[name] = ToolSpec(
-            name=name,
+            name=str(name or ""),
             description=description,
             parameters=params,
             handler=handler,
@@ -118,8 +130,8 @@ class ToolRegistry:
         - Tool names explicitly mentioned in the user message are forced in.
         - *force_tools* (intent routing / prior-turn hints) always get a seat.
         - User phrases like 「全部工具」 → full toolset.
-        - Weak / empty matches → full toolset (same as pre-P2 fallback).
-        - Soft Top-N only shrinks when there is a confident match set.
+        - Weak / empty matches → core always-include (+ forced/named), not every skill.
+        - Soft Top-N only adds skills with a confident match.
         """
         return self._filter_by_query(query, top_n=top_n, force_tools=force_tools)
 
@@ -130,39 +142,74 @@ class ToolRegistry:
     # Intentionally excludes create_tool / delete_tool — those are gated by
     # explicit user intent (see _META_TOOLS_CONDITIONAL).
     # Cross-cutting essentials only (saves tokens; others via soft filter).
+    # workflow / scheduled_task / integrations / llms are on-demand (scene + intent).
     _ALWAYS_INCLUDE = frozenset({
-        "http",
         "memory",
         "kb",
-        "workflow",
         "workspace",
-        "integrations",
         "get_current_time",
+        "ask_user",
     })
 
-    # Only injected when the user clearly asks to create/delete a skill tool.
-    _META_TOOLS_CONDITIONAL = frozenset({"create_tool", "delete_tool", "read_skill"})
+    # Not always-on; re-offered after recent use or explicit intent/scene.
+    _ON_DEMAND_CORES = frozenset({
+        "workflow",
+        "scheduled_task",
+        "integrations",
+        "llms",
+        "terminal",
+        "document",
+        "reload_runtime",
+        "list_api_models",
+        "server_health_check",
+    })
+
+    # Only injected when the user clearly asks to create/update/delete a skill.
+    # read_skill / list / validate unlocked together with create/update/delete.
+    # Session sticky + force_tools can keep them available across turns.
+    _META_TOOLS_CONDITIONAL = frozenset(
+        {
+            "create_tool",
+            "delete_tool",
+            "read_skill",
+            "list_skills",
+            "validate_skill",
+            "promote_skill",
+        }
+    )
 
     # Exact phrase markers (fast path)
     _CREATE_TOOL_MARKERS = (
         "创建工具",
+        "创建技能",
         "新建工具",
+        "新建技能",
         "新建skill",
         "新建 skill",
         "创建skill",
         "创建 skill",
         "做成工具",
+        "做成技能",
         "做成skill",
         "做成 skill",
         "封装成工具",
+        "封装成技能",
         "封装成skill",
         "封装成 skill",
         "写一个工具",
+        "写一个技能",
         "写一个skill",
         "写一个 skill",
-        "固定工具",
-        "固定skill",
-        "固定 skill",
+        "做一个工具",
+        "做一个技能",
+        "做个工具",
+        "做个技能",
+        "做一下工具",
+        "做一下技能",
+        "开发技能",
+        "写技能",
+        "技能创建",
+        "技能新建",
         "create tool",
         "create a tool",
         "create skill",
@@ -173,29 +220,77 @@ class ToolRegistry:
         "make a tool",
     )
 
-    # Allow short fillers: 「创建一个天气 skill 工具」「新建一个 xxx 工具」
+    # Allow short fillers: 「创建一个天气 skill 工具」「新建一个 xxx 技能」
     _CREATE_TOOL_PATTERNS = (
-        r"创建.{0,20}(工具|skill)",
-        r"新建.{0,20}(工具|skill)",
-        r"做成.{0,12}(工具|skill)",
-        r"封装成.{0,12}(工具|skill)",
-        r"写一个.{0,12}(工具|skill)",
-        r"固定.{0,12}(工具|skill)",
+        r"创建.{0,20}(工具|skill|技能)",
+        r"新建.{0,20}(工具|skill|技能)",
+        r"做成.{0,12}(工具|skill|技能)",
+        r"封装成.{0,12}(工具|skill|技能)",
+        r"写一个.{0,12}(工具|skill|技能)",
+        r"做(一个|个|一下).{0,20}(工具|skill|技能)",
+        r"开发.{0,12}(工具|skill|技能)",
+        r"(工具|skill|技能).{0,8}(创建|新建)",
         r"create\s+(a\s+)?(new\s+)?(tool|skill)",
         r"make\s+(a\s+)?(new\s+)?(tool|skill)",
         r"new\s+(tool|skill)",
     )
 
+    # Update / edit existing skill → unlock create_tool(update=true) + read_skill
+    _UPDATE_TOOL_MARKERS = (
+        "更新工具",
+        "更新技能",
+        "更新skill",
+        "更新 skill",
+        "修改工具",
+        "修改技能",
+        "修改skill",
+        "修改 skill",
+        "编辑工具",
+        "编辑技能",
+        "编辑skill",
+        "编辑 skill",
+        "改工具",
+        "改技能",
+        "改skill",
+        "改 skill",
+        "修复skill",
+        "修复技能",
+        "修一下skill",
+        "修一下技能",
+        "技能更新",
+        "技能修改",
+        "技能编辑",
+        "update skill",
+        "update tool",
+        "edit skill",
+        "edit tool",
+        "fix skill",
+        "modify skill",
+    )
+
+    _UPDATE_TOOL_PATTERNS = (
+        r"(更新|修改|编辑|改一下|改下|修好|修一下|修复|改进).{0,20}(工具|skill|技能)",
+        r"(工具|skill|技能).{0,12}(更新|修改|编辑|修复)",
+        r"(update|edit|fix|modify)\s+(the\s+)?(tool|skill)",
+        r"(tool|skill)\s+(update|edit|fix)",
+    )
+
     _DELETE_TOOL_MARKERS = (
         "删除工具",
+        "删除技能",
         "删除skill",
         "删除 skill",
         "刪除工具",
+        "刪除技能",
         "刪除skill",
         "卸載工具",
         "卸载工具",
+        "卸载技能",
         "去掉工具",
+        "去掉技能",
         "移除工具",
+        "移除技能",
+        "技能删除",
         "delete tool",
         "delete skill",
         "remove tool",
@@ -205,15 +300,62 @@ class ToolRegistry:
     )
 
     _DELETE_TOOL_PATTERNS = (
-        r"删除.{0,16}(工具|skill)",
-        r"刪除.{0,16}(工具|skill)",
-        r"卸载.{0,12}(工具|skill)",
-        r"卸載.{0,12}(工具|skill)",
-        r"移除.{0,12}(工具|skill)",
-        r"去掉.{0,12}(工具|skill)",
+        r"删除.{0,16}(工具|skill|技能)",
+        r"刪除.{0,16}(工具|skill|技能)",
+        r"卸载.{0,12}(工具|skill|技能)",
+        r"卸載.{0,12}(工具|skill|技能)",
+        r"移除.{0,12}(工具|skill|技能)",
+        r"去掉.{0,12}(工具|skill|技能)",
+        r"(工具|skill|技能).{0,8}(删除|刪除|卸载|移除)",
         r"delete\s+(the\s+)?(tool|skill)",
         r"remove\s+(the\s+)?(tool|skill)",
         r"uninstall\s+(the\s+)?(tool|skill)",
+    )
+
+    # Explicit inspect skill source (read-only)
+    _READ_SKILL_MARKERS = (
+        "read_skill",
+        "查看skill",
+        "查看 skill",
+        "查看技能",
+        "读skill",
+        "读 skill",
+        "读技能",
+        "看skill",
+        "看 skill",
+        "看技能",
+        "skill源码",
+        "技能源码",
+        "skill 源码",
+        "read skill",
+        "show skill",
+        "inspect skill",
+    )
+
+    _READ_SKILL_PATTERNS = (
+        r"(读|查看|看一下|看下|打开).{0,16}(skill|技能)(源码|代码|实现)?",
+        r"(skill|技能).{0,8}(源码|代码|实现)",
+        r"(read|show|inspect|view)\s+(the\s+)?skill",
+    )
+
+    _LIST_SKILL_MARKERS = (
+        "你有什么技能",
+        "有什么技能",
+        "有哪些技能",
+        "会什么技能",
+        "会哪些技能",
+        "列出技能",
+        "技能列表",
+        "全部技能",
+        "所有技能",
+        "list skills",
+        "what skills",
+    )
+
+    _LIST_SKILL_PATTERNS = (
+        r"(你)?(有|会)(什么|哪些).{0,8}(技能|skill)",
+        r"(列出|有哪些|有什么|全部|所有).{0,12}(技能|skill)",
+        r"list\s+skills?",
     )
 
     _FULL_TOOLSET_MARKERS = (
@@ -252,20 +394,22 @@ class ToolRegistry:
         "stop", "run", "done", "doing",
     })
 
-    @staticmethod
-    def _extract_keywords(text: str) -> list[str]:
+    @classmethod
+    def _extract_keywords(cls, text: str) -> list[str]:
         """Extract meaningful English words and Chinese substrings."""
         import re
+        text = text if isinstance(text, str) else str(text or "")
         text = text.strip()
         if not text:
             return []
 
         keywords: list[str] = []
 
+        ignore = cls._routing_ignore_tokens()
         eng_tokens = re.findall(r"[a-zA-Z][a-zA-Z]+", text)
         for w in eng_tokens:
             wl = w.lower()
-            if wl not in ToolRegistry._STOP_WORDS:
+            if wl not in ToolRegistry._STOP_WORDS and wl not in ignore:
                 keywords.append(wl)
 
         chn_chars = re.findall(r"[一-鿿]", text)
@@ -277,6 +421,26 @@ class ToolRegistry:
         keywords.extend(chn_segments)
 
         return list(set(keywords))
+
+    @classmethod
+    def _routing_ignore_tokens(cls) -> set[str]:
+        """Agent display name must not drag in skills by substring."""
+        out = {"lily", "lilyth"}
+        try:
+            from app.config_store import get_config_store
+
+            name = str((get_config_store().get_agent() or {}).get("name") or "").strip()
+        except Exception:
+            name = ""
+        if name:
+            compact = name.replace(" ", "").lower()
+            if compact:
+                out.add(compact)
+            for part in name.replace("-", " ").replace("_", " ").split():
+                p = part.strip().lower()
+                if len(p) >= 2:
+                    out.add(p)
+        return out
 
     @classmethod
     def _wants_full_toolset(cls, query: str) -> bool:
@@ -314,30 +478,107 @@ class ToolRegistry:
                 return True
         return False
 
+    def _expand_meta_bundle(self, allowed: set[str]) -> set[str]:
+        """Companion tools for a coherent skill-dev workflow."""
+        out = set(allowed)
+        if "create_tool" in out or "delete_tool" in out or "promote_skill" in out:
+            out |= {"read_skill", "list_skills", "validate_skill"}
+        if "validate_skill" in out:
+            out |= {"read_skill", "list_skills"}
+        if "read_skill" in out:
+            out.add("list_skills")
+        if "list_skills" in out and not out - {"list_skills"}:
+            pass  # list alone is fine
+        # promote only when create/update/promote intent already present
+        if "create_tool" in out:
+            out.add("promote_skill")
+        return out & self._META_TOOLS_CONDITIONAL
+
     def _allowed_meta_tools(self, query: str) -> set[str]:
-        """create_tool / delete_tool only when user intent is explicit (or named)."""
+        """Unlock skill meta tools only when user intent is explicit (or named).
+
+        - create / update / edit → create_tool + read/list/validate/promote
+        - delete → delete_tool + read/list
+        - read / inspect → read_skill + list
+        - existing skill id + repair verbs → create + read (see skill_lifecycle)
+        - 「全部工具」 still does *not* auto-unlock create/delete (anti-spam).
+        """
         allowed: set[str] = set()
         named = self._named_tools_in_query(query or "")
         q = query or ""
-        if (
+
+        wants_create = (
             "create_tool" in named
+            or "promote_skill" in named
             or self._query_has_marker(q, self._CREATE_TOOL_MARKERS)
             or self._query_has_pattern(q, self._CREATE_TOOL_PATTERNS)
-        ):
-            allowed.add("create_tool")
-        if (
+            or self._query_has_marker(q, self._UPDATE_TOOL_MARKERS)
+            or self._query_has_pattern(q, self._UPDATE_TOOL_PATTERNS)
+        )
+        wants_delete = (
             "delete_tool" in named
             or self._query_has_marker(q, self._DELETE_TOOL_MARKERS)
             or self._query_has_pattern(q, self._DELETE_TOOL_PATTERNS)
+        )
+        wants_read = (
+            "read_skill" in named
+            or "list_skills" in named
+            or "validate_skill" in named
+            or self._query_has_marker(q, self._READ_SKILL_MARKERS)
+            or self._query_has_pattern(q, self._READ_SKILL_PATTERNS)
+        )
+        wants_list = (
+            "list_skills" in named
+            or self._query_has_marker(q, self._LIST_SKILL_MARKERS)
+            or self._query_has_pattern(q, self._LIST_SKILL_PATTERNS)
+        )
+        # Explicit promote / 发布 / 草稿
+        q_low = q.lower()
+        if (
+            "promote_skill" in named
+            or "发布技能" in q
+            or "发布 skill" in q_low
+            or "promote skill" in q_low
+            or (
+                "草稿" in q
+                and ("发布" in q or "promote" in q_low or "上线" in q)
+            )
         ):
-            allowed.add("delete_tool")
-        # 「全部工具」仍不自动放出 create/delete，避免顺手乱建；
-        # 用户可点名 create_tool / 说「创建工具」。
-        return allowed
+            allowed.add("promote_skill")
+            wants_create = True
 
-    def _iter_visible_tools(self, query: str) -> list[ToolSpec]:
-        """All registered tools minus gated meta tools (unless intent matches)."""
+        if wants_create:
+            allowed.add("create_tool")
+        if wants_delete:
+            allowed.add("delete_tool")
+        if wants_read:
+            allowed.add("read_skill")
+        if wants_list:
+            allowed.add("list_skills")
+
+        # Existing skill name + repair/debug intent (e.g. 「修 xxx 技能」)
+        try:
+            from app.services.skill_lifecycle import auto_meta_tools_for_query
+
+            allowed |= auto_meta_tools_for_query(q)
+        except Exception:
+            pass
+
+        return self._expand_meta_bundle(allowed)
+
+    def _iter_visible_tools(
+        self,
+        query: str,
+        *,
+        force_tools: set[str] | None = None,
+    ) -> list[ToolSpec]:
+        """All registered tools minus gated meta tools (unless intent / force)."""
         allowed_meta = self._allowed_meta_tools(query or "")
+        if force_tools:
+            allowed_meta |= {
+                n for n in force_tools if n in self._META_TOOLS_CONDITIONAL
+            }
+            allowed_meta = self._expand_meta_bundle(allowed_meta)
         out: list[ToolSpec] = []
         for spec in self._tools.values():
             if (
@@ -348,24 +589,108 @@ class ToolRegistry:
             out.append(spec)
         return out
 
-    def _openai_tools_for_query(self, query: str) -> list[dict[str, Any]]:
-        return [t.openai_schema() for t in self._iter_visible_tools(query)]
+    def _openai_tools_for_query(
+        self,
+        query: str,
+        *,
+        force_tools: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        return [
+            t.openai_schema()
+            for t in self._iter_visible_tools(query, force_tools=force_tools)
+        ]
+
+    def _core_plus_named_specs(
+        self,
+        visible_by_name: dict[str, ToolSpec],
+        *,
+        named: set[str],
+        allowed_meta: set[str],
+    ) -> list[ToolSpec]:
+        """Always-include cores + explicitly named / forced tools. No skill dump."""
+        selected: list[ToolSpec] = []
+        seen: set[str] = set()
+
+        def _add(spec: ToolSpec | None) -> None:
+            if spec is None or spec.name in seen:
+                return
+            seen.add(spec.name)
+            selected.append(spec)
+
+        for name in self._ALWAYS_INCLUDE:
+            _add(visible_by_name.get(name))
+        for name in sorted(named):
+            spec = visible_by_name.get(name)
+            if spec is None:
+                continue
+            if (
+                spec.name in self._META_TOOLS_CONDITIONAL
+                and spec.name not in allowed_meta
+            ):
+                continue
+            _add(spec)
+        return selected
+
+    @classmethod
+    def on_demand_cores_from_history(
+        cls,
+        history: list[dict[str, Any]] | None,
+        *,
+        lookback: int = 2,
+    ) -> set[str]:
+        """Re-offer workflow/schedule/integrations/llms used in recent tool turns.
+
+        Skips chat-only assistant messages so a later 「搞一下那个」 still sees
+        the last task tools, without keeping them on every RP turn forever.
+        """
+        if not history or lookback <= 0:
+            return set()
+        found: set[str] = set()
+        seen_asst = 0
+        for m in reversed(history):
+            if m.get("role") != "assistant":
+                continue
+            seen_asst += 1
+            meta = m.get("metadata") if isinstance(m.get("metadata"), dict) else {}
+            for tc in meta.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                n = str(tc.get("name") or "").strip()
+                if n in cls._ON_DEMAND_CORES:
+                    found.add(n)
+            used = str(meta.get("tools_used") or "")
+            if used:
+                for n in cls._ON_DEMAND_CORES:
+                    if n in used:
+                        found.add(n)
+            if seen_asst >= lookback:
+                break
+        return found
 
     def _named_tools_in_query(self, query: str) -> set[str]:
-        """Force-include tools whose exact names appear in the user message."""
+        """Force-include tools whose names appear as tokens, not substrings.
+
+        ``http`` must not match ``https://…``. Short names use a word boundary.
+        """
         if not query:
             return set()
         q = query.lower()
         found: set[str] = set()
-        # Longer names first so partials are less ambiguous
         names = sorted(self._tools.keys(), key=len, reverse=True)
         for name in names:
             nl = name.lower()
-            if nl in q:
+            if not nl:
+                continue
+            if len(nl) <= 4 or nl.isalnum():
+                pat = r"(?<![a-z0-9_])" + re.escape(nl) + r"(?![a-z0-9_])"
+                if re.search(pat, q):
+                    found.add(name)
+                    continue
+            elif nl in q:
                 found.add(name)
                 continue
             spaced = nl.replace("_", " ")
-            if spaced and spaced in q:
+            if spaced and spaced != nl and spaced in q:
                 found.add(name)
         return found
 
@@ -399,7 +724,7 @@ class ToolRegistry:
         if force_tools:
             forced = {str(x).strip() for x in force_tools if str(x).strip()}
 
-        visible = self._iter_visible_tools(query or "")
+        visible = self._iter_visible_tools(query or "", force_tools=forced or None)
         total = len(visible)
         if total == 0:
             return []
@@ -407,36 +732,41 @@ class ToolRegistry:
         # Explicit full-set request (still respects create/delete gating)
         if self._wants_full_toolset(query or ""):
             logger.info("filter_tools: full toolset requested by user")
-            return self._openai_tools_for_query(query or "")
+            return self._openai_tools_for_query(query or "", force_tools=forced or None)
 
         limit = self._resolve_top_n(top_n)
-        # No point filtering if registry is already small
-        if total <= limit:
-            return self._openai_tools_for_query(query or "")
-
         keywords = self._extract_keywords(query or "")
         named = self._named_tools_in_query(query or "")
         allowed_meta = self._allowed_meta_tools(query or "")
+        if forced:
+            allowed_meta |= {
+                n for n in forced if n in self._META_TOOLS_CONDITIONAL
+            }
+            if "create_tool" in allowed_meta or "delete_tool" in allowed_meta:
+                allowed_meta.add("read_skill")
         # Meta tools named or intent-matched get a forced seat
         named = named | allowed_meta | (forced & {s.name for s in visible})
+        visible_by_name = {s.name: s for s in visible}
 
-        # Empty / no keywords and no explicit tool names → full visible set
+        def _core_schemas() -> list[dict[str, Any]]:
+            specs = self._core_plus_named_specs(
+                visible_by_name, named=named, allowed_meta=allowed_meta
+            )
+            return [s.openai_schema() for s in specs]
+
+        # Empty / no keywords and no explicit tool names → cores only (not every skill)
         if not keywords and not named:
-            logger.info("filter_tools: no keywords, using full visible toolset")
-            return self._openai_tools_for_query(query or "")
+            logger.info("filter_tools: no keywords, using core toolset")
+            return _core_schemas()
 
         scored: list[tuple[int, ToolSpec]] = []
         score_map: dict[str, int] = {}
-        visible_by_name = {s.name: s for s in visible}
 
         for spec in visible:
             score = 0
             n = spec.name.lower()
-            d = (
-                decorate_description(spec.name, spec.description)
-                + " "
-                + (spec.description or "")
-            ).lower()
+            raw_desc = spec.description if isinstance(spec.description, str) else str(spec.description or "")
+            d = (decorate_description(spec.name, raw_desc) + " " + raw_desc).lower()
 
             for kw in keywords:
                 kwl = kw.lower()
@@ -463,19 +793,19 @@ class ToolRegistry:
                 score_map[spec.name] = score
 
         if not scored:
-            logger.info("filter_tools: no match, falling back to full visible toolset")
-            return self._openai_tools_for_query(query or "")
+            logger.info("filter_tools: no match, using core toolset")
+            return _core_schemas()
 
         scored.sort(key=lambda x: -x[0])
         best = scored[0][0]
 
-        # Only always-include floor (score ~1+role) and no named tools → not confident
+        # Only always-include floor (score ~1+role) and no named tools → cores, not all skills
         if best < MIN_CONFIDENT_MATCH_SCORE and not named:
             logger.info(
-                "filter_tools: weak match best=%s, falling back to full visible toolset",
+                "filter_tools: weak match best=%s, using core toolset",
                 best,
             )
-            return self._openai_tools_for_query(query or "")
+            return _core_schemas()
 
         selected: list[ToolSpec] = []
         selected_names: set[str] = set()
@@ -500,10 +830,16 @@ class ToolRegistry:
                 if spec.name in visible_by_name:
                     _add(spec)
 
-        # 2) Fill by score up to Top-N
+        # 2) Fill by confident score only (do not pad with weak skills up to Top-N)
         for score, spec in scored:
             if len(selected) >= limit:
                 break
+            if (
+                score < MIN_CONFIDENT_MATCH_SCORE
+                and spec.name not in named
+                and spec.name not in self._ALWAYS_INCLUDE
+            ):
+                continue
             _add(spec)
 
         # 3) If forced seats already filled the budget, still ensure top-scored
@@ -554,7 +890,7 @@ class ToolRegistry:
         if not isinstance(arguments, dict):
             arguments = {"value": arguments}
 
-        # skill 可通过 metadata.timeout_sec 覆盖（如 grok_media 生视频）
+        # skill 可通过 metadata.timeout_sec 覆盖
         try:
             timeout = float((spec.metadata or {}).get("timeout_sec") or 120)
         except (TypeError, ValueError):

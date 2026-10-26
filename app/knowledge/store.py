@@ -1,4 +1,7 @@
-"""Wiki-style knowledge base: pages with versions, keyword search, prompt snippets."""
+"""Wiki-style knowledge base: pages with versions, keyword search, prompt snippets.
+
+Persistence: SQL (local SQLite or remote) via app.storage.
+"""
 
 from __future__ import annotations
 
@@ -6,12 +9,14 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-import aiofiles
+from sqlalchemy import delete, insert, select, update
 
-from app.config import get_settings
+from app.storage.engine import db_connect
+from app.storage.schema import kb_catalog as kb_catalog_t
+from app.storage.schema import kb_pages as kb_pages_t
+from app.storage.util import dumps, loads, run_db
 
 _MIN_MATCH = 1.5
 _MAX_VERSIONS = 10
@@ -26,20 +31,37 @@ DEFAULT_COLLECTIONS: list[str] = [
     "reference",
 ]
 
+# Scene/playbooks owned by a skill — skip wiki dump on that skill's trigger.
+_SKILL_OWNED_COLLECTIONS = frozenset()
+_ROLEPLAY_TRIGGERS = ()
+
+
+def _is_roleplay_trigger(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return any(s.lower() in t for s in _ROLEPLAY_TRIGGERS)
+
+
+def _wants_wiki(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return any(
+        s in t
+        for s in ("知识库", "wiki", "百科", "场景库", "手册", "handbook", "knowledge")
+    )
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 def _tokenize(text: str) -> set[str]:
+    """Score tokens: no single CJK chars (long pages otherwise match every query)."""
     tokens: set[str] = set()
     for t in re.split(r"[\s,.;:!?/\\|_+\-*=()\[\]{}\"'`#]+", (text or "").lower()):
-        if len(t) >= 2 or (t and "\u4e00" <= t <= "\u9fff"):
+        if len(t) >= 2:
             tokens.add(t)
     chn = re.findall(r"[一-鿿]", text or "")
     if not chn:
         return tokens
-    tokens.update(chn)
     for i in range(len(chn) - 1):
         tokens.add(chn[i] + chn[i + 1])
     for seg in re.findall(r"[一-鿿]{3,}", text or ""):
@@ -55,53 +77,120 @@ def _slugify(title: str) -> str:
 
 
 class KnowledgeStore:
-    def __init__(self, root: Path | None = None) -> None:
-        settings = get_settings()
-        self.root = root or (settings.data_dir / "kb")
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.pages_dir = self.root / "pages"
-        self.pages_dir.mkdir(parents=True, exist_ok=True)
-        self.index_path = self.root / "index.json"
-        self.catalog_path = self.root / "catalog.json"
-        if not self.index_path.exists():
-            self.index_path.write_text("[]", encoding="utf-8")
-        if not self.catalog_path.exists():
-            self.catalog_path.write_text(
-                json.dumps(
-                    {"collections": list(DEFAULT_COLLECTIONS), "hidden": []},
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
+    def __init__(self, root: Any = None) -> None:
+        # root kept for API compat; unused (SQL backend)
+        self._root = root
+
+    def _page_from_row(self, row: Any) -> dict[str, Any]:
+        tags = loads(row.tags_json, [])
+        versions = loads(row.versions_json, [])
+        if not isinstance(tags, list):
+            tags = []
+        if not isinstance(versions, list):
+            versions = []
+        return {
+            "id": row.id,
+            "title": row.title or "",
+            "slug": row.slug or "",
+            "collection": row.collection or "default",
+            "tags": tags,
+            "content": row.content or "",
+            "version": int(row.version or 1),
+            "pinned": bool(row.pinned),
+            "archived": bool(row.archived),
+            "versions": versions,
+            "created_at": row.created_at or "",
+            "updated_at": row.updated_at or "",
+        }
+
+    def _load_index_sync(self) -> list[dict[str, Any]]:
+        with db_connect() as conn:
+            rows = conn.execute(
+                select(
+                    kb_pages_t.c.id,
+                    kb_pages_t.c.title,
+                    kb_pages_t.c.slug,
+                    kb_pages_t.c.collection,
+                    kb_pages_t.c.tags_json,
+                    kb_pages_t.c.version,
+                    kb_pages_t.c.updated_at,
+                    kb_pages_t.c.created_at,
+                    kb_pages_t.c.pinned,
+                    kb_pages_t.c.archived,
+                    kb_pages_t.c.preview,
+                )
+            ).all()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            tags = loads(r.tags_json, [])
+            if not isinstance(tags, list):
+                tags = []
+            out.append(
+                {
+                    "id": r.id,
+                    "title": r.title or "",
+                    "slug": r.slug or "",
+                    "collection": r.collection or "default",
+                    "tags": tags,
+                    "version": int(r.version or 1),
+                    "updated_at": r.updated_at or "",
+                    "created_at": r.created_at or "",
+                    "pinned": bool(r.pinned),
+                    "archived": bool(r.archived),
+                    "preview": r.preview or "",
+                }
             )
+        return out
 
     async def _load_index(self) -> list[dict[str, Any]]:
-        async with aiofiles.open(self.index_path, "r", encoding="utf-8") as f:
-            raw = await f.read()
-        try:
-            data = json.loads(raw or "[]")
-            return data if isinstance(data, list) else []
-        except json.JSONDecodeError:
-            return []
+        return await run_db(self._load_index_sync)
 
     async def _save_index(self, rows: list[dict[str, Any]]) -> None:
-        async with aiofiles.open(self.index_path, "w", encoding="utf-8") as f:
-            await f.write(json.dumps(rows, ensure_ascii=False, indent=2))
+        # Index is derived from kb_pages; no separate write.
+        return None
 
-    def _page_path(self, page_id: str) -> Path:
-        return self.pages_dir / f"{page_id}.json"
+    def _load_page_sync(self, page_id: str) -> dict[str, Any] | None:
+        with db_connect() as conn:
+            row = conn.execute(
+                select(kb_pages_t).where(kb_pages_t.c.id == page_id)
+            ).first()
+            if not row:
+                return None
+            return self._page_from_row(row)
 
     async def _load_page(self, page_id: str) -> dict[str, Any] | None:
-        path = self._page_path(page_id)
-        if not path.exists():
-            return None
-        async with aiofiles.open(path, "r", encoding="utf-8") as f:
-            return json.loads(await f.read())
+        return await run_db(lambda: self._load_page_sync(page_id))
+
+    def _write_page_sync(self, page: dict[str, Any]) -> None:
+        pid = str(page["id"])
+        content = str(page.get("content") or "")
+        vals = dict(
+            title=str(page.get("title") or ""),
+            slug=str(page.get("slug") or ""),
+            collection=str(page.get("collection") or "default"),
+            tags_json=dumps(page.get("tags") or []),
+            content=content,
+            version=int(page.get("version") or 1),
+            pinned=bool(page.get("pinned")),
+            archived=bool(page.get("archived")),
+            versions_json=dumps(page.get("versions") or []),
+            created_at=str(page.get("created_at") or ""),
+            updated_at=str(page.get("updated_at") or ""),
+            preview=content[:160],
+        )
+        with db_connect() as conn:
+            exists = conn.execute(
+                select(kb_pages_t.c.id).where(kb_pages_t.c.id == pid)
+            ).first()
+            if exists:
+                conn.execute(
+                    update(kb_pages_t).where(kb_pages_t.c.id == pid).values(**vals)
+                )
+            else:
+                conn.execute(insert(kb_pages_t).values(id=pid, **vals))
 
     async def _write_page(self, page: dict[str, Any]) -> None:
-        path = self._page_path(page["id"])
-        async with aiofiles.open(path, "w", encoding="utf-8") as f:
-            await f.write(json.dumps(page, ensure_ascii=False, indent=2))
+        await run_db(lambda: self._write_page_sync(page))
 
     def _index_row(self, page: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -137,22 +226,24 @@ class KnowledgeStore:
                 break
         return out
 
-    async def _load_catalog(self) -> dict[str, Any]:
-        try:
-            async with aiofiles.open(self.catalog_path, "r", encoding="utf-8") as f:
-                raw = await f.read()
-            data = json.loads(raw or "{}")
-            if not isinstance(data, dict):
-                data = {}
-        except (FileNotFoundError, json.JSONDecodeError):
-            data = {}
+    def _load_catalog_sync(self) -> dict[str, Any]:
+        with db_connect() as conn:
+            row = conn.execute(
+                select(kb_catalog_t).where(kb_catalog_t.c.id == 1)
+            ).first()
+        if not row:
+            data: dict[str, Any] = {}
+        else:
+            data = {
+                "collections": loads(row.collections_json, []),
+                "hidden": loads(row.hidden_json, []),
+            }
         coll = data.get("collections")
         hidden = data.get("hidden")
         if not isinstance(coll, list) or not coll:
             coll = list(DEFAULT_COLLECTIONS)
         if not isinstance(hidden, list):
             hidden = []
-        # normalize unique preserve order
         seen: set[str] = set()
         clean: list[str] = []
         for x in coll:
@@ -177,9 +268,27 @@ class KnowledgeStore:
             hid.append(t)
         return {"collections": clean, "hidden": hid}
 
+    async def _load_catalog(self) -> dict[str, Any]:
+        return await run_db(self._load_catalog_sync)
+
+    def _save_catalog_sync(self, catalog: dict[str, Any]) -> None:
+        vals = dict(
+            collections_json=dumps(catalog.get("collections") or []),
+            hidden_json=dumps(catalog.get("hidden") or []),
+        )
+        with db_connect() as conn:
+            exists = conn.execute(
+                select(kb_catalog_t.c.id).where(kb_catalog_t.c.id == 1)
+            ).first()
+            if exists:
+                conn.execute(
+                    update(kb_catalog_t).where(kb_catalog_t.c.id == 1).values(**vals)
+                )
+            else:
+                conn.execute(insert(kb_catalog_t).values(id=1, **vals))
+
     async def _save_catalog(self, catalog: dict[str, Any]) -> None:
-        async with aiofiles.open(self.catalog_path, "w", encoding="utf-8") as f:
-            await f.write(json.dumps(catalog, ensure_ascii=False, indent=2))
+        await run_db(lambda: self._save_catalog_sync(catalog))
 
     async def list_collection_options(self) -> list[str]:
         """Visible collection names for the editor dropdown."""
@@ -336,9 +445,6 @@ class KnowledgeStore:
             "updated_at": now,
         }
         await self._write_page(page)
-        idx = await self._load_index()
-        idx.append(self._index_row(page))
-        await self._save_index(idx)
         return page
 
     async def update(
@@ -384,19 +490,6 @@ class KnowledgeStore:
         page["version"] = int(page.get("version") or 1) + 1
         page["updated_at"] = _now().isoformat()
         await self._write_page(page)
-
-        idx = await self._load_index()
-        new_idx = []
-        found = False
-        for r in idx:
-            if r.get("id") == page_id:
-                new_idx.append(self._index_row(page))
-                found = True
-            else:
-                new_idx.append(r)
-        if not found:
-            new_idx.append(self._index_row(page))
-        await self._save_index(new_idx)
         return page
 
     async def append(
@@ -424,15 +517,14 @@ class KnowledgeStore:
         )
 
     async def delete(self, page_id: str) -> bool:
-        path = self._page_path(page_id)
-        if path.exists():
-            path.unlink()
-        idx = await self._load_index()
-        new_idx = [r for r in idx if r.get("id") != page_id]
-        if len(new_idx) == len(idx) and not path.exists():
-            return False
-        await self._save_index(new_idx)
-        return True
+        def _do() -> bool:
+            with db_connect() as conn:
+                res = conn.execute(
+                    delete(kb_pages_t).where(kb_pages_t.c.id == page_id)
+                )
+                return bool(res.rowcount)
+
+        return await run_db(_do)
 
     @staticmethod
     def _infer_prefer_collections(query: str, intent_text: str = "") -> list[str]:
@@ -440,24 +532,29 @@ class KnowledgeStore:
         blob = f"{query or ''} {intent_text or ''}".lower()
         prefer: list[str] = []
         product_signals = (
-            "产品",
-            "商品",
-            "识图",
-            "电商",
-            "爆款",
-            "主图",
-            "上传的产品",
-            "阶段1",
-            "产品辨识",
-            "uploads/",
-            "图片:",
-            "image:",
+            "产品参数",
+            "sku",
+            "规格表",
         )
         if any(s.lower() in blob for s in product_signals):
             prefer.extend(["sop", "product", "handbook"])
+        studio_signals = (
+            "工作室",
+            "工单",
+            "报价",
+            "收款",
+            "库存",
+            "采购",
+            "出库",
+            "入库",
+            "流程",
+            "sop",
+        )
+        if any(s.lower() in blob for s in studio_signals):
+            prefer.extend(["sop", "handbook", "product"])
         if any(s in blob for s in ("提示词", "prompt", "模板", "文案规范")):
             prefer.extend(["reference", "handbook"])
-        if any(s in blob for s in ("红线", "合规", "禁止", "错误规制", "手册")):
+        if any(s in blob for s in ("红线", "合规", "禁止", "手册")):
             prefer.append("handbook")
         # de-dupe preserve order
         out: list[str] = []
@@ -484,7 +581,7 @@ class KnowledgeStore:
         tokens = _tokenize(blob)
         score = 0.0
         for t in q_tokens & tokens:
-            score += 2.0 if len(t) >= 2 else 0.35
+            score += 2.0 if len(t) >= 2 else 0.0
         q_low = query.lower().strip()
         if q_low and q_low in title.lower():
             score += 5.0
@@ -558,15 +655,15 @@ class KnowledgeStore:
             out.append(item)
         return out
 
-    async def context_snippet(
+    async def context_for_prompt(
         self,
         query: str,
         *,
         limit: int = 4,
         max_chars: int = 2500,
         intent_text: str = "",
-    ) -> str:
-        """Matched wiki pages for system prompt (not full dump)."""
+    ) -> tuple[str, list[str]]:
+        """Matched wiki pages for system prompt, plus titles/tags for memory dedup."""
         prefs = self._infer_prefer_collections(query, intent_text)
         hits = await self.search(
             query,
@@ -575,31 +672,49 @@ class KnowledgeStore:
             intent_text=intent_text,
         )
         if not hits and not (query or "").strip():
-            return ""
+            return "", []
         if not hits:
             pinned = [
                 r
                 for r in await self._load_index()
-                if r.get("pinned") and not r.get("archived")
+                if r.get("pinned")
+                and not r.get("archived")
+                and (r.get("collection") or "").strip() not in _SKILL_OWNED_COLLECTIONS
             ][:2]
             for r in pinned:
                 p = await self._load_page(r["id"])
                 if p:
                     hits.append(p)
 
-        if not hits:
-            return ""
+        blob = f"{query or ''} {intent_text or ''}"
+        skip_roleplay_wiki = _is_roleplay_trigger(blob) and not _wants_wiki(blob)
+        if skip_roleplay_wiki:
+            hits = [
+                h
+                for h in hits
+                if (h.get("collection") or "").strip() not in _SKILL_OWNED_COLLECTIONS
+            ]
 
-        lines = ["Knowledge base (wiki pages, matched only):"]
+        if not hits:
+            return "", []
+
+        lines = ["Knowledge base (wiki pages, matched only — authority for procedures):"]
         if prefs:
             lines.append(f"(prefer collections: {', '.join(prefs)})")
         used = 0
         count = 0
         budget = max(400, int(max_chars))
+        titles: list[str] = []
+        terms: list[str] = []
         for h in hits:
-            title = h.get("title") or h.get("id")
+            title = str(h.get("title") or h.get("id") or "")
             coll = (h.get("collection") or "default").strip() or "default"
             body = (h.get("snippet") or h.get("content") or "").strip()
+            if re.search(
+                r"\b(def register\s*\(|async def handle\s*\(|registry\.register\s*\()",
+                body,
+            ):
+                body = "【该页含源码，对话中不要整段粘贴；需要时 kb get 再摘要】"
             max_body = 480 if coll in ("sop", "handbook", "product") else 360
             if len(body) > max_body:
                 body = body[:max_body] + "…"
@@ -611,37 +726,42 @@ class KnowledgeStore:
             lines.append(line)
             used += len(line) + 1
             count += 1
+            if title:
+                titles.append(title)
+                terms.append(title)
+            for tag in h.get("tags") or []:
+                ts = str(tag).strip()
+                if ts:
+                    terms.append(ts)
         if count == 0:
-            return ""
+            return "", []
         lines.append(
             "Use kb tool (search/get; optional collection=) for full pages. "
-            "Do not invent steps missing from snippets — get the page first."
+            "Do not invent steps missing from snippets — get the page first. "
+            "Overlapping long memory notes are not the procedure source."
         )
-        return "\n".join(lines)
+        return "\n".join(lines), terms
+
+    async def context_snippet(
+        self,
+        query: str,
+        *,
+        limit: int = 4,
+        max_chars: int = 2500,
+        intent_text: str = "",
+    ) -> str:
+        """Matched wiki pages for system prompt (not full dump)."""
+        text, _terms = await self.context_for_prompt(
+            query,
+            limit=limit,
+            max_chars=max_chars,
+            intent_text=intent_text,
+        )
+        return text
 
     async def ensure_seed(self) -> None:
-        """Create a starter page if KB is empty."""
-        rows = await self._load_index()
-        if rows:
-            return
-        await self.create(
-            title="知识库使用说明",
-            collection="default",
-            tags=["kb", "wiki", "指南"],
-            pinned=True,
-            content=(
-                "# 知识库（Wiki）使用说明\n\n"
-                "这里是可读写的 Wiki 页面，与「长期记忆」不同：\n\n"
-                "- **记忆**：短偏好/规则，对话匹配注入\n"
-                "- **知识库**：成页文档，可建页/改页/检索/引用\n\n"
-                "## 给 Agent\n\n"
-                "- 查资料：`kb` action=search / get\n"
-                "- 写资料：create_page / update_page / append\n"
-                "- 长文档请写知识库，不要塞进 memory\n\n"
-                "## 前端\n\n"
-                "设定 → 知识库：新建、编辑、搜索页面。\n"
-            ),
-        )
+        """Blank delivery: do not auto-create pages."""
+        return
 
 
 _store: KnowledgeStore | None = None

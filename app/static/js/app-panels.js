@@ -81,11 +81,12 @@
  const replySid = t.last_session_id || t.session_id;
  let replyLabel = "回复：自动（首次执行后固定）";
  if (t.always_new_session) replyLabel = "回复：每次新建对话";
- else if (t.session_id)
- replyLabel =
- "回复对话：" +
- String(t.session_id).slice(0, 8) +
- "…";
+ else if (t.session_id) {
+ const row = findSessionRow(_sessionListCache.rows, t.session_id);
+ replyLabel = row
+ ? "回复对话：" + sessionDisplayName(row)
+ : "回复：已指定对话";
+ }
 
  card.innerHTML = `
  <div class="card-body task-body">
@@ -166,6 +167,7 @@
   setMsg("msgTasks", "载入中…");
  }
  try {
+ await fetchSessionList(false);
  let tasks = [];
  let source = "api";
  try {
@@ -242,6 +244,181 @@
  /** @type {string|null} 非空 = 编辑模式 task id */
  let _editTaskId = null;
 
+ const SESSION_SPECIAL = {
+   AUTO: "__auto__",
+   CURRENT: "__current__",
+   NEW: "__new__",
+   ALWAYS_NEW: "__always_new__",
+ };
+ let _sessionListCache = { at: 0, rows: [] };
+
+ function sessionDisplayName(s) {
+   if (!s) return "未命名对话";
+   const title = String(s.title || "").trim();
+   return title || "未命名对话";
+ }
+
+ function sessionOptionLabel(s) {
+   const title = sessionDisplayName(s);
+   const n = s && s.message_count != null ? ` · ${s.message_count} 条` : "";
+   return `${title}${n}`;
+ }
+
+ function findSessionRow(rows, sid) {
+   if (!sid) return null;
+   return (
+     (rows || []).find((s) => (s.session_id || s.id) === sid) || null
+   );
+ }
+
+ async function fetchSessionList(force) {
+   const now = Date.now();
+   if (
+     !force &&
+     _sessionListCache.rows.length &&
+     now - _sessionListCache.at < 4000
+   ) {
+     return _sessionListCache.rows;
+   }
+   try {
+     const rows = await api("/api/sessions");
+     _sessionListCache = {
+       at: now,
+       rows: Array.isArray(rows) ? rows : [],
+     };
+     _taskSessionsCache = _sessionListCache.rows;
+   } catch (_) {
+     if (!_sessionListCache.rows.length) {
+       _sessionListCache = { at: 0, rows: [] };
+     }
+   }
+   return _sessionListCache.rows;
+ }
+
+ /**
+  * Fill a <select> with special options + existing conversations (by title).
+  * @param {HTMLSelectElement|null} sel
+  * @param {{
+  *   special?: Array<{value:string,label:string}>,
+  *   selected?: string,
+  *   extra?: Array<{value:string,label:string}>,
+  *   emptyLabel?: string,
+  *   force?: boolean
+  * }} [opts]
+  */
+ async function populateSessionSelect(sel, opts) {
+   if (!sel) return [];
+   opts = opts || {};
+   const rows = await fetchSessionList(!!opts.force);
+   const prev = opts.selected != null ? String(opts.selected) : sel.value;
+   sel.innerHTML = "";
+   for (const sp of opts.special || []) {
+     const op = document.createElement("option");
+     op.value = sp.value;
+     op.textContent = sp.label;
+     sel.appendChild(op);
+   }
+   if (rows.length) {
+     if ((opts.special || []).length) {
+       const sep = document.createElement("option");
+       sep.disabled = true;
+       sep.value = "";
+       sep.textContent = "—— 已有对话 ——";
+       sel.appendChild(sep);
+     }
+     for (const s of rows) {
+       const id = s.session_id || s.id || "";
+       if (!id) continue;
+       const op = document.createElement("option");
+       op.value = id;
+       op.textContent = sessionOptionLabel(s);
+       sel.appendChild(op);
+     }
+   } else if (!(opts.special || []).length) {
+     const op = document.createElement("option");
+     op.value = "";
+     op.textContent = opts.emptyLabel || "（还没有对话，先去主界面聊几句）";
+     sel.appendChild(op);
+   }
+   for (const extra of opts.extra || []) {
+     if (!extra || !extra.value) continue;
+     if (![...sel.options].some((o) => o.value === extra.value)) {
+       const op = document.createElement("option");
+       op.value = extra.value;
+       op.textContent = extra.label || sessionDisplayName({ title: extra.value });
+       sel.appendChild(op);
+     }
+   }
+   if (prev && [...sel.options].some((o) => o.value === prev && !o.disabled)) {
+     sel.value = prev;
+   } else if (
+     opts.selected == null &&
+     (opts.special || []).length &&
+     sel.options.length
+   ) {
+     sel.selectedIndex = 0;
+   }
+   return rows;
+ }
+
+ function currentSessionSpecialLabel() {
+   const cur = (state && state.sessionId) || "";
+   if (!cur) return "当前打开的对话（请先在主界面打开一个）";
+   const row = findSessionRow(_sessionListCache.rows, cur);
+   const name = row ? sessionDisplayName(row) : "当前对话";
+   return `当前打开的对话 · ${name}`;
+ }
+
+ function taskSessionSpecials() {
+   return [
+     {
+       value: SESSION_SPECIAL.AUTO,
+       label: "自动固定（首次新建，之后都发到那里）",
+     },
+     { value: SESSION_SPECIAL.CURRENT, label: currentSessionSpecialLabel() },
+     { value: SESSION_SPECIAL.ALWAYS_NEW, label: "每次执行都新建对话" },
+   ];
+ }
+
+ function wfSessionSpecials() {
+   return [
+     {
+       value: SESSION_SPECIAL.AUTO,
+       label: "自动固定（首次新建，之后都发到那里）",
+     },
+     { value: SESSION_SPECIAL.CURRENT, label: currentSessionSpecialLabel() },
+     { value: SESSION_SPECIAL.ALWAYS_NEW, label: "每次运行都新建对话" },
+   ];
+ }
+
+ function wfRunSessionSpecials() {
+   return [
+     {
+       value: SESSION_SPECIAL.NEW,
+       label: "新建一个对话（本轮所有步骤共用）",
+     },
+     { value: SESSION_SPECIAL.CURRENT, label: currentSessionSpecialLabel() },
+   ];
+ }
+
+ function resolveSessionSelectValue(raw) {
+   const v = String(raw || "").trim();
+   if (!v || v === SESSION_SPECIAL.AUTO) {
+     return { session_id: null, always_new_session: false, mode: "auto" };
+   }
+   if (v === SESSION_SPECIAL.ALWAYS_NEW || v === SESSION_SPECIAL.NEW) {
+     return { session_id: null, always_new_session: true, mode: "always_new" };
+   }
+   if (v === SESSION_SPECIAL.CURRENT) {
+     return {
+       session_id: (state && state.sessionId) || null,
+       always_new_session: false,
+       mode: "current",
+     };
+   }
+   return { session_id: v, always_new_session: false, mode: "pick" };
+ }
+
  const TASK_SCHED_OPTS = [
  {
  id: "interval",
@@ -280,18 +457,6 @@
  "不要编造数据；查不到就明确说查不到。",
  },
  {
- id: "qb_check",
- label: "检查下载",
- name: "检查 qB 下载",
- sched: "interval",
- text:
- "请检查 qBittorrent 当前下载/做种概况：\n" +
- "1）列出进行中与已完成的主要任务（名称、进度、状态）\n" +
- "2）若有异常（报错、长时间卡住）单独标出\n" +
- "3）用几句话总结，无需长篇\n" +
- "需要时调用 qb_manager；配置缺失时说明去「设定→集成」填写。",
- },
- {
  id: "health",
  label: "系统巡检",
  name: "系统健康巡检",
@@ -309,10 +474,8 @@
  name: "知识库要点回顾",
  sched: "daily",
  text:
- "请从知识库中检索与「产品内容 / SOP」相关的要点，用条目列出：\n" +
- "1）当前应遵守的阶段流程（一两句）\n" +
- "2）硬性边界/红线（若有）\n" +
- "优先用 kb 工具；摘要不全时 get「产品内容流水线SOP」。不要编造库中没有的规则。",
+ "请用 kb list/search 看知识库里实际有哪些页面，用条目列出要点。\n" +
+ "库是空的就直接说空，不要编造 SOP 或流程步骤。",
  },
  {
  id: "reminder_msg",
@@ -401,114 +564,37 @@
  }
  }
 
- const TASK_SESSION_OPTS = [
- {
- id: "auto",
- label: "自动固定",
- hint: "首次执行新建对话，之后都发到那里",
- },
- {
- id: "current",
- label: "当前对话",
- hint: "用现在打开的聊天窗口",
- },
- {
- id: "pick",
- label: "选择已有对话",
- hint: "从历史会话里选一个",
- },
- {
- id: "always_new",
- label: "每次新建",
- hint: "每次跑任务都新开对话",
- },
- ];
-
- function renderTaskSessionChips() {
- const host = $("taskSessionChips");
- if (!host) return;
- host.innerHTML = "";
- for (const o of TASK_SESSION_OPTS) {
- const btn = document.createElement("button");
- btn.type = "button";
- btn.className =
- "kb-chip kb-chip-card" + (_taskSessionMode === o.id ? " is-on" : "");
- btn.innerHTML =
- `<span class="kb-chip-name">${escapeHtml(o.label)}</span>` +
- `<span class="kb-chip-desc">${escapeHtml(o.hint)}</span>`;
- btn.addEventListener("click", () => {
- _taskSessionMode = o.id;
- renderTaskSessionChips();
- renderTaskSessionFields();
- });
- host.appendChild(btn);
- }
+ function taskSelectedValueFromMode(mode, sessionId) {
+ if (mode === "always_new") return SESSION_SPECIAL.ALWAYS_NEW;
+ if (mode === "current") return SESSION_SPECIAL.CURRENT;
+ if (mode === "pick" && sessionId) return sessionId;
+ return SESSION_SPECIAL.AUTO;
  }
 
- async function ensureTaskSessionsLoaded() {
- if (_taskSessionsCache.length) return _taskSessionsCache;
- try {
- const rows = await api("/api/sessions");
- _taskSessionsCache = Array.isArray(rows) ? rows : [];
- } catch (_) {
- _taskSessionsCache = [];
- }
- return _taskSessionsCache;
- }
-
- async function renderTaskSessionFields() {
- const host = $("taskSessionFields");
+ async function renderTaskSessionSelect(selected) {
+ const sel = $("taskSessionSelect");
  const hint = $("taskSessionHint");
- if (!host) return;
- host.innerHTML = "";
- if (_taskSessionMode === "auto") {
- if (hint)
+ if (!sel) return;
+ const extra = [];
+ if (
+ selected &&
+ selected !== SESSION_SPECIAL.AUTO &&
+ selected !== SESSION_SPECIAL.CURRENT &&
+ selected !== SESSION_SPECIAL.ALWAYS_NEW &&
+ selected !== SESSION_SPECIAL.NEW
+ ) {
+ extra.push({ value: selected, label: "已绑定的对话" });
+ }
+ await populateSessionSelect(sel, {
+ special: taskSessionSpecials(),
+ selected: selected || SESSION_SPECIAL.AUTO,
+ extra,
+ force: true,
+ });
+ if (hint) {
  hint.textContent =
- "首次执行会新建对话并把结果写进去，之后同一任务都回复到该对话。";
- host.innerHTML =
- '<p class="field-hint" style="margin:0">适合大多数定时任务：结果都在同一个「任务对话」里累积。</p>';
- return;
+ "从列表里选一个聊天，不用填 ID。任务跑完后回复会出现在那里。";
  }
- if (_taskSessionMode === "current") {
- const cur = (state && state.sessionId) || null;
- if (hint)
- hint.textContent = cur
- ? "将回复到当前打开的对话。"
- : "当前还没有打开的对话：首次执行时会新建并固定。";
- host.innerHTML = cur
- ? `<p class="field-hint" style="margin:0">当前会话：<code>${escapeHtml(
- String(cur).slice(0, 12)
- )}…</code></p>`
- : '<p class="field-hint" style="margin:0">请先在主界面打开或开始一个对话，再保存任务（也可保存后首次执行时自动建）。</p>';
- return;
- }
- if (_taskSessionMode === "always_new") {
- if (hint) hint.textContent = "每次执行都新开对话，不会混在旧聊天里。";
- host.innerHTML =
- '<p class="field-hint" style="margin:0">适合一次性提醒；列表里可点「打开对话」查看最近一次结果。</p>';
- return;
- }
- // pick
- if (hint) hint.textContent = "从历史对话中选择结果要写入的会话。";
- await ensureTaskSessionsLoaded();
- const sel = document.createElement("select");
- sel.id = "taskSessionSelect";
- sel.className = "task-session-select";
- const opt0 = document.createElement("option");
- opt0.value = "";
- opt0.textContent = _taskSessionsCache.length
- ? "请选择对话…"
- : "（暂无历史对话，可先聊几句再建任务）";
- sel.appendChild(opt0);
- for (const s of _taskSessionsCache.slice(0, 80)) {
- const op = document.createElement("option");
- op.value = s.session_id || s.id || "";
- const title = s.title || "未命名对话";
- const n = s.message_count != null ? ` · ${s.message_count} 条` : "";
- op.textContent = `${title}${n} · ${String(op.value).slice(0, 8)}…`;
- sel.appendChild(op);
- }
- host.appendChild(sel);
  }
 
  function renderTaskSchedFields() {
@@ -665,7 +751,6 @@
  }
  const isEdit = !!(task && task.id);
  _editTaskId = isEdit ? String(task.id) : null;
- _taskSessionsCache = [];
 
  if (isEdit) {
  if ($("taskName")) $("taskName").value = task.name || "";
@@ -678,8 +763,9 @@
  renderTaskSchedChips();
  renderTaskSchedFields();
  renderTaskPromptTemplates();
- renderTaskSessionChips();
- await renderTaskSessionFields();
+ await renderTaskSessionSelect(
+ taskSelectedValueFromMode(sess.mode, sess.session_id)
+ );
  // fill schedule field values after render
  if (_taskSchedMode === "interval") {
  const el = $("taskIntervalMin");
@@ -693,22 +779,6 @@
  const el = $("taskCron");
  if (el) el.value = sched.fields.cron || task.cron || "";
  }
- if (_taskSessionMode === "pick" && sess.session_id) {
- const sel = $("taskSessionSelect");
- if (sel) {
- // ensure option exists for current session
- if (
- ![...sel.options].some((o) => o.value === sess.session_id)
- ) {
- const op = document.createElement("option");
- op.value = sess.session_id;
- op.textContent =
- "当前绑定 · " + String(sess.session_id).slice(0, 8) + "…";
- sel.appendChild(op);
- }
- sel.value = sess.session_id;
- }
- }
  } else {
  if ($("taskName")) $("taskName").value = "";
  if ($("taskPrompt")) $("taskPrompt").value = "";
@@ -718,8 +788,7 @@
  renderTaskSchedChips();
  renderTaskSchedFields();
  renderTaskPromptTemplates();
- renderTaskSessionChips();
- renderTaskSessionFields();
+ await renderTaskSessionSelect(SESSION_SPECIAL.AUTO);
  }
 
  setTaskEditorChrome(isEdit);
@@ -776,21 +845,25 @@
  session_id: null,
  metadata: {},
  };
- // 结果发到哪个对话
- if (_taskSessionMode === "always_new") {
+ // 结果发到哪个对话（下拉，不用填 ID）
+ const picked = resolveSessionSelectValue($("taskSessionSelect")?.value);
+ _taskSessionMode = picked.mode;
+ if (picked.mode === "always_new") {
  body.metadata.always_new_session = true;
  body.session_id = null;
- } else if (_taskSessionMode === "current") {
- body.session_id = (state && state.sessionId) || null;
- } else if (_taskSessionMode === "pick") {
- const sid = ($("taskSessionSelect")?.value || "").trim();
- if (!sid) {
+ } else if (picked.mode === "current") {
+ if (!picked.session_id) {
+ setMsg("msgTaskEditor", "请先在主界面打开一个对话，或改选其它对话", "error");
+ return;
+ }
+ body.session_id = picked.session_id;
+ } else if (picked.mode === "pick") {
+ if (!picked.session_id) {
  setMsg("msgTaskEditor", "请选择要接收结果的对话", "error");
  return;
  }
- body.session_id = sid;
+ body.session_id = picked.session_id;
  } else {
- // auto: first run creates + pins
  body.session_id = null;
  }
  const editingId = _editTaskId;
@@ -869,6 +942,12 @@
  e.preventDefault();
  e.stopPropagation();
  closeTaskEditor();
+ return;
+ }
+ if (t.closest("#btnRefreshTaskSessions")) {
+ e.preventDefault();
+ e.stopPropagation();
+ renderTaskSessionSelect($("taskSessionSelect")?.value);
  }
  },
  true
@@ -886,13 +965,13 @@
  hint: "适合：口味、风格、默认参数、沟通习惯。对话相关时会优先被检索到。",
  example:
  "例：做 PPT 时默认 16:9 横版、中文标题、简洁风格。",
- chips: ["风格", "沟通", "默认参数", "ppt", "淘宝"],
+ chips: ["风格", "沟通", "默认参数"],
  },
  fact: {
  label: "事实",
- hint: "适合：客观信息，如项目路径、NAS 里有什么、常用账号所在位置（不要写密码）。",
- example: "例：媒体库在 NAS 的 Video 共享里。",
- chips: ["nas", "项目", "路径"],
+ hint: "适合：客观信息，如项目路径、资料目录、常用账号所在位置（不要写密码）。",
+ example: "例：设计稿在 workspace/design 目录。",
+ chips: ["项目", "路径"],
  },
  template: {
  label: "模板",
@@ -1009,21 +1088,41 @@
  syncMemChips();
  }
 
+ function bindMemoryDelegatedUi() {
+ // 设定 HTML 异步注入：按钮必须委托到 document，不能在脚本执行时绑空。
+ if (bindMemoryDelegatedUi._done) return;
+ bindMemoryDelegatedUi._done = true;
+ document.addEventListener("click", (e) => {
+  const t = e.target;
+  if (!(t instanceof Element)) return;
+  if (t.id === "memoryAddModal") {
+   closeMemoryAddModal();
+   return;
+  }
+  if (t.closest("#btnOpenMemAdd")) {
+   e.preventDefault();
+   openMemoryAddModal();
+   return;
+  }
+  if (t.closest("#btnCloseMemAdd") || t.closest("#btnCancelMemAdd")) {
+   e.preventDefault();
+   closeMemoryAddModal();
+  }
+ });
+ }
+
  function initMemoryForm() {
- if (initMemoryForm._done) return;
- initMemoryForm._done = true;
+ bindMemoryDelegatedUi();
+ if (initMemoryForm._fields) return;
  const kindEl = $("memKind");
  const tagsEl = $("memTags");
+ if (!kindEl && !tagsEl) return;
+ initMemoryForm._fields = true;
  kindEl?.addEventListener("change", updateMemFormHints);
  tagsEl?.addEventListener("input", debounce(syncMemChips, 120));
- $("btnOpenMemAdd")?.addEventListener("click", () => openMemoryAddModal());
- $("btnCloseMemAdd")?.addEventListener("click", () => closeMemoryAddModal());
- $("btnCancelMemAdd")?.addEventListener("click", () => closeMemoryAddModal());
- $("memoryAddModal")?.addEventListener("click", (e) => {
- if (e.target === $("memoryAddModal")) closeMemoryAddModal();
- });
  updateMemFormHints();
  }
+ bindMemoryDelegatedUi();
 
  async function loadMemory(q = "", opts = {}) {
  // 兼容 loadMemory({ soft: true })
@@ -1276,20 +1375,20 @@
  ];
 
  const KB_COLL_META = {
- sop: { label: "SOP 流程", hint: "标准作业、多轮阶段、输出格式" },
- product: { label: "产品参数", hint: "SKU、规格、卖点事实（勿写流程）" },
+ sop: { label: "SOP 流程", hint: "标准作业、操作步骤、输出格式" },
+ product: { label: "产品参数", hint: "规格、清单、事实（勿写流程）" },
  handbook: { label: "手册红线", hint: "合规、错误处理、禁止事项" },
- reference: { label: "参考模板", hint: "提示词标准、话术模板、示例" },
+ reference: { label: "参考模板", hint: "提示词、话术、示例" },
  daily: { label: "日常纪要", hint: "临时说明，用完可归档" },
  default: { label: "未分类", hint: "暂未分区时使用" },
  };
 
  const KB_TAG_SUGGEST = {
- sop: ["阶段1", "阶段2", "阶段3", "识图", "电商", "多轮"],
- product: ["参数", "SKU", "卖点", "规格"],
- handbook: ["红线", "合规", "默认策略", "禁止"],
- reference: ["提示词", "prompt", "模板", "标准"],
- daily: ["临时", "活动"],
+ sop: ["步骤", "检查清单", "标准"],
+ product: ["参数", "规格", "清单"],
+ handbook: ["红线", "合规", "禁止"],
+ reference: ["提示词", "模板", "示例"],
+ daily: ["临时", "纪要"],
  default: ["备忘"],
  };
 
@@ -1322,7 +1421,7 @@
 - 规格：
 - 材质/颜色：
 
-## 可确认卖点
+## 要点
 - …
 
 ## 注意事项
@@ -1942,37 +2041,61 @@
  }
  }
 
- function initKbPanel() {
- if (initKbPanel._done) return;
- initKbPanel._done = true;
- $("btnSearchKb")?.addEventListener("click", () =>
- loadKb($("kbSearch")?.value || "")
- );
- $("btnRefreshKb")?.addEventListener("click", () =>
- loadKb($("kbSearch")?.value || "")
- );
- $("btnNewKbPage")?.addEventListener("click", () => openKbEditor(""));
- $("btnSaveKb")?.addEventListener("click", () => saveKbPage());
- const closeKb = () => closeKbPageModal();
- $("btnCancelKb")?.addEventListener("click", closeKb);
- $("btnCloseKbPage")?.addEventListener("click", closeKb);
- // 点遮罩关闭（点在 modal 本体上不关）
- $("kbPageModal")?.addEventListener("click", (e) => {
- if (e.target === $("kbPageModal")) closeKbPageModal();
+ function bindKbDelegatedUi() {
+ if (bindKbDelegatedUi._done) return;
+ bindKbDelegatedUi._done = true;
+ document.addEventListener("click", (e) => {
+  const t = e.target;
+  if (!(t instanceof Element)) return;
+  if (t.id === "kbPageModal") {
+   closeKbPageModal();
+   return;
+  }
+  if (t.closest("#btnSearchKb") || t.closest("#btnRefreshKb")) {
+   e.preventDefault();
+   loadKb($("kbSearch")?.value || "");
+   return;
+  }
+  if (t.closest("#btnNewKbPage")) {
+   e.preventDefault();
+   openKbEditor("");
+   return;
+  }
+  if (t.closest("#btnSaveKb")) {
+   e.preventDefault();
+   saveKbPage();
+   return;
+  }
+  if (t.closest("#btnCancelKb") || t.closest("#btnCloseKbPage")) {
+   e.preventDefault();
+   closeKbPageModal();
+   return;
+  }
+  if (t.closest("#btnKbTpl")) {
+   e.preventDefault();
+   insertKbTemplate();
+  }
  });
- $("btnKbTpl")?.addEventListener("click", () => insertKbTemplate());
+ }
+
+ function initKbPanel() {
+ bindKbDelegatedUi();
+ if (initKbPanel._done) return;
+ if (!$("kbPageModal") && !$("kbSearch") && !$("btnNewKbPage")) return;
+ initKbPanel._done = true;
  $("kbTags")?.addEventListener("input", () =>
- renderKbTagChips(getKbCollectionValue())
+  renderKbTagChips(getKbCollectionValue())
  );
  $("kbContent")?.addEventListener("input", () => updateKbEditorMeta());
  $("kbSearch")?.addEventListener("keydown", (e) => {
- if (e.key === "Enter") loadKb($("kbSearch").value.trim());
+  if (e.key === "Enter") loadKb($("kbSearch").value.trim());
  });
  $("kbFilterCollection")?.addEventListener("change", () => {
- loadKb($("kbSearch")?.value || "");
+  loadKb($("kbSearch")?.value || "");
  });
  document.addEventListener("click", () => closeKbCollectionMs());
  }
+ bindKbDelegatedUi();
 
 // ==================== Workflows（普通人友好版） ====================
  let _wfEditingId = "";
@@ -2100,7 +2223,7 @@
  {
  key: "query",
  label: "搜什么？",
- placeholder: "例：产品内容流水线",
+ placeholder: "例：每周整理工作区",
  default: "{{inputs.query}}",
  },
  ],
@@ -2176,7 +2299,7 @@
  key: "prompt",
  label: "给 AI 的任务说明",
  placeholder:
- "例：按 SOP 做阶段1识别。可写 {{inputs.brief}} / {{steps.xxx.output}}",
+ "例：根据上一步结果写一段摘要。可写 {{inputs.brief}} / {{steps.xxx.output}}",
  default:
  "请根据用户输入完成这一步，输出清晰可执行结果。\n用户：{{inputs.brief}}",
  multiline: true,
@@ -2308,164 +2431,6 @@
  args: { action: "search", query: "{{inputs.query}}" },
  },
  { id: "done", type: "note", message: "知识库检索完成，结果见上一步。" },
- ],
- },
- {
- id: "commercial_pipeline",
- title: "商业内容流水线",
- desc: "SOP 编排：识别→确认→策略→按需生成文案/Prompt（不自动生图）",
- emoji: "🛍️",
- group: "commercial",
- recommended: true,
- name: "商业内容生产流水线",
- description:
- "产品内容 SOP 编排骨架。阶段3只出文案/Prompt；真正生图/视频请在对话用 grok_media。",
- inputs: {
- brief: { type: "string", default: "", label: "产品/需求说明" },
- image_path: {
- type: "string",
- default: "",
- label: "产品图路径（可空）",
- },
- need_consult: {
- type: "boolean",
- default: true,
- label: "目标不明时走1.5咨询",
- },
- content_type: {
- type: "string",
- default: "图片",
- label: "内容类型",
- },
- platform: { type: "string", default: "", label: "平台" },
- audience: { type: "string", default: "", label: "人群" },
- },
- steps: [
- {
- id: "load_sop",
- type: "tool",
- tool: "kb",
- args: {
- action: "search",
- query: "产品内容流水线SOP 阶段1 阶段2 阶段3",
- },
- save_as: "load_sop",
- on_error: "continue",
- },
- {
- id: "stage1",
- type: "agent",
- use_tools: true,
- save_as: "stage1",
- prompt:
- "【阶段1 产品识别】按 SOP 输出可确认/推测/需补充。\n说明：{{inputs.brief}}\n图：{{inputs.image_path}}\nKB：{{steps.load_sop.output}}\n勿调 grok_media。",
- },
- {
- id: "gate_after_1",
- type: "human_gate",
- prompt: "确认识别结果后继续",
- },
- {
- id: "stage15",
- type: "agent",
- use_tools: false,
- when: { path: "inputs.need_consult", truthy: true },
- save_as: "stage15",
- prompt:
- "【1.5咨询】最多3个选择题。阶段1：{{steps.stage1.output}}",
- },
- {
- id: "gate_brief",
- type: "human_gate",
- prompt: "确认平台/人群/类型后进策略",
- },
- {
- id: "stage2",
- type: "agent",
- use_tools: false,
- save_as: "stage2",
- prompt:
- "【阶段2策略】五段输出。阶段1：{{steps.stage1.output}} 类型：{{inputs.content_type}}",
- },
- {
- id: "gate_strategy",
- type: "human_gate",
- prompt: "确认策略后生成阶段3文案/Prompt",
- },
- {
- id: "stage3",
- type: "agent",
- use_tools: false,
- save_as: "stage3",
- prompt:
- "【阶段3】只生成 {{inputs.content_type}}。策略：{{steps.stage2.output}} 勿调 grok_media。",
- },
- {
- id: "done",
- type: "note",
- message: "完成。真正生图/视频请在对话使用 grok_media。",
- },
- ],
- },
- {
- id: "video_ab",
- title: "视频 A′→B",
- desc: "首帧改图 Prompt → 确认 → 视频 CRITICAL 模板（不自动生成视频）",
- emoji: "🎬",
- group: "commercial",
- name: "视频路径：A′→B",
- description:
- "默认先 A′ 再 B。skip_a_prime 可跳过改图。不自动调 grok_media。",
- inputs: {
- product_desc: { type: "string", default: "", label: "产品描述" },
- image_path: { type: "string", default: "", label: "参考图路径" },
- platform: { type: "string", default: "小红书", label: "平台" },
- audience: { type: "string", default: "", label: "人群" },
- skip_a_prime: {
- type: "boolean",
- default: false,
- label: "跳过 A′ 用原图",
- },
- },
- steps: [
- {
- id: "load_modes",
- type: "tool",
- tool: "kb",
- args: {
- action: "search",
- query: "产品内容流水线SOP 模式A′ 模式B",
- },
- save_as: "load_modes",
- on_error: "continue",
- },
- {
- id: "a_prime",
- type: "agent",
- use_tools: true,
- when: { path: "inputs.skip_a_prime", truthy: false },
- save_as: "a_prime",
- prompt:
- "【A′首帧改图Prompt】产品：{{inputs.product_desc}} 图：{{inputs.image_path}} KB：{{steps.load_modes.output}} 勿调 grok_media。",
- },
- {
- id: "gate_frame",
- type: "human_gate",
- prompt: "确认首帧方案后生成模式 B",
- },
- {
- id: "mode_b",
- type: "agent",
- use_tools: false,
- save_as: "mode_b",
- prompt:
- "【模式B视频Prompt】A′：{{steps.a_prime.output}} skip={{inputs.skip_a_prime}} 产品：{{inputs.product_desc}}",
- },
- {
- id: "done",
- type: "note",
- message: "A′→B 完成。真正生成请用 grok_media。",
- },
  ],
  },
  ];
@@ -3979,6 +3944,7 @@
   setMsg("msgWorkflows", "载入中…");
  }
  try {
+ await fetchSessionList(false);
  const items = await api("/api/workflows");
  const arr = Array.isArray(items) ? items : [];
  if (!arr.length) {
@@ -3997,16 +3963,27 @@
  const aiPill = w.has_agent_steps
  ? '<span class="wf-status-pill wf-st-run">含 AI</span>'
  : "";
+ const schedLabel = wfScheduleLabel(w.schedule);
+ const schedPill = schedLabel
+ ? `<span class="wf-status-pill wf-st-run">${escapeHtml(schedLabel)}</span>`
+ : "";
+ const sessRow = w.default_session_id
+ ? findSessionRow(_sessionListCache.rows, w.default_session_id)
+ : null;
+ let sessLabel = "运行时选择对话";
+ if (w.always_new_session) sessLabel = "每次新建对话";
+ else if (sessRow) sessLabel = "对话：" + sessionDisplayName(sessRow);
+ else if (w.default_session_id) sessLabel = "已指定对话";
  const stepN = w.step_count || 0;
  card.innerHTML = `
  <div class="card-body">
  <div class="card-title-row">
  <div class="card-title">${escapeHtml(w.name || w.id)}</div>
- ${enPill}${aiPill}
+ ${enPill}${aiPill}${schedPill}
  </div>
- <div class="card-sub">一共 ${stepN} 步 · 点「开始」按顺序自动做${
+ <div class="card-sub">一共 ${stepN} 步 · ${escapeHtml(sessLabel)} · 点「开始」按顺序自动做${
  w.has_agent_steps ? "（AI 步骤会后台跑，可看进度）" : ""
- }</div>
+ }${schedLabel ? " · 已定时" : ""}</div>
  <div class="card-sub muted-line">${escapeHtml(
  w.description || "暂无说明"
  )}</div>
@@ -4058,6 +4035,12 @@
  : r.trigger === "agent"
  ? "AI 触发"
  : r.trigger || "";
+ const runSess = r.session_id
+ ? findSessionRow(_sessionListCache.rows, r.session_id)
+ : null;
+ const sessBit = runSess
+ ? " · " + sessionDisplayName(runSess)
+ : "";
  c.innerHTML = `
  <label class="wf-run-check" title="勾选删除">
  <input type="checkbox" class="wf-run-cb" data-run-id="${escapeHtml(
@@ -4071,7 +4054,7 @@
  </div>
  <div class="card-sub">${escapeHtml(when)} · 做了 ${
  r.step_count || 0
- } 步${who ? " · " + who : ""}${
+ } 步${who ? " · " + who : ""}${escapeHtml(sessBit)}${
  r.error ? " · " + escapeHtml(String(r.error).slice(0, 48)) : ""
  }</div>
  </div>
@@ -4079,6 +4062,13 @@
  <button type="button" class="btn ghost-sm view-run" data-run-id="${escapeHtml(
  r.id || ""
  )}">看看详情</button>
+ ${
+ r.session_id
+ ? `<button type="button" class="btn ghost-sm open-run-session" data-session-id="${escapeHtml(
+ r.session_id
+ )}">打开对话</button>`
+ : ""
+ }
  ${
  r.status === "waiting_human"
  ? `<button type="button" class="btn primary ghost-sm resume-run" data-run-id="${escapeHtml(
@@ -4102,6 +4092,219 @@
  } catch (e) {
  setMsg("msgWorkflows", e.message, "error");
  }
+ }
+
+ function wfScheduleLabel(sched) {
+ if (!sched || typeof sched !== "object" || sched.enabled === false) return "";
+ if (sched.mode === "off") return "";
+ if (sched.run_once || sched.mode === "once") return "跑一次";
+ if (sched.interval_seconds) {
+ const mins = Math.max(1, Math.round(Number(sched.interval_seconds) / 60) || 60);
+ return `每 ${mins} 分钟`;
+ }
+ if (sched.cron) return `cron ${sched.cron}`;
+ return "";
+ }
+
+ let _wfSchedMode = "off";
+ const WF_SCHED_OPTS = [
+ { id: "off", label: "不定时", hint: "只手动点开始" },
+ { id: "interval", label: "每隔一段时间", hint: "巡检 / 轮询" },
+ { id: "daily", label: "每天固定时刻", hint: "按本地钟点" },
+ { id: "cron", label: "高级 Cron", hint: "5 段表达式" },
+ { id: "once", label: "只跑一次", hint: "保存后尽快执行" },
+ ];
+
+ function renderWfSchedChips() {
+ const host = $("wfSchedChips");
+ if (!host) return;
+ host.innerHTML = "";
+ for (const o of WF_SCHED_OPTS) {
+ const btn = document.createElement("button");
+ btn.type = "button";
+ btn.className =
+ "kb-chip kb-chip-card" + (_wfSchedMode === o.id ? " is-on" : "");
+ btn.innerHTML = `<strong>${escapeHtml(o.label)}</strong><span>${escapeHtml(o.hint)}</span>`;
+ btn.addEventListener("click", () => {
+ _wfSchedMode = o.id;
+ renderWfSchedChips();
+ renderWfSchedFields();
+ });
+ host.appendChild(btn);
+ }
+ }
+
+ function renderWfSchedFields() {
+ const host = $("wfSchedFields");
+ const hint = $("wfSchedHint");
+ if (!host) return;
+ host.innerHTML = "";
+ if (_wfSchedMode === "interval") {
+ host.innerHTML = `
+ <label class="kb-label">每隔多少分钟
+ <input id="wfIntervalMin" class="task-field-input" type="number" min="1" max="10080" value="60" />
+ </label>`;
+ if (hint) hint.textContent = "保存后写入定时任务。例如 60 = 每小时自动跑这个流程。";
+ } else if (_wfSchedMode === "daily") {
+ host.innerHTML = `
+ <label class="kb-label">每天几点（0–23）
+ <input id="wfDailyHour" class="task-field-input" type="number" min="0" max="23" value="9" />
+ </label>
+ <label class="kb-label">几分（0–59）
+ <input id="wfDailyMin" class="task-field-input" type="number" min="0" max="59" value="0" />
+ </label>`;
+ if (hint) hint.textContent = "按电脑本地时区，保存时换成 UTC Cron。";
+ } else if (_wfSchedMode === "cron") {
+ host.innerHTML = `
+ <label class="kb-label full-span">Cron 表达式
+ <input id="wfCron" class="task-field-input" type="text" placeholder="0 1 * * *  或  */30 * * * *" />
+ </label>`;
+ if (hint) hint.textContent = "格式：分 时 日 月 周（调度器时区 UTC）。";
+ } else if (_wfSchedMode === "once") {
+ host.innerHTML =
+ '<p class="field-hint full-span" style="margin:0">保存后会建一条只跑一次的定时任务。</p>';
+ if (hint) hint.textContent = "一次性。适合「稍后自动跑完这个流程」。";
+ } else {
+ if (hint) hint.textContent = "可选。保存后会写入「设定 → 定时任务」，到点自动跑这个流程。";
+ }
+ }
+
+ function applyWfScheduleToForm(sched) {
+ const s = sched && typeof sched === "object" ? sched : {};
+ if (!s.enabled || s.mode === "off") {
+ _wfSchedMode = "off";
+ } else if (s.run_once || s.mode === "once") {
+ _wfSchedMode = "once";
+ } else if (s.interval_seconds || s.mode === "interval") {
+ _wfSchedMode = "interval";
+ } else if (s.mode === "daily" && s.cron) {
+ _wfSchedMode = "daily";
+ } else if (s.cron && utcCronToLocalDaily(s.cron) && s.mode !== "cron") {
+ _wfSchedMode = "daily";
+ } else if (s.cron || s.mode === "cron") {
+ _wfSchedMode = "cron";
+ } else {
+ _wfSchedMode = "off";
+ }
+ renderWfSchedChips();
+ renderWfSchedFields();
+ if (_wfSchedMode === "interval") {
+ const el = $("wfIntervalMin");
+ if (el) el.value = String(Math.max(1, Math.round(Number(s.interval_seconds || 3600) / 60)));
+ } else if (_wfSchedMode === "daily") {
+ const daily = utcCronToLocalDaily(s.cron) || { hour: 9, minute: 0 };
+ const hEl = $("wfDailyHour");
+ const mEl = $("wfDailyMin");
+ if (hEl) hEl.value = String(daily.hour);
+ if (mEl) mEl.value = String(daily.minute);
+ } else if (_wfSchedMode === "cron") {
+ const el = $("wfCron");
+ if (el) el.value = s.cron || "";
+ }
+ }
+
+ function wfSelectedValueFromDef(w) {
+ if (!w) return SESSION_SPECIAL.AUTO;
+ if (w.always_new_session) return SESSION_SPECIAL.ALWAYS_NEW;
+ if (w.default_session_id) {
+ const cur = (state && state.sessionId) || "";
+ if (cur && w.default_session_id === cur) return SESSION_SPECIAL.CURRENT;
+ return w.default_session_id;
+ }
+ return SESSION_SPECIAL.AUTO;
+ }
+
+ async function renderWfDefaultSessionSelect(selected) {
+ const sel = $("wfDefaultSessionSelect");
+ if (!sel) return;
+ const extra = [];
+ if (
+ selected &&
+ selected !== SESSION_SPECIAL.AUTO &&
+ selected !== SESSION_SPECIAL.CURRENT &&
+ selected !== SESSION_SPECIAL.ALWAYS_NEW
+ ) {
+ extra.push({ value: selected, label: "已指定的对话" });
+ }
+ await populateSessionSelect(sel, {
+ special: wfSessionSpecials(),
+ selected: selected || SESSION_SPECIAL.AUTO,
+ extra,
+ force: true,
+ });
+ }
+
+ async function renderWfRunSessionSelect(selected) {
+ const sel = $("wfRunSessionSelect");
+ if (!sel) return;
+ const extra = [];
+ if (
+ selected &&
+ selected !== SESSION_SPECIAL.NEW &&
+ selected !== SESSION_SPECIAL.CURRENT
+ ) {
+ extra.push({ value: selected, label: "流程默认对话" });
+ }
+ await populateSessionSelect(sel, {
+ special: wfRunSessionSpecials(),
+ selected: selected || SESSION_SPECIAL.NEW,
+ extra,
+ force: true,
+ });
+ }
+
+ function collectWfSession() {
+ const picked = resolveSessionSelectValue($("wfDefaultSessionSelect")?.value);
+ if (picked.mode === "current" && !picked.session_id) {
+ setMsg("msgWfEdit", "请先在主界面打开一个对话，或改选其它对话", "error");
+ return null;
+ }
+ return {
+ default_session_id: picked.session_id || "",
+ always_new_session: !!picked.always_new_session,
+ };
+ }
+
+ function collectWfSchedule() {
+ if (_wfSchedMode === "off") {
+ return { mode: "off", enabled: false };
+ }
+ if (_wfSchedMode === "interval") {
+ const mins = parseInt($("wfIntervalMin")?.value, 10) || 60;
+ return {
+ mode: "interval",
+ enabled: true,
+ interval_seconds: Math.max(60, mins * 60),
+ run_once: false,
+ cron: null,
+ };
+ }
+ if (_wfSchedMode === "daily") {
+ const h = Math.min(23, Math.max(0, parseInt($("wfDailyHour")?.value, 10) || 9));
+ const m = Math.min(59, Math.max(0, parseInt($("wfDailyMin")?.value, 10) || 0));
+ return {
+ mode: "daily",
+ enabled: true,
+ cron: localDailyToUtcCron(h, m),
+ interval_seconds: null,
+ run_once: false,
+ };
+ }
+ if (_wfSchedMode === "cron") {
+ const c = ($("wfCron")?.value || "").trim();
+ if (!c) {
+ setMsg("msgWfEdit", "请填写 Cron 表达式，或不定时", "error");
+ return null;
+ }
+ return {
+ mode: "cron",
+ enabled: true,
+ cron: c,
+ interval_seconds: null,
+ run_once: false,
+ };
+ }
+ return { mode: "once", enabled: true, run_once: true, cron: null, interval_seconds: null };
  }
 
  // ---- Editor ----
@@ -4130,6 +4333,8 @@
  if ($("wfName")) $("wfName").value = w.name || "";
  if ($("wfDesc")) $("wfDesc").value = w.description || "";
  if ($("wfEnabled")) $("wfEnabled").checked = w.enabled !== false;
+ applyWfScheduleToForm(w.schedule);
+ await renderWfDefaultSessionSelect(wfSelectedValueFromDef(w));
  if ($("wfInputs"))
  $("wfInputs").value = JSON.stringify(w.inputs || {}, null, 2);
  if ($("wfSteps"))
@@ -4161,6 +4366,8 @@
  if ($("wfName")) $("wfName").value = "";
  if ($("wfDesc")) $("wfDesc").value = "";
  if ($("wfEnabled")) $("wfEnabled").checked = true;
+ applyWfScheduleToForm({ mode: "off", enabled: false });
+ await renderWfDefaultSessionSelect(SESSION_SPECIAL.AUTO);
  if ($("wfInputs")) $("wfInputs").value = "{}";
  if ($("wfSteps")) $("wfSteps").value = "[]";
  renderInputsBuilder({});
@@ -4229,6 +4436,11 @@
  if ($("wfInputs")) $("wfInputs").value = JSON.stringify(inputs, null, 2);
  if ($("wfSteps")) $("wfSteps").value = JSON.stringify(steps, null, 2);
 
+ const schedule = collectWfSchedule();
+ if (!schedule) return null;
+ const session = collectWfSession();
+ if (!session) return null;
+
  return {
  id: ($("wfId")?.value || "").trim() || undefined,
  name,
@@ -4236,6 +4448,9 @@
  enabled: !!$("wfEnabled")?.checked,
  inputs,
  steps,
+ schedule,
+ default_session_id: session.default_session_id,
+ always_new_session: session.always_new_session,
  };
  }
 
@@ -4365,6 +4580,8 @@
  }
  $("wfRunGateBar")?.classList.add("hidden");
  $("btnDoWfRun")?.classList.remove("hidden");
+ $("btnWfOpenRunSession")?.classList.add("hidden");
+ $("btnWfOpenRunSession")?.removeAttribute("data-session-id");
 
  try {
  const w = await api(`/api/workflows/${encodeURIComponent(wfId)}`);
@@ -4379,6 +4596,11 @@
  w.description || "填好下面内容（如果有），再点开始";
  }
  renderRunInputsForm(w.inputs || {});
+ let preselect = SESSION_SPECIAL.NEW;
+ if (w.always_new_session) preselect = SESSION_SPECIAL.NEW;
+ else if (w.default_session_id) preselect = w.default_session_id;
+ else if (state && state.sessionId) preselect = SESSION_SPECIAL.CURRENT;
+ await renderWfRunSessionSelect(preselect);
  modal.classList.remove("hidden");
  document.body.classList.add("wf-run-modal-open");
  if (typeof L.hydrateIconPark === "function") L.hydrateIconPark(modal);
@@ -4485,6 +4707,16 @@
  pre.textContent = JSON.stringify(slim, null, 2);
  }
  const status = result.status || run.status;
+ const sid = run.session_id || result.session_id;
+ const openBtn = $("btnWfOpenRunSession");
+ if (openBtn) {
+ if (sid) {
+ openBtn.classList.remove("hidden");
+ openBtn.setAttribute("data-session-id", sid);
+ } else {
+ openBtn.classList.add("hidden");
+ }
+ }
  const gateBar = $("wfRunGateBar");
  if (status === "waiting_human") {
  _wfCurrentRunId = run.id || "";
@@ -4544,6 +4776,11 @@
  return;
  }
  const inputs = collectRunInputs();
+ const picked = resolveSessionSelectValue($("wfRunSessionSelect")?.value);
+ if (picked.mode === "current" && !picked.session_id) {
+ setMsg("msgWfRun", "请先在主界面打开一个对话，或改选其它对话", "error");
+ return;
+ }
  setMsg("msgWfRun", "正在跑…");
  const btn = $("btnDoWfRun");
  if (btn) btn.disabled = true;
@@ -4554,6 +4791,8 @@
  inputs,
  trigger: "ui",
  background: true,
+ session_id: picked.session_id || "",
+ always_new_session: !!picked.always_new_session,
  }),
  });
  let finalResult = result;
@@ -4673,9 +4912,17 @@
  const when = run.created_at
  ? String(run.created_at).replace("T", " ").slice(0, 16)
  : "";
+ const sessRow = run.session_id
+ ? findSessionRow(_sessionListCache.rows, run.session_id)
+ : null;
+ const sessBit = sessRow
+ ? ` · 对话：${sessionDisplayName(sessRow)}`
+ : run.session_id
+ ? " · 已写入指定对话"
+ : "";
  $("wfRunDetailLead").textContent = when
- ? `这次运行时间：${when}`
- : "逐步结果如下";
+ ? `这次运行时间：${when}${sessBit}`
+ : `逐步结果如下${sessBit}`;
  }
  const host = $("wfRunDetailSteps");
  if (host) {
@@ -5111,6 +5358,16 @@
  openWfRunDetail(viewRun.dataset.runId || "");
  return;
  }
+ const openRunSess = t.closest(".open-run-session");
+ if (openRunSess) {
+ e.preventDefault();
+ const sid = openRunSess.getAttribute("data-session-id") || "";
+ if (sid && typeof L.openSession === "function") {
+ L.openSession(sid, "工作流对话");
+ showToast("已打开流程对话", "success");
+ }
+ return;
+ }
  const resumeList = t.closest(".resume-run");
  if (resumeList) {
  e.preventDefault();
@@ -5121,6 +5378,28 @@
  if (t.closest("#btnCloseWfPage") || t.closest("#btnCancelWorkflow")) {
  e.preventDefault();
  closeWfPageModal();
+ return;
+ }
+ if (t.closest("#btnRefreshWfSessions")) {
+ e.preventDefault();
+ renderWfDefaultSessionSelect($("wfDefaultSessionSelect")?.value);
+ return;
+ }
+ if (t.closest("#btnRefreshWfRunSessions")) {
+ e.preventDefault();
+ renderWfRunSessionSelect($("wfRunSessionSelect")?.value);
+ return;
+ }
+ if (t.closest("#btnWfOpenRunSession")) {
+ e.preventDefault();
+ const sid =
+ $("btnWfOpenRunSession")?.getAttribute("data-session-id") || "";
+ if (sid && typeof L.openSession === "function") {
+ L.openSession(sid, "工作流对话");
+ showToast("已打开流程对话", "success");
+ } else {
+ showToast("还没有可打开的对话", "error");
+ }
  return;
  }
  if (t.closest("#btnSaveWorkflow")) {
@@ -5363,548 +5642,7 @@
  }
  initWorkflowPanel();
 
- // ==================== Workspace panel ====================
- let _wsPath = ""; // "" = root
- const _WS_TEXT_EXT =
-   /\.(txt|md|markdown|json|jsonl|csv|tsv|py|js|mjs|cjs|ts|tsx|jsx|html?|css|scss|less|ya?ml|toml|ini|cfg|conf|log|xml|svg|env|sh|bat|ps1|sql|r|go|rs|java|kt|c|h|cpp|hpp|vue|svelte|php|rb|pl|lua|rhai)$/i;
-
- function wsFormatSize(n) {
-   const v = Number(n);
-   if (!Number.isFinite(v) || v < 0) return "";
-   if (v < 1024) return v + " B";
-   if (v < 1024 * 1024) return (v / 1024).toFixed(v < 10 * 1024 ? 1 : 0) + " KB";
-   return (v / (1024 * 1024)).toFixed(1) + " MB";
- }
-
- function wsIsEditableName(name) {
-   const n = String(name || "");
-   if (!n) return false;
-   if (
-     [
-       ".gitignore",
-       ".dockerignore",
-       ".editorconfig",
-       ".env",
-     ].includes(n.toLowerCase())
-   )
-     return true;
-   return _WS_TEXT_EXT.test(n) || !n.includes(".");
- }
-
- function wsIsImageName(name) {
-   return /\.(png|jpe?g|gif|webp|bmp|svg|ico|heic|heif)$/i.test(
-     String(name || "")
-   );
- }
-
- function wsIsVideoName(name) {
-   return /\.(mp4|webm|mov|m4v|ogv|mkv)$/i.test(String(name || ""));
- }
-
- function wsIsAudioName(name) {
-   return /\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(String(name || ""));
- }
-
- function wsKindLabel(e, isDir, editable) {
-   if (isDir) return "文件夹";
-   if (wsIsImageName(e.name)) return "图片";
-   if (wsIsVideoName(e.name)) return "视频";
-   if (wsIsAudioName(e.name)) return "音频";
-   if (editable) return "文本";
-   return "文件";
- }
-
- function renderWsBreadcrumb(pathDisplay, parent) {
-   const el = $("wsBreadcrumb");
-   if (!el) return;
-   el.innerHTML = "";
-   const rootBtn = document.createElement("button");
-   rootBtn.type = "button";
-   rootBtn.className = "ws-crumb";
-   rootBtn.textContent = "workspace";
-   rootBtn.addEventListener("click", () => loadWorkspace(""));
-   el.appendChild(rootBtn);
-   const rel = pathDisplay === "." || !pathDisplay ? "" : String(pathDisplay);
-   if (!rel) {
-     const cur = document.createElement("span");
-     cur.className = "ws-crumb-cur";
-     cur.textContent = " /";
-     el.appendChild(cur);
-     return;
-   }
-   const parts = rel.split("/").filter(Boolean);
-   let acc = "";
-   parts.forEach((part, i) => {
-     const sep = document.createElement("span");
-     sep.className = "ws-crumb-sep";
-     sep.textContent = "/";
-     el.appendChild(sep);
-     acc = acc ? acc + "/" + part : part;
-     if (i === parts.length - 1) {
-       const cur = document.createElement("span");
-       cur.className = "ws-crumb-cur";
-       cur.textContent = part;
-       el.appendChild(cur);
-     } else {
-       const b = document.createElement("button");
-       b.type = "button";
-       b.className = "ws-crumb";
-       b.textContent = part;
-       const target = acc;
-       b.addEventListener("click", () => loadWorkspace(target));
-       el.appendChild(b);
-     }
-   });
-   void parent;
- }
-
- function wsOpenEntry(e, isDir, editable) {
-   if (isDir) {
-     loadWorkspace(e.path);
-     return;
-   }
-   if (editable) {
-     openWsFileEditor(e.path, false);
-     return;
-   }
-   window.open(
-     "/api/workspace/media/" + encodeURI(e.path || ""),
-     "_blank",
-     "noopener"
-   );
- }
-
- function wsTileVisual(e, isDir, editable) {
-   if (isDir) {
-     return `<div class="ws-tile-icon ws-tile-folder">${_ipk(
-       "folder-open",
-       "ipk-md"
-     )}</div>`;
-   }
-   if (wsIsImageName(e.name)) {
-     const src =
-       "/api/workspace/media/" +
-       String(e.path || "")
-         .split("/")
-         .map(encodeURIComponent)
-         .join("/");
-     return `<img class="ws-tile-thumb" src="${escapeHtml(
-       src
-     )}" alt="" loading="lazy" />`;
-   }
-   if (wsIsVideoName(e.name)) {
-     return `<div class="ws-tile-icon ws-tile-media">🎬</div>`;
-   }
-   if (wsIsAudioName(e.name)) {
-     return `<div class="ws-tile-icon ws-tile-media">🎵</div>`;
-   }
-   if (editable) {
-     return `<div class="ws-tile-icon ws-tile-text">${_ipk(
-       "file-doc",
-       "ipk-md"
-     )}</div>`;
-   }
-   return `<div class="ws-tile-icon">${_ipk("file", "ipk-md")}</div>`;
- }
-
- async function loadWorkspace(path, opts = {}) {
-   // 兼容 loadWorkspace(undefined, { soft }) / loadWorkspace({ soft: true })
-   if (path && typeof path === "object" && !Array.isArray(path)) {
-     opts = path;
-     path = undefined;
-   }
-   const soft = !!(opts && opts.soft);
-   initWorkspacePanel();
-   if (path !== undefined && path !== null) _wsPath = String(path);
-   const list = $("workspaceList");
-   if (!list) return;
-   list.className = "ws-grid";
-   const keepUi = soft && list.querySelector(".ws-tile:not(.ws-tile-muted)");
-   if (!keepUi) {
-     list.innerHTML =
-       '<div class="ws-tile ws-tile-muted"><div class="ws-tile-name">载入中…</div></div>';
-     setMsg("msgWorkspace", "载入中…");
-   }
-   const up = $("btnWsUp");
-   try {
-     const q = _wsPath
-       ? `?path=${encodeURIComponent(_wsPath)}&limit=400`
-       : "?limit=400";
-     const data = await api("/api/workspace/browse" + q);
-     list.innerHTML = "";
-     const entries = Array.isArray(data?.entries) ? data.entries : [];
-     _wsPath =
-       data?.path === "." || !data?.path ? "" : String(data.path || _wsPath);
-     renderWsBreadcrumb(data?.path_display || _wsPath || ".", data?.parent);
-     if (up) {
-       up.disabled = data?.parent === null || data?.parent === undefined;
-     }
-     if (!entries.length) {
-       list.innerHTML =
-         '<div class="ws-tile ws-tile-muted"><div class="ws-tile-name">空目录</div></div>';
-       setMsg("msgWorkspace", "0 项", "ok");
-       return;
-     }
-     for (const e of entries) {
-       const tile = document.createElement("div");
-       const isDir = e.type === "dir";
-       const editable = !isDir && wsIsEditableName(e.name);
-       const sizeTxt = !isDir && e.size != null ? wsFormatSize(e.size) : "";
-       const kind = wsKindLabel(e, isDir, editable);
-       tile.className =
-         "ws-tile" +
-         (isDir ? " is-dir" : "") +
-         (wsIsImageName(e.name) ? " is-image" : "");
-       tile.dataset.path = e.path || "";
-       tile.dataset.type = e.type || "file";
-       tile.title = (e.path || e.name || "") + (sizeTxt ? " · " + sizeTxt : "");
-       tile.innerHTML = `
- ${wsTileVisual(e, isDir, editable)}
- <div class="ws-tile-name">${escapeHtml(e.name || "")}</div>
- <div class="ws-tile-meta">${escapeHtml(kind)}${
-         sizeTxt ? " · " + escapeHtml(sizeTxt) : ""
-       }</div>
- <div class="ws-tile-actions">
- ${
-   !isDir && editable
-     ? `<button type="button" class="ws-tile-btn edit-ws" title="编辑">${_ipk(
-         "edit",
-         "ipk-xs"
-       )}</button>`
-     : !isDir
-       ? `<button type="button" class="ws-tile-btn open-ws-media" title="预览">${_ipk(
-           "preview-open",
-           "ipk-xs"
-         )}</button>`
-       : ""
- }
- ${
-   !isDir
-     ? `<button type="button" class="ws-tile-btn dl-ws" title="下载">${_ipk(
-         "download",
-         "ipk-xs"
-       )}</button>`
-     : ""
- }
- <button type="button" class="ws-tile-btn danger del-ws" title="删除">${_ipk(
-   "delete",
-   "ipk-xs"
- )}</button>
- </div>`;
-       tile.addEventListener("click", (ev) => {
-         if (ev.target.closest(".ws-tile-actions")) return;
-         wsOpenEntry(e, isDir, editable);
-       });
-       tile.querySelector(".edit-ws")?.addEventListener("click", (ev) => {
-         ev.stopPropagation();
-         openWsFileEditor(e.path, false);
-       });
-       tile.querySelector(".open-ws-media")?.addEventListener("click", (ev) => {
-         ev.stopPropagation();
-         window.open(
-           "/api/workspace/media/" + encodeURI(e.path || ""),
-           "_blank",
-           "noopener"
-         );
-       });
-       tile.querySelector(".dl-ws")?.addEventListener("click", (ev) => {
-         ev.stopPropagation();
-         downloadWsFile(e.path, e.name);
-       });
-       tile.querySelector(".del-ws")?.addEventListener("click", (ev) => {
-         ev.stopPropagation();
-         deleteWsEntry(e.path, isDir);
-       });
-       list.appendChild(tile);
-     }
-     setMsg(
-       "msgWorkspace",
-       `${entries.length} 项 · ${data?.path_display || "工作区根目录"}`,
-       "ok"
-     );
-     if (typeof L.hydrateIconPark === "function") L.hydrateIconPark(list);
-   } catch (err) {
-     list.innerHTML =
-       '<div class="ws-tile ws-tile-muted"><div class="ws-tile-name">加载失败</div></div>';
-     setMsg("msgWorkspace", err.message || String(err), "error");
-   }
- }
-
- function openWsFileModal() {
-   if (typeof L.openNestedEditor === "function") {
-     L.openNestedEditor("wsFileModal");
-   } else {
-     const modal = $("wsFileModal");
-     if (!modal) return;
-     modal.classList.remove("hidden");
-     document.body.classList.add("cfg-nested-open");
-     document.body.classList.add("ws-file-modal-open");
-     if (typeof L.hydrateIconPark === "function") L.hydrateIconPark(modal);
-   }
-   document.body.classList.add("ws-file-modal-open");
- }
-
- function closeWsFileModal() {
-   setMsg("msgWsFile", "");
-   if (typeof L.closeNestedEditor === "function") {
-     L.closeNestedEditor("wsFileModal");
-   } else {
-     $("wsFileModal")?.classList.add("hidden");
-     document.body.classList.remove("ws-file-modal-open");
-   }
- }
-
- async function openWsFileEditor(path, isNew) {
-   const modal = $("wsFileModal");
-   if (!modal) {
-     setMsg("msgWorkspace", "编辑器未加载，请刷新页面", "error");
-     return;
-   }
-   setMsg("msgWsFile", "");
-   $("wsEditMode").value = isNew ? "new" : "edit";
-   if (isNew) {
-     const base = _wsPath ? _wsPath.replace(/\/$/, "") + "/" : "";
-     $("wsFilePath").value = base + "untitled.md";
-     $("wsFilePath").readOnly = false;
-     $("wsFileContent").value = "";
-     $("wsFileTitle").innerHTML =
-       '<span data-ipk="plus" data-ipk-class="ipk-sm"></span> 新建文件';
-     if ($("wsFileLead"))
-       $("wsFileLead").textContent =
-         "填写相对路径与内容，保存后写入 workspace/。";
-     openWsFileModal();
-     requestAnimationFrame(() => $("wsFilePath")?.focus());
-     return;
-   }
-   try {
-     setMsg("msgWorkspace", "读取中…");
-     const data = await api(
-       "/api/workspace/file?path=" + encodeURIComponent(path)
-     );
-     $("wsFilePath").value = data.path || path;
-     $("wsFilePath").readOnly = true;
-     $("wsFileContent").value = data.content ?? "";
-     $("wsFileTitle").innerHTML =
-       '<span data-ipk="edit" data-ipk-class="ipk-sm"></span> 编辑 · ' +
-       escapeHtml(data.name || path);
-     if ($("wsFileLead"))
-       $("wsFileLead").textContent =
-         (data.size != null ? wsFormatSize(data.size) + " · " : "") +
-         "保存后立即写入磁盘。";
-     openWsFileModal();
-     setMsg("msgWorkspace", "");
-     requestAnimationFrame(() => $("wsFileContent")?.focus());
-   } catch (err) {
-     setMsg("msgWorkspace", err.message || String(err), "error");
-     showToast("打开失败", "error");
-   }
- }
-
- async function saveWsFile() {
-   const path = ($("wsFilePath")?.value || "").trim();
-   if (!path) {
-     setMsg("msgWsFile", "请填写路径", "error");
-     return;
-   }
-   const content = $("wsFileContent")?.value ?? "";
-   try {
-     setMsg("msgWsFile", "保存中…");
-     await api("/api/workspace/file", {
-       method: "PUT",
-       body: JSON.stringify({ path, content, create_parents: true }),
-     });
-     setMsg("msgWsFile", "已保存", "ok");
-     setMsg("msgWorkspace", "已保存 " + path, "ok");
-     showToast("已保存", "success");
-     closeWsFileModal();
-     await loadWorkspace(_wsPath);
-   } catch (err) {
-     setMsg("msgWsFile", err.message || String(err), "error");
-     showToast("保存失败", "error");
-   }
- }
-
- async function deleteWsEntry(path, isDir) {
-   if (!path) return;
-   const msg = isDir
-     ? `确定删除文件夹「${path}」及其全部内容？不可恢复。`
-     : `确定删除文件「${path}」？不可恢复。`;
-   if (!confirm(msg)) return;
-   try {
-     let url =
-       "/api/workspace/entry?path=" + encodeURIComponent(path);
-     if (isDir) url += "&recursive=true";
-     await api(url, { method: "DELETE" });
-     setMsg("msgWorkspace", "已删除 " + path, "ok");
-     showToast("已删除", "success");
-     await loadWorkspace(_wsPath);
-   } catch (err) {
-     setMsg("msgWorkspace", err.message || String(err), "error");
-     showToast("删除失败", "error");
-   }
- }
-
- async function createWsDir() {
-   const base = _wsPath ? _wsPath.replace(/\/$/, "") + "/" : "";
-   const name = prompt("新文件夹名称（可含相对路径）", base + "new_folder");
-   if (name == null) return;
-   const path = String(name).trim().replace(/^\/+/, "");
-   if (!path) return;
-   try {
-     await api("/api/workspace/mkdir", {
-       method: "POST",
-       body: JSON.stringify({ path, create_parents: true }),
-     });
-     showToast("已创建文件夹", "success");
-     await loadWorkspace(_wsPath);
-   } catch (err) {
-     setMsg("msgWorkspace", err.message || String(err), "error");
-     showToast("创建失败", "error");
-   }
- }
-
- function downloadWsFile(path, name) {
-   if (!path) return;
-   const url =
-     "/api/workspace/download?path=" + encodeURIComponent(path);
-   const a = document.createElement("a");
-   a.href = url;
-   a.download = name || path.split("/").pop() || "download";
-   a.rel = "noopener";
-   document.body.appendChild(a);
-   a.click();
-   a.remove();
-   showToast("开始下载 " + (name || path), "success");
- }
-
- async function uploadWsFiles(fileList) {
-   const files = Array.from(fileList || []).filter(Boolean);
-   if (!files.length) return;
-   if (files.length > 12) {
-     showToast("单次最多 12 个文件", "error");
-     return;
-   }
-   const fd = new FormData();
-   for (const f of files) fd.append("files", f);
-   fd.append("mode", "panel");
-   fd.append("dest", _wsPath || "");
-   setMsg("msgWorkspace", `上传中（${files.length}）…`);
-   try {
-     const res = await fetch("/api/workspace/upload", {
-       method: "POST",
-       body: fd,
-     });
-     let data = null;
-     const text = await res.text();
-     try {
-       data = text ? JSON.parse(text) : null;
-     } catch (_) {
-       data = { detail: text };
-     }
-     if (!res.ok) {
-       const detail = data?.detail;
-       const msg =
-         typeof detail === "string"
-           ? detail
-           : detail?.message ||
-             (Array.isArray(detail?.errors)
-               ? detail.errors.map((e) => e.error || e).join("; ")
-               : res.statusText);
-       throw new Error(msg || "上传失败");
-     }
-     const n = data?.count || (data?.saved || []).length || 0;
-     const errN = (data?.errors || []).length;
-     setMsg(
-       "msgWorkspace",
-       `已上传 ${n} 个` + (errN ? ` · ${errN} 个失败` : ""),
-       errN && !n ? "error" : "ok"
-     );
-     showToast(
-       n
-         ? `已上传 ${n} 个文件到 ${data?.upload_dir || "当前目录"}`
-         : "没有文件上传成功",
-       n ? "success" : "error"
-     );
-     if (errN && data.errors?.[0]) {
-       console.warn("workspace upload errors", data.errors);
-     }
-     await loadWorkspace(_wsPath);
-   } catch (err) {
-     setMsg("msgWorkspace", err.message || String(err), "error");
-     showToast("上传失败: " + (err.message || err), "error");
-   }
- }
-
- function bindWsDropZone(list) {
-   if (!list || list.dataset.wsDropBound) return;
-   list.dataset.wsDropBound = "1";
-   let depth = 0;
-   list.addEventListener("dragenter", (e) => {
-     e.preventDefault();
-     depth += 1;
-     list.classList.add("ws-drag-over");
-   });
-   list.addEventListener("dragleave", () => {
-     depth = Math.max(0, depth - 1);
-     if (!depth) list.classList.remove("ws-drag-over");
-   });
-   list.addEventListener("dragover", (e) => {
-     e.preventDefault();
-     if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
-   });
-   list.addEventListener("drop", (e) => {
-     e.preventDefault();
-     depth = 0;
-     list.classList.remove("ws-drag-over");
-     const fl = e.dataTransfer?.files;
-     if (fl && fl.length) uploadWsFiles(fl);
-   });
- }
-
- function initWorkspacePanel() {
-   if (initWorkspacePanel._done) return;
-   initWorkspacePanel._done = true;
-   $("btnRefreshWorkspace")?.addEventListener("click", () =>
-     loadWorkspace(_wsPath)
-   );
-   $("btnWsUp")?.addEventListener("click", async () => {
-     if (!_wsPath) return;
-     try {
-       const data = await api(
-         "/api/workspace/browse?path=" + encodeURIComponent(_wsPath)
-       );
-       const parent = data?.parent;
-       if (parent === null || parent === undefined) loadWorkspace("");
-       else loadWorkspace(parent === "" ? "" : parent);
-     } catch (_) {
-       const parts = _wsPath.split("/").filter(Boolean);
-       parts.pop();
-       loadWorkspace(parts.join("/"));
-     }
-   });
-   $("btnWsNewFile")?.addEventListener("click", () =>
-     openWsFileEditor("", true)
-   );
-   $("btnWsNewDir")?.addEventListener("click", () => createWsDir());
-   $("btnWsUpload")?.addEventListener("click", () => {
-     $("wsUploadInput")?.click();
-   });
-   $("wsUploadInput")?.addEventListener("change", (e) => {
-     const input = e.target;
-     const fl = input?.files;
-     if (fl && fl.length) uploadWsFiles(fl);
-     if (input) input.value = "";
-   });
-   bindWsDropZone($("workspaceList"));
-   $("btnSaveWsFile")?.addEventListener("click", () => saveWsFile());
-   const closeWs = () => closeWsFileModal();
-   $("btnCancelWsFile")?.addEventListener("click", closeWs);
-   $("btnCloseWsFile")?.addEventListener("click", closeWs);
-   $("wsFileModal")?.addEventListener("click", (e) => {
-     if (e.target === $("wsFileModal")) closeWsFileModal();
-   });
- }
- initWorkspacePanel();
+ // Workspace panel lives in app-workspace.js
 
  // ==================== Webhook multi-channel panel ====================
  let _whCache = [];
@@ -5932,12 +5670,7 @@
  }
 
  async function loadWhSessions() {
-   try {
-     const rows = await api("/api/sessions");
-     _whSessions = Array.isArray(rows) ? rows : [];
-   } catch (_) {
-     _whSessions = [];
-   }
+   _whSessions = await fetchSessionList(true);
    const sel = $("whSessionId");
    if (!sel) return;
    const cur = sel.value;
@@ -5946,9 +5679,7 @@
    for (const s of _whSessions) {
      const opt = document.createElement("option");
      opt.value = s.session_id || "";
-     const title = (s.title || "未命名").slice(0, 40);
-     const n = s.message_count != null ? ` · ${s.message_count} 条` : "";
-     opt.textContent = `${title}${n} · ${(s.session_id || "").slice(0, 8)}…`;
+     opt.textContent = sessionOptionLabel(s);
      sel.appendChild(opt);
    }
    // keep free-text session ids not in list
@@ -5997,7 +5728,12 @@
        card.className = "card" + (on ? "" : " card-disabled");
        const sess =
          it.session_mode === "fixed" && it.session_id
-           ? `会话 ${(it.session_id || "").slice(0, 10)}…`
+           ? (() => {
+               const row = findSessionRow(_sessionListCache.rows, it.session_id);
+               return row
+                 ? "对话：" + sessionDisplayName(row)
+                 : "已指定对话";
+             })()
            : whModeLabel(it.session_mode);
        card.innerHTML = `
  <div class="card-body">
@@ -6322,24 +6058,59 @@
    }
  }
 
- function initWebhookPanel() {
-   if (initWebhookPanel._done) return;
-   initWebhookPanel._done = true;
-   $("btnRefreshWebhooks")?.addEventListener("click", () => loadWebhooks());
-   $("btnNewWebhook")?.addEventListener("click", () => openWebhookEditor(""));
-   $("btnSaveWebhook")?.addEventListener("click", () => saveWebhook());
-   $("btnCancelWebhook")?.addEventListener("click", () => closeWebhookEditor());
-   $("btnCloseWebhookEditor")?.addEventListener("click", () =>
-     closeWebhookEditor()
-   );
-   $("webhookEditorModal")?.addEventListener("click", (e) => {
-     if (e.target === $("webhookEditorModal")) closeWebhookEditor();
+ function bindWebhookDelegatedUi() {
+   // 与任务/集成相同：config-modal.html 晚于本脚本注入时，直接 addEventListener 会绑空且 _done 不再重试。
+   if (bindWebhookDelegatedUi._done) return;
+   bindWebhookDelegatedUi._done = true;
+   document.addEventListener("click", (e) => {
+     const t = e.target;
+     if (!(t instanceof Element)) return;
+     if (t.id === "webhookEditorModal") {
+       closeWebhookEditor();
+       return;
+     }
+     const btn = t.closest(
+       "#btnNewWebhook, #btnRefreshWebhooks, #btnSaveWebhook, #btnCancelWebhook, #btnCloseWebhookEditor, #btnWhRevealToken, #btnWhRegenToken, #btnWhCopyToken"
+     );
+     if (!btn) return;
+     e.preventDefault();
+     switch (btn.id) {
+       case "btnNewWebhook":
+         openWebhookEditor("");
+         break;
+       case "btnRefreshWebhooks":
+         loadWebhooks();
+         break;
+       case "btnSaveWebhook":
+         saveWebhook();
+         break;
+       case "btnCancelWebhook":
+       case "btnCloseWebhookEditor":
+         closeWebhookEditor();
+         break;
+       case "btnWhRevealToken":
+         revealWhToken();
+         break;
+       case "btnWhRegenToken":
+         regenWhToken();
+         break;
+       case "btnWhCopyToken":
+         copyWhToken();
+         break;
+       default:
+         break;
+     }
    });
-   $("btnWhRevealToken")?.addEventListener("click", () => revealWhToken());
-   $("btnWhRegenToken")?.addEventListener("click", () => regenWhToken());
-   $("btnWhCopyToken")?.addEventListener("click", () => copyWhToken());
-   $("whSlug")?.addEventListener("input", () => {
-     const slug = ($("whSlug")?.value || "").trim() || "{slug}";
+ }
+
+ function bindWebhookFieldUi() {
+   if (bindWebhookFieldUi._done) return;
+   const slugEl = $("whSlug");
+   const nameEl = $("whName");
+   if (!slugEl && !nameEl) return;
+   bindWebhookFieldUi._done = true;
+   slugEl?.addEventListener("input", () => {
+     const slug = (slugEl.value || "").trim() || "{slug}";
      if ($("whUrlPreview")) {
        try {
          $("whUrlPreview").value =
@@ -6349,22 +6120,29 @@
        }
      }
    });
-   $("whName")?.addEventListener("blur", () => {
-     if (($("whSlug")?.value || "").trim()) return;
-     const n = ($("whName")?.value || "").trim();
-     if (!n || !$("whSlug")) return;
-     // light slug suggest
+   nameEl?.addEventListener("blur", () => {
+     if ((slugEl?.value || "").trim()) return;
+     const n = (nameEl.value || "").trim();
+     if (!n || !slugEl) return;
      let s = n
        .toLowerCase()
        .replace(/\s+/g, "-")
        .replace(/[^a-z0-9_-]+/g, "");
      if (!s) s = "hook";
      if (!/^[a-z]/.test(s)) s = "w-" + s;
-     $("whSlug").value = s.slice(0, 48);
-     $("whSlug").dispatchEvent(new Event("input"));
+     slugEl.value = s.slice(0, 48);
+     slugEl.dispatchEvent(new Event("input"));
    });
  }
+
+ function initWebhookPanel() {
+   bindWebhookDelegatedUi();
+   bindWebhookFieldUi();
+ }
  initWebhookPanel();
+ if (window.__configModalReady && typeof window.__configModalReady.then === "function") {
+   window.__configModalReady.then(() => bindWebhookFieldUi());
+ }
 
  // Export
  L.normalizeTask = normalizeTask;
@@ -6389,11 +6167,10 @@
  L.openWfRunModal = openWfRunModal;
  L.openWfRunDetail = openWfRunDetail;
  L.closeWfPageModal = closeWfPageModal;
- L.loadWorkspace = loadWorkspace;
- L.initWorkspacePanel = initWorkspacePanel;
- L.openWsFileEditor = openWsFileEditor;
- L.closeWsFileModal = closeWsFileModal;
  L.loadWebhooks = loadWebhooks;
  L.initWebhookPanel = initWebhookPanel;
  L.openWebhookEditor = openWebhookEditor;
+ L.closeWebhookEditor = closeWebhookEditor;
+ L.closeWfRunModal = closeWfRunModal;
+ L.closeWfRunDetailModal = closeWfRunDetailModal;
 })(window.Lily);

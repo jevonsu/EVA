@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,18 +18,32 @@ from app import __version__
 from app.api import chat, config as config_api, memory, sessions, system, tasks, tools, workspace
 from app.api import knowledge as knowledge_api
 from app.api import smb_media
+from app.api import storage as storage_api
 from app.api import webhook as webhook_api
 from app.api import workflows as workflows_api
 from app.auth.gate import AuthGateASGI
+from app.auth.remote import control_configured
 from app.auth.routes import router as auth_router
-from app.auth.store import get_auth_store
-from app.config import get_settings
+from app.config import RESOURCE_ROOT, configure_logging, get_settings
 from app.config_store import get_config_store
 from app.mcp.client import get_mcp_manager
 from app.scheduler.manager import get_scheduler
 from app.services.runtime import rebuild_runtime
 
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+def _resolve_static_dir() -> Path:
+    candidates = (
+        Path(__file__).resolve().parent / "static",
+        Path(RESOURCE_ROOT) / "app" / "static",
+        Path(RESOURCE_ROOT) / "static",
+    )
+    for p in candidates:
+        if p.is_dir():
+            return p
+    return candidates[0]
+
+
+STATIC_DIR = _resolve_static_dir()
 
 # SPA shell paths — served as pure HTML (never FileResponse / Content-Disposition)
 _UI_PATHS = frozenset(
@@ -51,36 +66,76 @@ logging.basicConfig(
     encoding="utf-8",
 )
 logger = logging.getLogger("app")
+# Quiet until desktop/lifespan applies DEBUG from .env
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+# In-memory SPA shell — avoid re-reading disk on every navigation
+_INDEX_HTML_CACHE: bytes | None = None
+_INDEX_HTML_MTIME: float | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.ensure_dirs()
+    configure_logging(bool(getattr(settings, "debug", False)))
     get_config_store()  # ensure data/config.json exists
-
-    # Card auth DB
     try:
-        get_auth_store()
-        if getattr(settings, "auth_enabled", True):
-            has_pwd = bool(
-                (getattr(settings, "auth_admin_password_hash", "") or "").strip()
-                or (getattr(settings, "auth_admin_password", "") or "").strip()
-            )
-            if not has_pwd:
-                logger.warning(
-                    "AUTH enabled but AUTH_ADMIN_PASSWORD / AUTH_ADMIN_PASSWORD_HASH "
-                    "is empty — admin card platform login will fail until set"
-                )
-            if not (getattr(settings, "auth_pepper", "") or getattr(settings, "auth_secret", "")):
-                logger.warning(
-                    "AUTH_PEPPER is empty — using derived default; set a long random "
-                    "AUTH_PEPPER in .env for production"
-                )
-    except Exception:
-        logger.exception("Auth store init failed")
+        from app.auth.remote import invalidate_local_cache
 
-    summary = await rebuild_runtime(reconnect_mcp=True)
+        invalidate_local_cache()
+    except Exception:
+        logger.debug("auth cache reset skipped", exc_info=True)
+
+    # Business data: local SQLite (default) or remote SQL — before stores load
+    try:
+        from app.storage.bootstrap import ensure_storage
+
+        st = ensure_storage()
+        logger.info(
+            "Storage backend=%s migrated=%s",
+            st.get("backend"),
+            st.get("migrated"),
+        )
+    except Exception:
+        logger.exception("Storage init failed — sessions/memory/kb may be unavailable")
+
+    if getattr(settings, "auth_enabled", True):
+        try:
+            from app.auth.remote import parse_control_presets
+
+            presets = parse_control_presets()
+            if presets:
+                logger.info(
+                    "AUTH: %d control gateway preset(s): %s",
+                    len(presets),
+                    ", ".join(f"{p['label']}={p['url']}" for p in presets),
+                )
+            elif not control_configured():
+                logger.info(
+                    "AUTH_ENABLED: login requires gateway URL + card code "
+                    "(.env AUTH_CONTROL_URL / AUTH_CONTROL_URLS optional defaults)"
+                )
+        except Exception:
+            logger.debug("AUTH preset log skipped", exc_info=True)
+
+    # Core runtime first (tools + LLM). MCP may spawn slow subprocesses —
+    # connect in the background so the HTTP server becomes ready quickly.
+    summary = await rebuild_runtime(reconnect_mcp=False)
+
+    async def _mcp_bg() -> None:
+        try:
+            from app.tools.registry import get_tool_registry
+
+            mcp = get_mcp_manager()
+            await mcp.start(get_tool_registry())
+            if mcp.connected_count:
+                logger.info("MCP ready: %d server(s)", mcp.connected_count)
+        except Exception:
+            logger.exception("Background MCP connect failed")
+
+    asyncio.create_task(_mcp_bg())
 
     try:
         from app.knowledge.store import get_knowledge_store
@@ -94,8 +149,14 @@ async def lifespan(app: FastAPI):
     scheduler = get_scheduler()
     await scheduler.start()
 
+    # Warm SPA shell into memory so first request is instant
+    try:
+        _load_index_html()
+    except OSError:
+        pass
+
     logger.info(
-        "Agent '%s' ready | provider=%s model=%s tools=%d mcp=%d",
+        "Agent '%s' ready | provider=%s model=%s tools=%d mcp=%d (mcp may still connect)",
         summary.get("agent") or settings.agent_name,
         (summary.get("llm") or {}).get("provider"),
         (summary.get("llm") or {}).get("model"),
@@ -110,12 +171,28 @@ async def lifespan(app: FastAPI):
 
 
 def _load_index_html() -> bytes:
-    """Read SPA shell as UTF-8 bytes (LF only, no BOM)."""
-    raw = (STATIC_DIR / "index.html").read_bytes()
+    """Read SPA shell as UTF-8 bytes (LF only, no BOM). Cached by mtime."""
+    global _INDEX_HTML_CACHE, _INDEX_HTML_MTIME
+    path = STATIC_DIR / "index.html"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = None
+    if (
+        _INDEX_HTML_CACHE is not None
+        and mtime is not None
+        and _INDEX_HTML_MTIME == mtime
+    ):
+        return _INDEX_HTML_CACHE
+
+    raw = path.read_bytes()
     if raw.startswith(b"\xef\xbb\xbf"):
         raw = raw[3:]
     # Normalize newlines — a few WebViews mis-handle CR in the first line
-    return raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    body = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    _INDEX_HTML_CACHE = body
+    _INDEX_HTML_MTIME = mtime
+    return body
 
 
 # Minimal mobile probe page. If this still "downloads as document.txt", the
@@ -125,7 +202,7 @@ _MOBILE_OK_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AgentOS OK</title>
+<title>Eva OK</title>
 <style>
 body{font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3;padding:24px;line-height:1.6}
 a{color:#3fb950}
@@ -136,7 +213,7 @@ a{color:#3fb950}
 <div class="box">
 <h1>&#10003; Mobile HTML OK</h1>
 <p>If you can read this page, the browser is rendering HTML (not downloading document.txt).</p>
-<p><a href="/index.html">Open AgentOS</a></p>
+<p><a href="/index.html">Open Eva</a></p>
 <p style="color:#8b949e;font-size:13px">Tip: turn off phone VPN/proxy; use http:// not https://</p>
 </div>
 </body>
@@ -154,7 +231,8 @@ async def _send_html(send: Send, body: bytes, status: int = 200) -> None:
     headers = [
         (b"content-type", b"text/html; charset=utf-8"),
         (b"content-length", str(len(body)).encode("ascii")),
-        (b"cache-control", b"no-store"),
+        # SPA shell may change with deploys; short cache is enough for back/forward
+        (b"cache-control", b"private, max-age=30"),
     ]
     await send({"type": "http.response.start", "status": status, "headers": headers})
     await send({"type": "http.response.body", "body": body})
@@ -177,13 +255,18 @@ class MobileHtmlASGI:
             await self.app(scope, receive, send)
             return
 
-        # Log mobile probes for diagnosis
+        # Diagnose rare WebView issues without flooding logs on every refresh
         ua = b""
         for k, v in scope.get("headers") or []:
             if k == b"user-agent":
                 ua = v
                 break
-        logger.info("UI hit path=%s method=%s ua=%s", path, method, ua[:120].decode("utf-8", "replace"))
+        logger.debug(
+            "UI hit path=%s method=%s ua=%s",
+            path,
+            method,
+            ua[:120].decode("utf-8", "replace"),
+        )
 
         if path in ("/ok.html", "/m", "/m.html"):
             body = _MOBILE_OK_HTML
@@ -193,7 +276,7 @@ class MobileHtmlASGI:
             except OSError:
                 body = (
                     b"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
-                    b"<title>AgentOS</title></head><body><h1>UI missing</h1></body></html>"
+                    b"<title>Eva</title></head><body><h1>UI missing</h1></body></html>"
                 )
                 await _send_html(send, body, status=500)
                 return
@@ -206,7 +289,7 @@ class MobileHtmlASGI:
                     "headers": [
                         (b"content-type", b"text/html; charset=utf-8"),
                         (b"content-length", str(len(body)).encode("ascii")),
-                        (b"cache-control", b"no-store"),
+                        (b"cache-control", b"private, max-age=30"),
                     ],
                 }
             )
@@ -214,6 +297,18 @@ class MobileHtmlASGI:
             return
 
         await _send_html(send, body)
+
+
+class CachedStaticFiles(StaticFiles):
+    """Static assets with browser caching (JS/CSS rarely change between deploys)."""
+
+    def file_response(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        resp = super().file_response(*args, **kwargs)
+        resp.headers.setdefault(
+            "Cache-Control",
+            "public, max-age=86400, stale-while-revalidate=604800",
+        )
+        return resp
 
 
 def create_app() -> FastAPI:
@@ -245,6 +340,7 @@ def create_app() -> FastAPI:
     app.include_router(tasks.router)
     app.include_router(tools.router)
     app.include_router(config_api.router)
+    app.include_router(storage_api.router)
     app.include_router(workspace.router)
     app.include_router(webhook_api.mgmt_router)
     app.include_router(webhook_api.router)
@@ -256,6 +352,15 @@ def create_app() -> FastAPI:
             html = path.read_text(encoding="utf-8")
         except OSError:
             return HTMLResponse("<h1>Auth page missing</h1>", status_code=500)
+        # Bust browser cache for login assets after deploys
+        try:
+            js_m = (STATIC_DIR / "auth" / "login.js").stat().st_mtime_ns
+            css_m = (STATIC_DIR / "auth" / "auth.css").stat().st_mtime_ns
+            ver = f"{int(js_m)}-{int(css_m)}"
+        except OSError:
+            ver = "1"
+        html = html.replace('href="/static/auth/auth.css"', f'href="/static/auth/auth.css?v={ver}"')
+        html = html.replace('src="/static/auth/login.js"', f'src="/static/auth/login.js?v={ver}"')
         return HTMLResponse(
             html,
             headers={
@@ -271,15 +376,12 @@ def create_app() -> FastAPI:
     async def login_page() -> Response:
         return _auth_page("login.html")
 
-    @app.get("/admin", include_in_schema=False)
-    @app.get("/admin.html", include_in_schema=False)
-    async def admin_page() -> Response:
-        return _auth_page("admin.html")
+    # Card issuing is merchant-admin side only — no /admin on Eva
 
     # Static assets (JS/CSS). Must be after API routers.
     app.mount(
         "/static",
-        StaticFiles(directory=str(STATIC_DIR)),
+        CachedStaticFiles(directory=str(STATIC_DIR)),
         name="static",
     )
 
@@ -299,11 +401,16 @@ app = build_app()
 
 def run() -> None:
     settings = get_settings()
+    debug = bool(settings.debug)
+    configure_logging(debug)
     uvicorn.run(
-        "app.main:app",
+        app,
         host=settings.host,
         port=settings.port,
-        reload=bool(settings.debug),
+        log_level="debug" if debug else "info",
+        access_log=debug,
+        reload=False,
+        use_colors=False,
     )
 
 

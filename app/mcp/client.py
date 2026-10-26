@@ -88,8 +88,8 @@ class MCPManager:
         registry = registry or get_tool_registry()
 
         try:
-            from mcp import ClientSession, StdioServerParameters
-            from mcp.client.stdio import stdio_client
+            from mcp.client.session import ClientSession
+            from mcp.client.stdio import StdioServerParameters, stdio_client
         except ImportError:
             logger.warning("mcp package not available; MCP disabled")
             for cfg in configs:

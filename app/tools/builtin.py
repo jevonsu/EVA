@@ -50,13 +50,23 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             prot = protection_summary()
         except Exception:
             prot = {}
+        llm_provider = ""
+        llm_model = ""
+        try:
+            from app.llm.client import get_llm_client
+
+            llm = get_llm_client()
+            llm_provider = llm.provider or ""
+            llm_model = llm.model or ""
+        except Exception:
+            pass
         return json.dumps(
             {
                 "agent": settings.agent_name,
                 "python": sys.version,
                 "platform": platform.platform(),
-                "llm_provider": settings.llm_provider,
-                "llm_model": settings.llm_model,
+                "llm_provider": llm_provider,
+                "llm_model": llm_model,
                 "tool_protection": prot,
             },
             ensure_ascii=False,
@@ -74,7 +84,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     ) -> str:
         """Long-term memory: remember / recall / list / delete.
 
-        Persists to data/memory/long_term.json and appears in the UI Memory panel.
+        Persists to SQL (eva_memories) and appears in the UI Memory panel.
         """
         from app.memory.store import get_memory_store
 
@@ -180,51 +190,123 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
 
     #  Register tool / s
 
-    async def read_skill(name: str) -> str:
-        """Read an installed skill"s handler code and metadata from skills/ directory.
-        Returns manifest.json, handler.py code, and SKILL.md content.
-        Use this BEFORE create_tool(update=true) to examine existing code to fix."""
+    async def read_skill(name: str, stage: str = "auto", full: bool = False) -> str:
+        """Read skill package from skills/ (live) and/or workspace/skills/ (draft).
+
+        Use BEFORE create_tool(update=true). stage=live|draft|auto (prefer live, else draft).
+        full=true 才返回完整 SKILL.md changelog（默认省略长历史以省 token）。
+        """
         import json as _json
-        from pathlib import Path as _Path
 
-        from app.services.skills import skills_root
+        from app.services.skill_lifecycle import read_skill_package
 
-        safe_name = name.strip().lower().replace(" ", "_")
-        skill_dir = skills_root() / safe_name
+        prefer = "draft" if (stage or "").strip().lower() == "draft" else "live"
+        result = read_skill_package(name, prefer=prefer, full=bool(full))
+        if result.get("ok"):
+            spec = {}
+            primary = (result.get("stages") or {}).get(result.get("primary_stage") or "") or {}
+            man = primary.get("manifest") if isinstance(primary.get("manifest"), dict) else {}
+            meta = man.get("agentos_meta") if isinstance(man.get("agentos_meta"), dict) else {}
+            if isinstance(meta.get("spec"), dict):
+                spec = meta["spec"]
+            spec.setdefault("integration_id", meta.get("integration_id") or "")
+            spec.setdefault("llm_id", meta.get("llm_id") or spec.get("llm_id") or "")
+            from app.services.credentials import list_llms_public
+            from app.services.skill_spec import skill_integration_view
 
-        if not skill_dir.exists():
-            return _json.dumps(
-                {
-                    "error": f"Skill [{safe_name}] not found in skills/ directory.",
-                    "hint": "Use workspace action=list or check skills/ folder names.",
-                },
-                ensure_ascii=False,
+            result["integration"] = skill_integration_view(result.get("name") or name, spec)
+            result["llm_id"] = spec.get("llm_id") or ""
+            result["llms"] = list_llms_public()
+            result["hint"] = (
+                "对话模型看 llms（设定→LLM），用 llm_credentials(id)。"
+                "业务连接看 integration（设定→集成；单一字段或 items 明细表），用 integration_config(id)。"
+                "不要把 LLM key 写进集成或代码。"
             )
+        return _json.dumps(result, ensure_ascii=False)
 
-        result: dict[str, Any] = {
-            "name": safe_name,
-            "path": str(skill_dir.resolve()),
-            "files": [],
-        }
-        try:
-            from app.tools.tool_meta import meta_for
+    async def list_skills_tool(include_draft: bool = True) -> str:
+        """List live (skills/) and draft (workspace/skills/) skill package ids."""
+        import json as _json
 
-            result["meta"] = meta_for(safe_name)
-        except Exception:
-            result["meta"] = {}
+        from app.services.skill_lifecycle import list_skill_ids, skills_root, draft_skills_root
+        from app.tools.protection import PROTECTED_SKILLS
 
-        for f in ["manifest.json", "handler.py", "SKILL.md"]:
-            fp = skill_dir / f
-            if fp.exists():
-                content = fp.read_text(encoding="utf-8", errors="replace")
-                result["files"].append(
+        data = list_skill_ids(include_draft=bool(include_draft))
+        from app.config_store import get_config_store
+        from app.services.skill_spec import skill_integration_view
+        from app.tools.tool_meta import meta_for
+
+        disabled = {str(x) for x in (get_config_store().disabled_skills() or [])}
+        live = [s for s in data["live"] if s not in disabled]
+        items = []
+        for sid in live:
+            md = meta_for(sid) or {}
+            items.append(
+                {
+                    "id": sid,
+                    "stage": "live",
+                    "group": str(md.get("group") or "other"),
+                    "integration": skill_integration_view(sid),
+                }
+            )
+        if include_draft:
+            for sid in data["draft"]:
+                md = meta_for(sid) or {}
+                items.append(
                     {
-                        "name": f,
-                        "size": len(content),
-                        "content": content[:8000],
-                        "truncated": len(content) > 8000,
+                        "id": sid,
+                        "stage": "draft",
+                        "group": str(md.get("group") or "other"),
+                        "integration": skill_integration_view(sid),
                     }
                 )
+        return _json.dumps(
+            {
+                "ok": True,
+                "live": live,
+                "draft": data["draft"],
+                "disabled": sorted(disabled),
+                "items": items,
+                "live_root": str(skills_root()),
+                "draft_root": str(draft_skills_root()),
+                "protected": sorted(PROTECTED_SKILLS),
+                "hint": (
+                    "正式包在 skills/；disabled 里的技能本轮不可调用。"
+                    "每条的 group 是设定→能力 的分类；改分类用 capability_groups。"
+                    "每条的 integration 是设定→集成里的连接信息（密钥已打码）。"
+                    "修改地址/密码请 integrations upsert 或让用户去设定→集成。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    async def validate_skill_tool(
+        name: str = "",
+        handler_code: str = "",
+        stage: str = "auto",
+    ) -> str:
+        """Validate skill handler syntax/structure without network calls."""
+        import json as _json
+
+        from app.services.skill_lifecycle import validate_skill_code
+
+        st = (stage or "auto").strip().lower()
+        if st == "auto":
+            st = "any"
+        result = validate_skill_code(
+            name or "inline",
+            handler_code or None,
+            stage=st,
+        )
+        return _json.dumps(result, ensure_ascii=False)
+
+    async def promote_skill_tool(name: str) -> str:
+        """Promote workspace/skills/<id> draft → skills/<id> live and hot-reload."""
+        import json as _json
+
+        from app.services.skill_lifecycle import promote_skill_async
+
+        result = await promote_skill_async(name)
         return _json.dumps(result, ensure_ascii=False)
 
     def _parse_scene_keywords(raw: str | list | None) -> list[str]:
@@ -281,7 +363,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     {
                         "name": t.name,
                         "source": t.source,
-                        "description": (t.description or "")[:120],
+                        "description": (t.description if isinstance(t.description, str) else str(t.description or ""))[:120],
                     }
                 )
         return found
@@ -347,6 +429,14 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         code = (handler_code or "").strip()
         if not code:
             return "", notes
+
+        from app.services.skill_schema import (
+            ensure_register_schema,
+            strip_duplicate_scaffold_header,
+        )
+
+        code, strip_notes = strip_duplicate_scaffold_header(code)
+        notes.extend(strip_notes)
 
         # Ensure params is a plain dict for embedding
         if not isinstance(params, dict):
@@ -512,6 +602,8 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             )
             notes.append("fallback scaffold (original code lacked registry.register)")
 
+        code, schema_notes = ensure_register_schema(code, params)
+        notes.extend(schema_notes)
         return code, notes
 
     def _preflight_load_handler(skill_dir, safe_name: str) -> str | None:
@@ -561,15 +653,21 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         scene_keywords: str = "",
         force_new: bool = False,
         changelog: str = "",
+        stage: str = "",
+        promote: bool = False,
+        spec_confirmed: bool = False,
+        user_confirmation: str = "",
+        spec_json: str = "",
+        how_to_call: str = "",
+        integration_id: str = "",
+        integration_fields_json: str = "",
+        llm_id: str = "",
+        llm_fields_json: str = "",
     ) -> str:
-        """Create a new tool/skill at runtime and hot-reload it.
+        """Create/update a skill package.
 
-        Two modes:
-          1) HTTP tool - provide url + method + parameters, no code needed.
-          2) Python handler - bare async def handle is OK; system scaffolds register().
-
-        Prefer update=true on the **primary** skill name; do not create xxx_v2 equivalents.
-        Optional meta: role / tag / group / scene_keywords (group auto-inferred if empty).
+        New skills default to live (callable this turn) after a confirmed spec.
+        stage=draft only for explicitly risky sandboxes.
         """
         import json as _json
         import shutil
@@ -577,7 +675,28 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         from datetime import datetime, timezone
         from pathlib import Path as _Path
 
-        from app.services.skills import skills_root
+        from app.services.skill_lifecycle import (
+            draft_skill_dir,
+            live_skill_dir,
+            promote_skill_async,
+            skills_root,
+            validate_skill_code,
+        )
+        from app.services.skill_spec import (
+            integration_status as _integ_status,
+            connection_hacks_in_text,
+            leaked_secrets_in_text,
+            looks_like_llm_fields,
+            looks_like_needs_integration,
+            looks_like_needs_llm,
+            fields_to_llm_payload,
+            parse_spec_json,
+            refuse_payload,
+            resolve_skill_integration_id,
+            skill_integration_view,
+            spec_gaps,
+            usage_card,
+        )
         from app.tools.registry import get_tool_registry
         from app.tools.tool_meta import (
             VALID_ROLES,
@@ -612,7 +731,189 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             protection_reason,
         )
 
-        skill_dir = skills_root() / safe_name
+        live_dir = live_skill_dir(safe_name)
+        draft_dir = draft_skill_dir(safe_name)
+        stage_n = (stage or "").strip().lower()
+        if stage_n not in ("", "draft", "live", "auto"):
+            stage_n = "auto"
+        spec = parse_spec_json(spec_json)
+        if how_to_call and not spec.get("trigger"):
+            spec["trigger"] = how_to_call.strip()
+        if (description or "").strip() and not spec.get("purpose"):
+            spec["purpose"] = description.strip()[:400]
+        gaps = spec_gaps(
+            spec,
+            description=description,
+            how_to_call=how_to_call,
+            spec_confirmed=bool(spec_confirmed),
+            user_confirmation=user_confirmation,
+            is_update=bool(update),
+        )
+        if gaps:
+            return _json.dumps(
+                refuse_payload(
+                    name=safe_name,
+                    spec=spec,
+                    gaps=gaps,
+                    is_update=bool(update),
+                ),
+                ensure_ascii=False,
+            )
+
+        integ_fields: dict[str, Any] = {}
+        raw_fields = (integration_fields_json or "").strip()
+        if raw_fields:
+            try:
+                parsed_f = _json.loads(raw_fields)
+                if isinstance(parsed_f, dict):
+                    integ_fields = parsed_f
+                else:
+                    return _json.dumps(
+                        {"ok": False, "error": "integration_fields_json 必须是 JSON 对象"},
+                        ensure_ascii=False,
+                    )
+            except _json.JSONDecodeError as exc:
+                return _json.dumps(
+                    {"ok": False, "error": f"integration_fields_json 无效: {exc}"},
+                    ensure_ascii=False,
+                )
+        llm_fields: dict[str, Any] = {}
+        raw_llm = (llm_fields_json or "").strip()
+        if raw_llm:
+            try:
+                parsed_l = _json.loads(raw_llm)
+                if isinstance(parsed_l, dict):
+                    llm_fields = parsed_l
+                else:
+                    return _json.dumps(
+                        {"ok": False, "error": "llm_fields_json 必须是 JSON 对象"},
+                        ensure_ascii=False,
+                    )
+            except _json.JSONDecodeError as exc:
+                return _json.dumps(
+                    {"ok": False, "error": f"llm_fields_json 无效: {exc}"},
+                    ensure_ascii=False,
+                )
+        # User often pastes OpenAI/DeepSeek keys into integration_fields — move them.
+        if looks_like_llm_fields(integ_fields):
+            llm_fields = {**integ_fields, **llm_fields}
+            integ_fields = {}
+        bound_llm = (llm_id or "").strip() or spec.get("llm_id") or ""
+        if llm_fields:
+            try:
+                from app.config_store import get_config_store
+                from app.services.runtime import rebuild_runtime
+
+                payload = fields_to_llm_payload(llm_fields, llm_id=bound_llm)
+                saved = get_config_store().upsert_llm(payload)
+                bound_llm = str(saved.get("id") or bound_llm)
+                spec["llm_id"] = bound_llm
+                await rebuild_runtime(reconnect_mcp=False)
+            except Exception as exc:
+                return _json.dumps(
+                    {
+                        "ok": False,
+                        "error": f"写入设定→LLM 失败: {exc}",
+                        "action_required": "write_llm",
+                        "hint": "对话模型的 base_url/api_key/model 用 llms action=upsert，不要写进 integrations。",
+                    },
+                    ensure_ascii=False,
+                )
+        elif looks_like_needs_llm(spec, description, handler_code):
+            spec["llm_id"] = bound_llm
+        integ_id = (
+            (integration_id or "").strip()
+            or spec.get("integration_id")
+            or resolve_skill_integration_id(safe_name, spec)
+        )
+        secret_vals = [
+            str(v).strip()
+            for k, v in {**integ_fields, **llm_fields}.items()
+            if str(v).strip()
+            and any(s in str(k).lower() for s in ("pass", "token", "secret", "key"))
+        ]
+        leaks = leaked_secrets_in_text(
+            f"{handler_code or ''}\n{description or ''}",
+            secret_vals,
+        )
+        hacks = connection_hacks_in_text(handler_code or "")
+        if hacks:
+            return _json.dumps(
+                {
+                    "ok": False,
+                    "error": "拒绝把 502/认证问题修成伪造 Host",
+                    "action_required": "use_skill_http",
+                    "gaps": hacks,
+                    "hint": (
+                        "局域网 NocoDB/qB/NAS 请 from app.services.skill_http import request，"
+                        "用设定→集成的 base_url + 账号密码。"
+                        "NocoDB 完整操作必须 email/password（PAT/nc_pat_ 不够）。"
+                        "502 不要改 handler，更不要删除技能。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        if leaks:
+            dest = "llms / llm_fields_json" if (llm_fields or looks_like_needs_llm(spec, description, handler_code)) else "integrations"
+            return _json.dumps(
+                {
+                    "ok": False,
+                    "error": "连接密钥不能写进技能代码",
+                    "action_required": "write_llm" if dest.startswith("llms") else "write_integration",
+                    "gaps": leaks,
+                    "llm_id": bound_llm,
+                    "integration_id": integ_id or safe_name,
+                    "hint": (
+                        "对话模型 key → 工具 llms action=upsert 或 llm_fields_json（设定→LLM）。"
+                        "业务连接 → integration_fields_json 或 integrations upsert"
+                        "（单一：url/账号/token；多记录：items 明细表）。"
+                        "handler 用 llm_credentials() 或 integration_config(id)，禁止硬编码。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        needs_integ = bool(integ_fields) or looks_like_needs_integration(
+            spec, description, handler_code
+        )
+        if needs_integ and not integ_id:
+            integ_id = safe_name
+        if integ_id and needs_integ:
+            spec["integration_id"] = integ_id
+            try:
+                from app.config_store import get_config_store
+
+                store = get_config_store()
+                from app.services.integrations_meta import pack_custom_integration
+
+                existing = store.get_integrations_raw().get(integ_id)
+                payload = pack_custom_integration(
+                    integ_id,
+                    integ_fields,
+                    name=str(integ_fields.get("_label") or safe_name),
+                    skill_id=safe_name,
+                    existing=existing if isinstance(existing, dict) else {},
+                )
+                store.upsert_integration(integ_id, payload)
+            except Exception as exc:
+                return _json.dumps(
+                    {
+                        "ok": False,
+                        "error": f"写入集成失败: {exc}",
+                        "action_required": "write_integration",
+                        "integration_id": integ_id,
+                    },
+                    ensure_ascii=False,
+                )
+
+        if stage_n in ("", "auto"):
+            # Confirmed create/update: live so the user can call it this session
+            if update and draft_dir.is_dir() and not live_dir.is_dir():
+                stage_n = "draft"
+            else:
+                stage_n = "live"
+        is_draft = stage_n == "draft"
+        skill_dir = draft_dir if is_draft else live_dir
+        # For update checks: existence at target stage
         existing = get_tool_registry().get(safe_name)
 
         # System / workspace / reserved: never create or overwrite
@@ -645,18 +946,35 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
 
         # --- update / backup logic ---
         _backup_dir = None
+        # Seed draft from live when editing production into sandbox
+        if is_draft and update and not skill_dir.exists() and live_dir.is_dir():
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(str(live_dir), str(skill_dir), dirs_exist_ok=True)
+
         is_update = bool(update) and skill_dir.exists()
+        # Creating a new live package while a live folder already exists
         if skill_dir.exists():
             if not update:
                 return _json.dumps(
                     {
-                        "error": f"Tool/skill [{safe_name}] already exists. Set update=true to overwrite it.",
+                        "error": (
+                            f"Tool/skill [{safe_name}] already exists "
+                            f"({'draft' if is_draft else 'live'}). "
+                            "Set update=true to overwrite it."
+                        ),
                         "hint": (
-                            "先 read_skill(name=%s)，再 create_tool(name=%s, update=true)。"
+                            "先 read_skill(name=%s)，再 create_tool(name=%s, update=true, stage=%s)。"
                             "禁止新建 %s_v2 / %s_fixed 等等价 skill。"
                         )
-                        % (safe_name, safe_name, safe_name, safe_name),
+                        % (
+                            safe_name,
+                            safe_name,
+                            "draft" if is_draft else "live",
+                            safe_name,
+                            safe_name,
+                        ),
                         "path": str(skill_dir),
+                        "stage": "draft" if is_draft else "live",
                         "action_required": "update_primary",
                         "primary_name": safe_name,
                     },
@@ -671,13 +989,23 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             _backup_dir = _Path(tempfile.mkdtemp()) / safe_name
             shutil.copytree(str(skill_dir), str(_backup_dir))
         else:
+            # New package: still block if live exists under same id (unless draft sandbox)
+            if not is_draft and live_dir.is_dir() and not update:
+                return _json.dumps(
+                    {
+                        "error": f"Live skill [{safe_name}] already exists.",
+                        "hint": f"create_tool(name={safe_name}, update=true, stage=live) 或 stage=draft 先改草稿。",
+                        "path": str(live_dir),
+                    },
+                    ensure_ascii=False,
+                )
             ok_c, why = can_llm_create(safe_name)
             if not ok_c:
                 return _json.dumps(
                     {"error": why, "protected": True},
                     ensure_ascii=False,
                 )
-            # Block accidental "equivalent" skills (nas_fixed, weather_v2, …)
+            # Block accidental "equivalent" skills (*_fixed, *_v2, …)
             if not force_new:
                 near = _find_near_skill_duplicates(safe_name, skills_root())
                 if near:
@@ -710,6 +1038,40 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             return _json.dumps({"error": f"Invalid parameters JSON: {e}"}, ensure_ascii=False)
         if not isinstance(params, dict):
             params = {"type": "object", "properties": {}}
+
+        from app.services.skill_schema import resolve_skill_parameters, schema_from_handler_code
+
+        old_params = None
+        if is_update:
+            old_hp = skill_dir / "handler.py"
+            if old_hp.is_file():
+                try:
+                    old_params = schema_from_handler_code(
+                        old_hp.read_text(encoding="utf-8", errors="replace")
+                    )
+                except Exception:
+                    old_params = None
+        params, schema_notes, schema_err = resolve_skill_parameters(
+            params,
+            spec=spec,
+            handler_code=handler_code or "",
+            old_params=old_params,
+            no_params=bool(spec.get("no_params")),
+        )
+        if schema_err:
+            return _json.dumps(
+                {
+                    "ok": False,
+                    "error": schema_err,
+                    "action_required": "fill_parameters",
+                    "hint": (
+                        "把 inputs 写进 spec_json，或传 parameters JSON schema，"
+                        "或在 handler 里写 SCHEMA = {...}。"
+                    ),
+                    "notes": schema_notes,
+                },
+                ensure_ascii=False,
+            )
 
         has_handler = bool((handler_code or "").strip())
         has_http = bool((url or "").strip())
@@ -750,18 +1112,33 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         desc_final = _enrich_tool_description(
             description, tag=tag_n, scene_keywords=kw_list
         )
-        group_n = resolve_group(safe_name, group, desc_final, kw_list)
 
         # Version: bump on update, start 0.1.0 on create
         prev_version = "0.1.0"
+        prev_group = ""
         if is_update and skill_dir.joinpath("manifest.json").exists():
             try:
                 prev_man = _json.loads(
                     skill_dir.joinpath("manifest.json").read_text(encoding="utf-8")
                 )
                 prev_version = str(prev_man.get("version") or "0.1.0")
+                am_prev = prev_man.get("agentos_meta")
+                if isinstance(am_prev, dict):
+                    prev_group = str(am_prev.get("group") or "")
             except Exception:
                 prev_version = "0.1.0"
+                prev_group = ""
+        raw_group = (group or "").strip()
+        if raw_group:
+            group_n = resolve_group(
+                safe_name, raw_group, desc_final, kw_list, infer=False, create=True
+            )
+        elif is_update and prev_group:
+            group_n = resolve_group(
+                safe_name, prev_group, desc_final, kw_list, infer=False, create=False
+            )
+        else:
+            group_n = "other"
         version_n = _bump_version(prev_version) if is_update else "0.1.0"
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         change_note = (changelog or "").strip() or (
@@ -770,12 +1147,13 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
 
         skill_dir.mkdir(parents=True, exist_ok=True)
 
-        scaffold_notes: list[str] = []
+        scaffold_notes: list[str] = list(schema_notes)
         code_to_write = ""
         if has_handler:
-            code_to_write, scaffold_notes = _normalize_handler_code(
+            code_to_write, extra_notes = _normalize_handler_code(
                 safe_name, desc_final, handler_code, params
             )
+            scaffold_notes.extend(extra_notes)
             try:
                 compile(code_to_write, f"{safe_name}/handler.py", "exec")
             except SyntaxError as e:
@@ -849,6 +1227,11 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                 "scene_keywords": kw_list,
                 "dynamic": True,
                 "version": version_n,
+                "spec": spec,
+                "how_to_call": spec.get("trigger") or how_to_call.strip(),
+                "integration_id": spec.get("integration_id") or integ_id or "",
+                "llm_id": spec.get("llm_id") or bound_llm or "",
+                "user_confirmation": (user_confirmation or "").strip()[:200],
             },
         }
         skill_dir.joinpath("manifest.json").write_text(
@@ -892,30 +1275,119 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             f"- updated: {ts}\n\n"
             f"## Changelog\n\n"
             f"{hist_lines or '- (none)'}\n\n"
-            f"## AgentOS meta\n\n"
+            f"## Skill meta\n\n"
             f"- role: `{role_n}`\n"
             f"- tag: `{tag_n}`\n"
             f"- group: `{group_n}`\n"
             f"- scene_keywords: {', '.join(kw_list) if kw_list else '(none)'}\n\n"
             f"## Notes\n\n"
             f"- Call name: `{safe_name}`\n"
+            f"- How to call: {spec.get('trigger') or how_to_call or safe_name}\n"
             f"- Soft filter (P2): include Chinese/English keywords, tool name, or 「全部工具」.\n"
             f"- Update in place: read_skill → create_tool(name={safe_name}, update=true).\n"
             f"- Do not create `{safe_name}_v2` / `{safe_name}_fixed` equivalents.\n"
         )
         skill_dir.joinpath("SKILL.md").write_text(skill_md, encoding="utf-8")
 
-        # Persist P0–P2 dynamic meta before reload
-        meta_entry = upsert_dynamic_meta(
-            safe_name,
-            role=role_n,
-            tag=tag_n,
-            group=group_n,
-            scene_keywords=kw_list,
-            description_hint=desc_final[:200],
-            version=version_n,
-            changelog=change_note,
-        )
+        # Validate handler before publish/reload
+        v_stage = "draft" if is_draft else "live"
+        validation = validate_skill_code(safe_name, stage=v_stage)
+        if not validation.get("ok") and has_handler:
+            if is_update and _backup_dir and _backup_dir.exists():
+                shutil.rmtree(skill_dir, ignore_errors=True)
+                shutil.copytree(str(_backup_dir), str(skill_dir))
+            elif not is_update:
+                shutil.rmtree(skill_dir, ignore_errors=True)
+            return _json.dumps(
+                {
+                    "error": "validate_skill failed after write; rolled back",
+                    "validate": validation,
+                    "stage": v_stage,
+                },
+                ensure_ascii=False,
+            )
+
+        # Persist P0–P2 dynamic meta only for live packages
+        meta_entry = None
+        if not is_draft:
+            meta_entry = upsert_dynamic_meta(
+                safe_name,
+                role=role_n,
+                tag=tag_n,
+                group=group_n,
+                scene_keywords=kw_list,
+                description_hint=desc_final[:200],
+                version=version_n,
+                changelog=change_note,
+            )
+
+        promote_result = None
+        if is_draft and promote:
+            promote_result = await promote_skill_async(safe_name)
+            if not promote_result.get("ok"):
+                return _json.dumps(
+                    {
+                        "ok": False,
+                        "error": "draft written but promote failed",
+                        "path": str(skill_dir.resolve()),
+                        "stage": "draft",
+                        "validate": validation,
+                        "promote": promote_result,
+                    },
+                    ensure_ascii=False,
+                )
+            is_draft = False
+            skill_dir = live_dir
+            meta_entry = upsert_dynamic_meta(
+                safe_name,
+                role=role_n,
+                tag=tag_n,
+                group=group_n,
+                scene_keywords=kw_list,
+                description_hint=desc_final[:200],
+                version=version_n,
+                changelog=change_note,
+            )
+
+        integ_id, integ_st = _integ_status(spec.get("integration_id") or "")
+        ready_live = (not integ_id) or integ_st in ("ready",)
+
+        if is_draft:
+            card = usage_card(
+                name=safe_name,
+                spec=spec,
+                ready=False,
+                stage="draft",
+                integration_id=integ_id,
+                integration_status=integ_st,
+            )
+            return _json.dumps(
+                {
+                    "ok": True,
+                    "tool_name": safe_name,
+                    "type": "skill_draft",
+                    "stage": "draft",
+                    "ready": False,
+                    "version": version_n,
+                    "previous_version": prev_version if is_update else None,
+                    "updated": is_update,
+                    "changelog_entry": history[-1] if history else None,
+                    "path": str(skill_dir.resolve()),
+                    "live_path": str(live_dir.resolve()),
+                    "validate": validation,
+                    "loaded": False,
+                    "spec": spec,
+                    "integration": skill_integration_view(safe_name, spec),
+                    "usage": card,
+                    "tell_user": card["tell_user"],
+                    "scaffold_notes": scaffold_notes,
+                    "tips": [
+                        f"草稿已写入 workspace/skills/{safe_name}/（对话里还不能调用）。",
+                        f"确认无误后 create_tool(name={safe_name}, promote=true) 发布。",
+                    ],
+                },
+                ensure_ascii=False,
+            )
 
         from app.services.runtime import rebuild_runtime
 
@@ -961,6 +1433,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     "related_registered_names": related[:20],
                     "scaffold_notes": scaffold_notes,
                     "tip": "Prefer bare async def handle; avoid wrong register names.",
+                    "validate": validation,
                 },
                 ensure_ascii=False,
             )
@@ -977,10 +1450,13 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     "tool_name": safe_name,
                     "registered_tools": skill_registered,
                     "type": "skill",
+                    "stage": "live",
                     "version": version_n,
                     "path": str(skill_dir.resolve()),
                     "meta": meta_entry,
                     "updated": is_update,
+                    "validate": validation,
+                    "promote": promote_result,
                     "scaffold_notes": scaffold_notes,
                     "tips": [
                         f"Prefer registry.register('{safe_name}', …).",
@@ -991,6 +1467,16 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             )
 
         extra = [r["name"] for r in skill_registered if r["name"] != safe_name]
+        integ_id, integ_st = _integ_status(spec.get("integration_id") or "")
+        ready_live = (not integ_id) or integ_st in ("ready",)
+        card = usage_card(
+            name=safe_name,
+            spec=spec,
+            ready=ready_live,
+            stage="live",
+            integration_id=integ_id,
+            integration_status=integ_st,
+        )
 
         return _json.dumps(
             {
@@ -999,6 +1485,9 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                 "registered_tools": skill_registered,
                 "extra_tools": extra,
                 "type": "skill",
+                "stage": "live",
+                "loaded": True,
+                "ready": ready_live,
                 "version": version_n,
                 "previous_version": prev_version if is_update else None,
                 "updated": is_update,
@@ -1007,21 +1496,274 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                 "meta": meta_entry,
                 "group": group_n,
                 "description": desc_final[:300],
+                "spec": spec,
+                "integration": skill_integration_view(safe_name, spec),
+                "usage": card,
+                "tell_user": card["tell_user"],
+                "validate": validation,
+                "promote": promote_result,
                 "scaffold_notes": scaffold_notes,
                 "tips": [
-                    f"Call tool name: {safe_name}",
-                    f"UI group: {group_n}",
-                    f"Version: {version_n}",
-                    "Later fixes: read_skill → create_tool(name=同一名字, update=true, changelog='…').",
-                    "Do not create *_v2 / *_fixed equivalents.",
-                    "Credentials/hosts/API endpoints → tool `integrations` "
-                    f"(upsert id={safe_name} or catalog id); never hardcode secrets; never dump secrets into kb.",
+                    card["tell_user"],
+                    f"调用名: {safe_name}",
+                    f"分类: {group_n}",
+                    f"示例参数: {card.get('example_args') or '{}'}",
+                    "以后修改：先向用户复述改动，再 create_tool(name=同一名字, update=true)。",
                 ],
+                "llm_id": spec.get("llm_id") or bound_llm or "",
                 "config_hint": (
-                    "If this skill needs hosts/URL/password/token, call integrations "
-                    f"action=upsert id={safe_name} (or nas/nocodb/qbittorrent/http/netops) "
-                    "with fields_json; handler should read app.services.credentials."
+                    "对话模型：工具 llms（设定→LLM），handler 用 llm_credentials(llm_id)。"
+                    "业务连接：工具 integrations（单一 url/token 或 items 明细表），handler 用 integration_config(id)。"
                 ),
+            },
+            ensure_ascii=False,
+        )
+
+    async def manage_capability_groups(
+        action: str,
+        id: str = "",
+        label: str = "",
+        icon: str = "",
+        name: str = "",
+        group: str = "",
+        confirm_id: str = "",
+    ) -> str:
+        """List / add / rename / delete / assign skill+tool capability groups."""
+        import json as _json
+
+        from app.tools.capability_groups import (
+            add_group,
+            delete_group,
+            public_groups,
+            rename_group,
+            set_item_group,
+        )
+
+        act = (action or "list").strip().lower()
+        if act in ("list", "ls"):
+            groups = public_groups()
+            return _json.dumps(
+                {
+                    "ok": True,
+                    "action": "list",
+                    "count": len(groups),
+                    "groups": groups,
+                    "hint": (
+                        "这是设定→能力/工具函数 共用的分类。"
+                        "create_tool 的 group 填这里的 id 或中文名；没有则新建。"
+                        "省略 group 会放进「其它」，不会按关键词乱分。"
+                        "把已有技能改分类用 action=assign，name=技能id，group=分类。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        if act == "add":
+            try:
+                entry = add_group(label or id, icon)
+            except ValueError as e:
+                return _json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+            return _json.dumps(
+                {"ok": True, "action": "add", "group": entry},
+                ensure_ascii=False,
+            )
+        if act == "rename":
+            gid = (id or "").strip()
+            try:
+                entry = rename_group(gid, label or "", icon or None)
+            except ValueError as e:
+                return _json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+            return _json.dumps(
+                {"ok": True, "action": "rename", "group": entry},
+                ensure_ascii=False,
+            )
+        if act == "delete":
+            gid = (id or "").strip()
+            if (confirm_id or "").strip() != gid:
+                return _json.dumps(
+                    {
+                        "ok": False,
+                        "error": "删除分组需要 confirm_id 与 id 相同。组内技能会移到「其它」。",
+                    },
+                    ensure_ascii=False,
+                )
+            try:
+                result = delete_group(gid, migrate="other")
+            except ValueError as e:
+                return _json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+            result["action"] = "delete"
+            return _json.dumps(result, ensure_ascii=False)
+        if act == "assign":
+            sid = (name or id or "").strip()
+            try:
+                result = set_item_group(sid, group or label)
+            except ValueError as e:
+                return _json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+            result["action"] = "assign"
+            return _json.dumps(result, ensure_ascii=False)
+        return _json.dumps(
+            {
+                "ok": False,
+                "error": f"unknown action {act}",
+                "hint": "action=list|add|rename|delete|assign",
+            },
+            ensure_ascii=False,
+        )
+
+    async def manage_llms(
+        action: str,
+        id: str = "",
+        fields_json: str = "",
+    ) -> str:
+        """List / get / upsert / delete 设定→LLM rows. Not integrations."""
+        import json as _json
+
+        act = (action or "list").strip().lower()
+        lid = (id or "").strip()
+        try:
+            from app.config_store import get_config_store
+            from app.services.credentials import list_llms_public, llm_credentials
+            from app.services.skill_spec import fields_to_llm_payload
+
+            store = get_config_store()
+        except Exception as exc:
+            return _json.dumps({"ok": False, "error": f"config store: {exc}"}, ensure_ascii=False)
+
+        if act in ("list", "ls"):
+            items = list_llms_public()
+            default_id = next((x["id"] for x in items if x.get("is_default")), "")
+            return _json.dumps(
+                {
+                    "ok": True,
+                    "action": "list",
+                    "count": len(items),
+                    "default_id": default_id,
+                    "items": items,
+                    "hint": (
+                        "这是设定→LLM 里已保存的对话模型（密钥已脱敏）。"
+                        "技能要调模型请用 llm_credentials(id)，不要把 api_key 写入 integrations。"
+                        "用户新给的供应商 key 用 action=upsert。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        if act in ("get", "show"):
+            items = {x["id"]: x for x in list_llms_public()}
+            by_name = {x.get("name"): x for x in items.values()}
+            row = items.get(lid) or by_name.get(lid)
+            if not row:
+                return _json.dumps(
+                    {"ok": False, "error": f"LLM [{lid}] 不存在", "hint": "先 llms action=list"},
+                    ensure_ascii=False,
+                )
+            return _json.dumps({"ok": True, "action": "get", "item": row}, ensure_ascii=False)
+
+        if act in ("upsert", "set", "update", "save", "put"):
+            fields: dict[str, Any] = {}
+            raw = (fields_json or "").strip()
+            if raw:
+                try:
+                    parsed = _json.loads(raw)
+                    if not isinstance(parsed, dict):
+                        return _json.dumps(
+                            {"ok": False, "error": "fields_json 必须是 JSON 对象"},
+                            ensure_ascii=False,
+                        )
+                    fields = parsed
+                except _json.JSONDecodeError as exc:
+                    return _json.dumps(
+                        {"ok": False, "error": f"fields_json 无效: {exc}"},
+                        ensure_ascii=False,
+                    )
+            if not fields:
+                return _json.dumps(
+                    {
+                        "ok": False,
+                        "error": "fields_json 为空",
+                        "hint": '例：{"name":"DeepSeek","provider":"deepseek","base_url":"https://api.deepseek.com/v1","api_key":"...","model":"deepseek-chat","is_default":true}',
+                    },
+                    ensure_ascii=False,
+                )
+            payload = fields_to_llm_payload(fields, llm_id=lid)
+            saved = store.upsert_llm(payload)
+            try:
+                from app.services.runtime import rebuild_runtime
+
+                await rebuild_runtime(reconnect_mcp=False)
+            except Exception:
+                pass
+            pub = next(
+                (x for x in list_llms_public() if x.get("id") == saved.get("id")),
+                {"id": saved.get("id"), "name": saved.get("name")},
+            )
+            return _json.dumps(
+                {
+                    "ok": True,
+                    "action": "upsert",
+                    "item": pub,
+                    "hint": "已写入设定→LLM。技能里用 llm_credentials(%r)。" % (saved.get("id") or ""),
+                },
+                ensure_ascii=False,
+            )
+
+        if act in ("default", "set_default"):
+            if not lid:
+                return _json.dumps({"ok": False, "error": "id required for set_default"}, ensure_ascii=False)
+            if not store.set_default_llm(lid):
+                return _json.dumps({"ok": False, "error": f"LLM [{lid}] 不存在"}, ensure_ascii=False)
+            try:
+                from app.services.runtime import rebuild_runtime
+
+                await rebuild_runtime(reconnect_mcp=False)
+            except Exception:
+                pass
+            return _json.dumps({"ok": True, "action": "set_default", "id": lid}, ensure_ascii=False)
+
+        if act in ("delete", "remove"):
+            if not lid:
+                return _json.dumps({"ok": False, "error": "id required for delete"}, ensure_ascii=False)
+            if not store.delete_llm(lid):
+                return _json.dumps({"ok": False, "error": f"LLM [{lid}] 不存在"}, ensure_ascii=False)
+            try:
+                from app.services.runtime import rebuild_runtime
+
+                await rebuild_runtime(reconnect_mcp=False)
+            except Exception:
+                pass
+            return _json.dumps({"ok": True, "action": "delete", "id": lid}, ensure_ascii=False)
+
+        if act in ("models", "pull", "remote"):
+            from app.services.model_meta import _clean_api_key, fetch_openai_models
+
+            creds = llm_credentials(lid)
+            raw = (fields_json or "").strip()
+            extra: dict[str, Any] = {}
+            if raw:
+                try:
+                    parsed = _json.loads(raw)
+                    extra = parsed if isinstance(parsed, dict) else {}
+                except _json.JSONDecodeError:
+                    extra = {}
+            base = str(extra.get("base_url") or creds.get("base_url") or "").strip()
+            key = _clean_api_key(str(extra.get("api_key") or creds.get("api_key") or ""))
+            if not base or not key:
+                return _json.dumps(
+                    {
+                        "ok": False,
+                        "error": "缺少 base_url 或 api_key",
+                        "hint": "先 llms action=upsert 保存模型，或在 fields_json 里带上。",
+                    },
+                    ensure_ascii=False,
+                )
+            result = await fetch_openai_models(base_url=base, api_key=key, use_proxy=False)
+            result["source"] = "llm"
+            return _json.dumps(result, ensure_ascii=False)
+
+        return _json.dumps(
+            {
+                "ok": False,
+                "error": f"unknown action {act}",
+                "hint": "list|get|upsert|set_default|delete|models",
             },
             ensure_ascii=False,
         )
@@ -1033,7 +1775,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     ) -> str:
         """List / get / upsert / delete skill connection configs (设定→集成).
 
-        Use this for hosts, URLs, usernames, passwords, tokens — NOT kb, NOT skill code.
+        Use this for URLs, usernames, passwords, tokens, and items tables — NOT kb, NOT skill code.
         """
         import json as _json
 
@@ -1074,7 +1816,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                         {
                             "ok": False,
                             "error": f"integration [{iid}] not found",
-                            "hint": "Use list; catalog includes http/nas/nocodb/qbittorrent/netops "
+                            "hint": "Use list; builtin catalog is http, plus any custom ids. "
                             "or create custom id matching skill name.",
                         },
                         ensure_ascii=False,
@@ -1108,12 +1850,22 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                         {
                             "ok": False,
                             "error": "fields_json empty",
-                            "hint": 'Example netops: {"hosts_json":"{\\"nas\\":{\\"host\\":\\"10.0.0.1\\",'
-                            '\\"user\\":\\"admin\\",\\"port\\":22,\\"password\\":\\"\\",\\"ports\\":[22]}}"} '
-                            'or {"hosts":{"nas":{...}}}. nas: {"host","user","password","port"}.',
+                            "hint": (
+                                '单一：{"url":"...","token":"..."}；'
+                                '内容式加 items：{"url":"...","items":{"bot1":{"name":"bot1","webhook":"https://..."}}}；'
+                                'http：{"proxy_url":"..."}'
+                            ),
                         },
                         ensure_ascii=False,
                     )
+                from app.services.integrations_meta import pack_custom_integration
+
+                existing = store.get_integrations_raw().get(iid)
+                fields = pack_custom_integration(
+                    iid,
+                    fields,
+                    existing=existing if isinstance(existing, dict) else {},
+                )
                 row = store.upsert_integration(iid, fields)
                 return _json.dumps(
                     {
@@ -1121,8 +1873,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                         "action": "upsert",
                         "id": iid,
                         "item": row,
-                        "hint": "Skill code should read via app.services.credentials "
-                        "(nas_config/nocodb_config/qb_config/http_network_config/netops_config). "
+                        "hint": "Skill code should read via integration_config(id). "
                         "Do not store these secrets in kb.",
                     },
                     ensure_ascii=False,
@@ -1159,16 +1910,22 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             return _json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
 
     # delete tool / skill
-    async def delete_agent_tool(name: str) -> str:
+    async def delete_agent_tool(
+        name: str,
+        stage: str = "live",
+        confirm_name: str = "",
+        user_confirmation: str = "",
+    ) -> str:
         """Delete a mutable skill by name (removes files and unregisters).
 
-        Builtin / reserved / protected skills cannot be deleted.
-        Business skills (http, office, nas, …) can be deleted by the LLM.
+        stage=live|draft|both. Builtin / reserved / protected cannot be deleted.
+        Requires confirm_name==name and a non-vague user_confirmation.
         """
         import json as _json
         import shutil
 
-        from app.services.skills import skills_root
+        from app.services.skill_lifecycle import draft_skill_dir, live_skill_dir
+        from app.services.skill_spec import is_vague_confirmation
         from app.tools.protection import can_llm_delete, protection_reason
         from app.tools.registry import get_tool_registry
         from app.tools.tool_meta import remove_dynamic_meta
@@ -1177,6 +1934,34 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         if not safe_name or not safe_name.replace("_", "").isalnum():
             return _json.dumps(
                 {"error": "Invalid tool name. Use letters, numbers, underscores only."},
+                ensure_ascii=False,
+            )
+        confirm = (confirm_name or "").strip().lower().replace(" ", "_")
+        if confirm != safe_name:
+            return _json.dumps(
+                {
+                    "ok": False,
+                    "error": "删除前必须向用户复述技能名，并传入 confirm_name=该名字",
+                    "action_required": "confirm_delete",
+                    "skill": safe_name,
+                    "hint": (
+                        f"先告诉用户将删除「{safe_name}」及其用途，"
+                        "得到明确点名同意后，再 delete_tool"
+                        f"(name={safe_name}, confirm_name={safe_name}, "
+                        "user_confirmation=用户原话)。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        if is_vague_confirmation(user_confirmation):
+            return _json.dumps(
+                {
+                    "ok": False,
+                    "error": "用户确认太模糊，不能删除技能",
+                    "action_required": "confirm_delete",
+                    "skill": safe_name,
+                    "hint": "需要用户明确说出要删的技能名或用途，仅「好/行/删吧」不够。",
+                },
                 ensure_ascii=False,
             )
 
@@ -1191,8 +1976,21 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                 ensure_ascii=False,
             )
 
-        skill_dir = skills_root() / safe_name
-        if not skill_dir.exists():
+        st = (stage or "live").strip().lower()
+        if st not in ("live", "draft", "both"):
+            st = "live"
+        deleted: list[str] = []
+        live = live_skill_dir(safe_name)
+        draft = draft_skill_dir(safe_name)
+
+        if st in ("live", "both") and live.is_dir():
+            shutil.rmtree(live, ignore_errors=True)
+            deleted.append("live")
+        if st in ("draft", "both") and draft.is_dir():
+            shutil.rmtree(draft, ignore_errors=True)
+            deleted.append("draft")
+
+        if not deleted:
             existing = get_tool_registry().get(safe_name)
             if existing is not None and existing.source == "skill":
                 return _json.dumps(
@@ -1203,19 +2001,49 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     ensure_ascii=False,
                 )
             return _json.dumps(
-                {"error": f"Tool/skill [{safe_name}] not found."},
+                {
+                    "error": f"Tool/skill [{safe_name}] not found for stage={st}.",
+                    "hint": "list_skills 查看 live/draft。",
+                },
                 ensure_ascii=False,
             )
 
-        shutil.rmtree(skill_dir, ignore_errors=True)
-        remove_dynamic_meta(safe_name)
+        from app.services.skill_spec import skill_integration_view
+        from app.services.integrations_meta import unlink_skill_from_integrations
 
-        from app.services.runtime import rebuild_runtime
+        integ_view = skill_integration_view(safe_name)
+        unlinked: list[str] = []
+        if "live" in deleted:
+            unlinked = unlink_skill_from_integrations(safe_name)
 
-        await rebuild_runtime()
+        if "live" in deleted:
+            remove_dynamic_meta(safe_name)
+            from app.services.runtime import rebuild_runtime
+
+            await rebuild_runtime()
 
         return _json.dumps(
-            {"ok": True, "deleted": safe_name, "meta_removed": True},
+            {
+                "ok": True,
+                "deleted": safe_name,
+                "stages_removed": deleted,
+                "meta_removed": "live" in deleted,
+                "integration": integ_view,
+                "unlinked_integrations": unlinked,
+                "tell_user": (
+                    f"技能 {safe_name} 已删除。"
+                    + (
+                        f"对应集成「{integ_view.get('id')}」仍在设定→集成里（连接信息未删），"
+                        "用户可继续改，或自行删除该集成。"
+                        if integ_view.get("linked")
+                        else (
+                            f"已从集成 {', '.join(unlinked)} 解除绑定，连接配置仍保留。"
+                            if unlinked
+                            else "未绑定集成。"
+                        )
+                    )
+                ),
+            },
             ensure_ascii=False,
         )
 
@@ -1343,6 +2171,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         inputs_json: str = "",
         run_id: str = "",
         enabled: bool = True,
+        schedule_json: str = "",
     ) -> str:
         """Workflow single entry: list/get/create/update/save/run/delete (+ runs)."""
         from app.workflow.engine import get_workflow_engine, in_workflow_agent
@@ -1359,6 +2188,33 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                 return json.loads(raw)
             except json.JSONDecodeError as e:
                 raise ValueError(f"Invalid JSON: {e}") from e
+
+        def _parse_schedule() -> dict[str, Any] | None:
+            if not (schedule_json or "").strip():
+                return None
+            raw = _parse_json(schedule_json, None)
+            if raw is None:
+                return None
+            if not isinstance(raw, dict):
+                raise ValueError("schedule_json 必须是对象")
+            return raw
+
+        async def _apply_schedule(data: dict[str, Any], sched: dict[str, Any] | None) -> dict[str, Any]:
+            if sched is None:
+                return data
+            from app.scheduler.link import sync_workflow_schedule
+
+            out = await sync_workflow_schedule(data, sched)
+            data["schedule"] = out
+            return await store.save_definition(
+                name=str(data.get("name") or ""),
+                description=str(data.get("description") or ""),
+                steps=list(data.get("steps") or []),
+                inputs=dict(data.get("inputs") or {}),
+                enabled=bool(data.get("enabled", True)),
+                wf_id=str(data.get("id") or ""),
+                schedule=out,
+            )
 
         def _normalize_steps(raw: Any) -> list[dict[str, Any]] | None:
             if raw is None:
@@ -1456,6 +2312,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                         enabled=bool(enabled),
                         wf_id=wid_in,
                     )
+                    data = await _apply_schedule(data, _parse_schedule())
                     return json.dumps(
                         {"ok": True, "action": "create", "workflow": data},
                         ensure_ascii=False,
@@ -1514,6 +2371,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                         enabled=bool(enabled),
                         wf_id=str(existing.get("id")),
                     )
+                    data = await _apply_schedule(data, _parse_schedule())
                     return json.dumps(
                         {"ok": True, "action": "update", "workflow": data},
                         ensure_ascii=False,
@@ -1540,6 +2398,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     enabled=bool(enabled),
                     wf_id=wid_in or (str(existing.get("id")) if existing else None),
                 )
+                data = await _apply_schedule(data, _parse_schedule())
                 return json.dumps(
                     {"ok": True, "action": act, "workflow": data},
                     ensure_ascii=False,
@@ -1605,8 +2464,16 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                         {"ok": False, "error": "workflow_id 或 name 必填（可用中文名称）"},
                         ensure_ascii=False,
                     )
+                before = await store.get_definition(wid)
                 result = await store.delete_definition(wid, delete_runs=True)
                 result["action"] = "delete"
+                if result.get("ok") and before:
+                    from app.scheduler.link import unsync_workflow_schedule
+
+                    try:
+                        await unsync_workflow_schedule(str(before.get("id") or wid))
+                    except Exception:
+                        pass
                 return json.dumps(result, ensure_ascii=False)
             return json.dumps(
                 {
@@ -1619,12 +2486,348 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         except Exception as e:
             return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
+    async def scheduled_task_tool(
+        action: str,
+        task_id: str = "",
+        name: str = "",
+        prompt: str = "",
+        cron: str = "",
+        interval_minutes: int = 0,
+        interval_seconds: int = 0,
+        run_once: bool = False,
+        enabled: bool = True,
+        session_id: str = "",
+        always_new_session: bool = False,
+        workflow_id: str = "",
+        workflow_name: str = "",
+    ) -> str:
+        """Create / list / update scheduled tasks (设定→定时任务)."""
+        from app.models.schemas import TaskCreate, TaskUpdate
+        from app.scheduler.manager import get_scheduler
+        from app.workflow.store import get_workflow_store
+
+        sch = get_scheduler()
+        act = (action or "").strip().lower()
+
+        def _info(t) -> dict[str, Any]:
+            meta = dict(getattr(t, "metadata", None) or {})
+            return {
+                "id": t.id,
+                "name": t.name,
+                "prompt": t.prompt,
+                "cron": t.cron,
+                "interval_seconds": t.interval_seconds,
+                "run_once": t.run_once,
+                "enabled": t.enabled,
+                "status": t.status.value if hasattr(t.status, "value") else t.status,
+                "session_id": t.session_id,
+                "last_run_at": t.last_run_at.isoformat() if t.last_run_at else None,
+                "last_error": t.last_error,
+                "workflow_id": meta.get("workflow_id") or "",
+            }
+
+        try:
+            if act in ("list", "list_tasks"):
+                items = await sch.list_tasks()
+                return json.dumps(
+                    {"ok": True, "action": "list", "count": len(items), "tasks": [_info(t) for t in items]},
+                    ensure_ascii=False,
+                )
+            if act in ("get", "read"):
+                tid = (task_id or name or "").strip()
+                if not tid:
+                    return json.dumps({"ok": False, "error": "task_id 或 name 必填"}, ensure_ascii=False)
+                hit = await sch.get(tid)
+                if not hit:
+                    for t in await sch.list_tasks():
+                        if t.name == tid or t.id == tid:
+                            hit = t
+                            break
+                if not hit:
+                    return json.dumps({"ok": False, "error": f"not found: {tid}"}, ensure_ascii=False)
+                return json.dumps({"ok": True, "action": "get", "task": _info(hit)}, ensure_ascii=False)
+            if act in ("create", "add", "schedule"):
+                wid = (workflow_id or "").strip()
+                wname = (workflow_name or "").strip()
+                if wname and not wid:
+                    wf = await get_workflow_store().get_definition(wname)
+                    if not wf:
+                        return json.dumps(
+                            {"ok": False, "error": f"工作流不存在: {wname}。先 workflow action=list 确认名称。"},
+                            ensure_ascii=False,
+                        )
+                    wid = str(wf.get("id") or "")
+                    wname = str(wf.get("name") or wname)
+                elif wid:
+                    wf = await get_workflow_store().get_definition(wid)
+                    if not wf:
+                        return json.dumps(
+                            {"ok": False, "error": f"工作流不存在: {wid}"},
+                            ensure_ascii=False,
+                        )
+                    wname = wname or str(wf.get("name") or wid)
+                secs = int(interval_seconds or 0)
+                if not secs and int(interval_minutes or 0) > 0:
+                    secs = int(interval_minutes) * 60
+                cron_s = (cron or "").strip() or None
+                once = bool(run_once)
+                if not once and not cron_s and not secs:
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "error": "请提供 cron、interval_minutes 或 run_once=true",
+                            "hint": "每天 9 点本地可先用 cron；每隔 N 分钟用 interval_minutes",
+                        },
+                        ensure_ascii=False,
+                    )
+                meta: dict[str, Any] = {}
+                if always_new_session:
+                    meta["always_new_session"] = True
+                if wid:
+                    meta["kind"] = "workflow"
+                    meta["workflow_id"] = wid
+                    nm = (name or "").strip() or f"工作流 · {wname or wid}"
+                    pr = (prompt or "").strip() or f"运行已保存的工作流「{wname or wid}」（id={wid}）。"
+                    existing = sch.find_by_workflow(wid)
+                    if existing:
+                        info = await sch.update(
+                            str(existing["id"]),
+                            TaskUpdate(
+                                name=nm,
+                                prompt=pr,
+                                cron=cron_s,
+                                interval_seconds=secs or None,
+                                run_once=once,
+                                enabled=bool(enabled),
+                                session_id=(session_id or "").strip() or None,
+                                metadata=meta,
+                            ),
+                        )
+                        if wid:
+                            store = get_workflow_store()
+                            wf_def = await store.get_definition(wid)
+                            if wf_def and info:
+                                mode = "once" if once else ("interval" if secs else "cron")
+                                wf_def["schedule"] = {
+                                    "mode": mode,
+                                    "enabled": bool(enabled),
+                                    "cron": cron_s,
+                                    "interval_seconds": secs or None,
+                                    "run_once": once,
+                                    "task_id": info.id,
+                                }
+                                await store.save_definition(
+                                    name=str(wf_def.get("name") or wid),
+                                    description=str(wf_def.get("description") or ""),
+                                    steps=list(wf_def.get("steps") or []),
+                                    inputs=dict(wf_def.get("inputs") or {}),
+                                    enabled=bool(wf_def.get("enabled", True)),
+                                    wf_id=wid,
+                                    schedule=wf_def["schedule"],
+                                )
+                        return json.dumps(
+                            {"ok": True, "action": "update", "task": _info(info), "note": "已更新该工作流的定时"},
+                            ensure_ascii=False,
+                        )
+                else:
+                    nm = (name or "").strip()
+                    pr = (prompt or "").strip()
+                    if not nm or not pr:
+                        return json.dumps(
+                            {"ok": False, "error": "create 需要 name + prompt，或提供 workflow_id/workflow_name"},
+                            ensure_ascii=False,
+                        )
+                info = await sch.create(
+                    TaskCreate(
+                        name=nm,
+                        prompt=pr,
+                        cron=cron_s,
+                        interval_seconds=secs or None,
+                        run_once=once,
+                        enabled=bool(enabled),
+                        session_id=(session_id or "").strip() or None,
+                        metadata=meta,
+                    )
+                )
+                if wid:
+                    store = get_workflow_store()
+                    wf_def = await store.get_definition(wid)
+                    if wf_def:
+                        mode = "once" if once else ("interval" if secs else "cron")
+                        wf_def["schedule"] = {
+                            "mode": mode,
+                            "enabled": bool(enabled),
+                            "cron": cron_s,
+                            "interval_seconds": secs or None,
+                            "run_once": once,
+                            "task_id": info.id,
+                        }
+                        await store.save_definition(
+                            name=str(wf_def.get("name") or wid),
+                            description=str(wf_def.get("description") or ""),
+                            steps=list(wf_def.get("steps") or []),
+                            inputs=dict(wf_def.get("inputs") or {}),
+                            enabled=bool(wf_def.get("enabled", True)),
+                            wf_id=wid,
+                            schedule=wf_def["schedule"],
+                        )
+                return json.dumps({"ok": True, "action": "create", "task": _info(info)}, ensure_ascii=False)
+            if act in ("update",):
+                tid = (task_id or "").strip()
+                if not tid:
+                    return json.dumps({"ok": False, "error": "update 需要 task_id"}, ensure_ascii=False)
+                cur = await sch.get(tid)
+                if not cur:
+                    return json.dumps({"ok": False, "error": f"not found: {tid}"}, ensure_ascii=False)
+                secs = int(interval_seconds or 0)
+                if not secs and int(interval_minutes or 0) > 0:
+                    secs = int(interval_minutes) * 60
+                cron_s = (cron or "").strip() or cur.cron
+                once = bool(run_once) if run_once else cur.run_once
+                interval = secs or cur.interval_seconds
+                meta = dict(cur.metadata or {})
+                if always_new_session:
+                    meta["always_new_session"] = True
+                info = await sch.update(
+                    tid,
+                    TaskUpdate(
+                        name=(name or "").strip() or cur.name,
+                        prompt=(prompt or "").strip() or cur.prompt,
+                        cron=cron_s,
+                        interval_seconds=interval,
+                        run_once=once,
+                        enabled=bool(enabled),
+                        session_id=(session_id or "").strip() or cur.session_id,
+                        metadata=meta,
+                    ),
+                )
+                return json.dumps({"ok": True, "action": "update", "task": _info(info)}, ensure_ascii=False)
+            if act in ("delete", "remove", "unschedule"):
+                tid = (task_id or name or "").strip()
+                if not tid:
+                    return json.dumps({"ok": False, "error": "task_id 或 name 必填"}, ensure_ascii=False)
+                hit = await sch.get(tid)
+                if not hit:
+                    for t in await sch.list_tasks():
+                        if t.name == tid:
+                            hit = t
+                            break
+                if not hit:
+                    return json.dumps({"ok": False, "error": f"not found: {tid}"}, ensure_ascii=False)
+                await sch.delete(hit.id)
+                wid = str((hit.metadata or {}).get("workflow_id") or "")
+                if wid:
+                    store = get_workflow_store()
+                    wf_def = await store.get_definition(wid)
+                    if wf_def:
+                        await store.save_definition(
+                            name=str(wf_def.get("name") or wid),
+                            description=str(wf_def.get("description") or ""),
+                            steps=list(wf_def.get("steps") or []),
+                            inputs=dict(wf_def.get("inputs") or {}),
+                            enabled=bool(wf_def.get("enabled", True)),
+                            wf_id=wid,
+                            schedule={"mode": "off", "enabled": False, "task_id": ""},
+                        )
+                return json.dumps({"ok": True, "action": "delete", "id": hit.id}, ensure_ascii=False)
+            if act in ("run", "run_now"):
+                tid = (task_id or "").strip()
+                if not tid:
+                    return json.dumps({"ok": False, "error": "task_id required"}, ensure_ascii=False)
+                info = await sch.run_now(tid)
+                if not info:
+                    return json.dumps({"ok": False, "error": f"not found: {tid}"}, ensure_ascii=False)
+                return json.dumps({"ok": True, "action": "run", "task": _info(info)}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": f"Unknown action: {action}",
+                    "hint": "list|get|create|update|delete|run；绑工作流时传 workflow_id 或 workflow_name",
+                },
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+    async def ask_user(
+        title: str = "",
+        prompt: str = "",
+        options: str = "",
+        multi: str = "",
+        fields: str = "",
+        spec: str = "",
+    ) -> str:
+        """Pause this turn and show a form under the bubble."""
+        from app.agent.ask_form import build_form
+
+        form = build_form(
+            title=title,
+            prompt=prompt,
+            options=options,
+            multi=multi,
+            fields=fields,
+            spec=spec,
+        )
+        if not form:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "需要 options（单选）/ multi（多选）/ fields（输入）或 spec",
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {"ok": True, "action": "ask_user", "wait": True, "form": form},
+            ensure_ascii=False,
+        )
+
     tools: list[tuple[str, str, Any, dict[str, Any]]] = [
      (
          "get_current_time",
             "Get the current UTC/local time.",
             get_current_time,
             {"type": "object", "properties": {}},
+        ),
+        (
+            "ask_user",
+            "需要用户补充或选择时调用，然后停止本轮。"
+            "options=单选（每行一项）；multi=多选（每行一项）；fields=输入框标题（每行一项）。"
+            "也可写 spec，每行一种控件，例：单选 付款：到付 / 现结\\n多选 需要：入库 / 查物流\\n输入 单号。"
+            "不要用正文 A/B 长题代替本工具。",
+            ask_user,
+            {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "短标题，如「还差这几项」",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "一两句说明为什么要问",
+                    },
+                    "options": {
+                        "type": "string",
+                        "description": "单选，每行一个。例：到付\\n现结",
+                    },
+                    "multi": {
+                        "type": "string",
+                        "description": "多选，每行一个。例：入库\\n查物流\\n开单",
+                    },
+                    "fields": {
+                        "type": "string",
+                        "description": "输入框标题，每行一个。例：快递单号\\n备注",
+                    },
+                    "spec": {
+                        "type": "string",
+                        "description": (
+                            "混合表单，每行一个控件。"
+                            "例：单选 付款：到付 / 现结\\n多选 附件：发票 / 照片\\n输入 单号"
+                        ),
+                    },
+                },
+                "required": [],
+            },
         ),
         (
             "calculator",
@@ -1699,11 +2902,10 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             "kb",
             "【主推·知识库 Wiki】业务标准与长文档（与 memory 短偏好不同）。"
             "action=search|get|list|create_page|update_page|append|delete|list_collections。"
-            "collection 分区：sop=流程标准(如产品内容流水线SOP)、product=产品参数、"
-            "handbook=手册红线、reference=提示词/模板、daily=临时纪要、default=未分类。"
-            "产品多轮/电商流程：优先 search/get「产品内容流水线SOP」(collection=sop)；"
-            "摘要被截断时必须 get 全文再执行阶段，禁止凭空编造步骤。"
-            "红线/错误处理 → handbook；提示词写法 → reference。"
+            "collection 分区：sop=流程标准、product=产品参数、"
+            "handbook=手册、reference=模板、daily=纪要、default=未分类。"
+            "空库就说空，禁止编造不存在的 SOP 标题或阶段步骤。"
+            "只有 kb list/search 真正命中的页面才能当流程依据。"
             "短偏好/「记住」仍用 memory。create_page 需 title+content；"
             "update/append 需 page_id 或已有 title。",
             kb_tool,
@@ -1726,7 +2928,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     },
                     "title": {
                         "type": "string",
-                        "description": "页面标题（get/search 也可用标题；主 SOP 为「产品内容流水线SOP」）",
+                        "description": "页面标题（get/search 可用标题；必须是库里已有的标题）",
                     },
                     "content": {"type": "string", "description": "页面 Markdown 正文"},
                     "page_id": {"type": "string", "description": "页面 id"},
@@ -1761,6 +2963,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             "action=list|get|create|update|save|run|status|list_runs|resume|reject|delete。"
             "create=新建（不可覆盖）；update=改已有（可省略 steps_json 保留步骤）；"
             "save=upsert；run 执行；delete 支持 id/中文名并清理运行记录。"
+            "定时：create/update 可带 schedule_json，或另调 scheduled_task（workflow_id）。"
             "步骤 type=tool|note|human_gate|agent；变量 {{inputs.x}} {{steps.id.output}}。",
             workflow_tool,
             {
@@ -1802,17 +3005,72 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     },
                     "run_id": {"type": "string", "description": "status/resume 用"},
                     "enabled": {"type": "boolean", "default": True},
+                    "schedule_json": {
+                        "type": "string",
+                        "description": (
+                            "可选定时 JSON。"
+                            '例 {"mode":"interval","interval_seconds":3600} '
+                            '或 {"mode":"daily"} 请改用 scheduled_task + cron；'
+                            '{"mode":"cron","cron":"0 1 * * *"}；{"mode":"off"} 取消定时。'
+                        ),
+                    },
+                },
+                "required": ["action"],
+            },
+        ),
+        (
+            "scheduled_task",
+            "【主推·定时任务】设定→定时任务的唯一入口。"
+            "action=list|get|create|update|delete|run。"
+            "create 必须给 cron（分 时 日 月 周，UTC）或 interval_minutes 或 run_once=true。"
+            "要把已有工作流定时跑：传 workflow_id 或 workflow_name，不要说系统没有 cron。"
+            "普通提醒则 name+prompt。delete 取消定时。",
+            scheduled_task_tool,
+            {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "get", "create", "update", "delete", "run"],
+                        "description": "create=新建/绑定工作流定时；delete=取消",
+                    },
+                    "task_id": {"type": "string", "description": "get/update/delete/run 用"},
+                    "name": {"type": "string", "description": "任务名；绑工作流时可省略"},
+                    "prompt": {
+                        "type": "string",
+                        "description": "到点让 Agent 做的事；绑工作流时可省略",
+                    },
+                    "cron": {
+                        "type": "string",
+                        "description": "5 段 cron（UTC），例 0 1 * * * = 每天 01:00 UTC",
+                    },
+                    "interval_minutes": {
+                        "type": "integer",
+                        "description": "每隔多少分钟（与 cron 二选一）",
+                    },
+                    "interval_seconds": {"type": "integer", "description": "间隔秒，优先于 minutes"},
+                    "run_once": {"type": "boolean", "description": "只跑一次"},
+                    "enabled": {"type": "boolean", "default": True},
+                    "session_id": {
+                        "type": "string",
+                        "description": "结果写入的对话 id（界面用下拉选标题，不必手填）",
+                    },
+                    "always_new_session": {"type": "boolean"},
+                    "workflow_id": {"type": "string", "description": "绑定已有工作流 id"},
+                    "workflow_name": {"type": "string", "description": "绑定已有工作流中文名"},
                 },
                 "required": ["action"],
             },
         ),
         (
             "integrations",
-            "【主推·集成配置】设定→集成：主机/URL/账号/密码/Token/SSH 主机表。"
+            "【主推·集成配置】设定→集成：业务连接（天气、短信、支付、企微等）。"
             "action=list|get|upsert|delete。"
-            "create_tool/改 skill 时：代码走 create_tool，连接信息走本工具；"
-            "禁止把密钥写进 skill 或塞进知识库 kb。"
-            "catalog: http/nas/nocodb/qbittorrent/netops，或与 skill 同名自定义 id。",
+            "自定义分两种：单一（url/账号/token）与内容式（连接字段 + items 明细表，多 bot/用户/webhook）。"
+            "禁止把 DeepSeek/OpenAI/xAI 等对话模型的 api_key/base_url/model 写这里——"
+            "那些走工具 llms（设定→LLM）。"
+            "create_tool 时业务连接走本工具，并写 _schema.layout=single|content；禁止把密钥写进 skill 或 kb。"
+            "平台预置仅 HTTP 网络（代理）。其它连接用自定义集成，id 建议与 skill 同名。",
             manage_integrations,
             {
                 "type": "object",
@@ -1824,18 +3082,15 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     },
                     "id": {
                         "type": "string",
-                        "description": "集成 id：http|nas|nocodb|qbittorrent|netops 或自定义（建议=skill 名）",
+                        "description": "集成 id：http 或自定义（建议=skill 名）",
                     },
                     "fields_json": {
                         "type": "string",
                         "description": (
                             "upsert 时的字段 JSON 对象字符串。"
-                            'nas: {"host":"...","user":"...","password":"...","port":445}；'
-                            'netops: {"hosts":{"nas":{"host":"10.x","user":"u","port":22,"password":"","ports":[22]}}} '
-                            '或 {"hosts_json":"{...}"}；'
-                            'nocodb: {"base_url","token"|email/password}；'
-                            'qbittorrent: {"base_url","user","password"}；'
-                            'http: {"proxy_url","flaresolverr_url"}。'
+                            'http: {"proxy_url","flaresolverr_url"}；'
+                            '单一：{"url":"...","token":"..."}；'
+                            '内容式加 items：{"items":{"bot1":{"name":"bot1","webhook":"https://..."}}}。'
                             "密码留空表示不修改已有值。"
                         ),
                     },
@@ -1844,14 +3099,54 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             },
         ),
         (
+            "llms",
+            "【主推·对话模型】设定→LLM：列出/新增/改默认/删本机已保存的对话模型。"
+            "action=list|get|upsert|set_default|delete|models。"
+            "创建/改技能前先 list，确认现有模型。"
+            "用户给的 OpenAI/DeepSeek/xAI key、base_url、model 必须 upsert 到这里，禁止写入 integrations。"
+            "技能里用 from app.services.credentials import llm_credentials。",
+            manage_llms,
+            {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "get", "upsert", "set_default", "delete", "models"],
+                        "description": "list=本机已配置模型；models=向供应商拉取 /models；upsert=写入设定→LLM",
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "LLM id 或名称（get/set_default/delete/models）",
+                    },
+                    "fields_json": {
+                        "type": "string",
+                        "description": (
+                            "upsert 字段 JSON。"
+                            '例：{"name":"DeepSeek","provider":"deepseek",'
+                            '"base_url":"https://api.deepseek.com/v1",'
+                            '"api_key":"...","model":"deepseek-chat","is_default":true}'
+                        ),
+                    },
+                },
+                "required": ["action"],
+            },
+        ),
+        (
             "create_tool",
-            "【主推·创建/更新业务 Skill】skills/ 下新建或就地更新（update=true）并热加载。"
-            "修已有能力：必须 name=主入口同一名字 + update=true；禁止 xxx_v2/xxx_fixed 等等价包。"
-            "HTTP: url+method；Python: 推荐只写 async def handle(**kwargs)->str，系统自动 register。"
-            "修改前 read_skill。group 建议传 vision|media|network|infra|office|dev…（可自动推断）。"
-            "update 会自动升 version 并写 changelog。"
-            "主机/账号/密码/Token 禁止写进代码或 kb → 用 integrations upsert；"
-            "handler 用 app.services.credentials 读取。",
+            "【主推·创建/更新业务 Skill】"
+            "必须先向用户出示规格卡并得到明确确认，禁止在「好/行/随便」时创建。"
+            "必填：spec_confirmed=true、user_confirmation=用户原话、spec_json。"
+            "新建默认 live（当轮即可调用）。"
+            "先 llms action=list 看已有对话模型。"
+            "对话模型 key → llm_fields_json / 工具 llms（设定→LLM），handler 用 llm_credentials()。"
+            "业务连接 → integration_fields_json / integrations（单一 url/token，或多记录 items），handler 用 integration_config()。"
+            "禁止把 LLM 的 api_key 写进集成。代码里出现明文密钥会失败。"
+            "修已有：先 read_skill 再 update=true。"
+            "多操作技能必须 parameters.action.enum + 各动作字段；"
+            "list/query 必须有 limit（默认 50）。禁止空 properties:{}。"
+            "局域网服务用 skill_http.request，禁止伪造 Host=localhost；"
+            "NocoDB 完整 CRUD 用 email+password 不是 PAT；502 不要改代码、不要删技能。"
+            "分组：group 填 capability_groups 的 id 或中文名；省略则放进「其它」，不要靠关键词猜。",
             create_agent_tool,
             {
                 "type": "object",
@@ -1860,12 +3155,12 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                         "type": "string",
                         "description": (
                             "Skill/tool id（小写+下划线），必须与主入口一致。"
-                            "更新 nas 就用 name=nas，不要 nas_v2。"
+                            "更新已有技能用同一 name，不要加 _v2。"
                         ),
                     },
                     "description": {
                         "type": "string",
-                        "description": "何时使用；请含中文场景词便于软过滤与分组推断。",
+                        "description": "何时使用；请含中文场景词便于软过滤。分组请填 group，省略则放进「其它」。",
                     },
                     "handler_code": {
                         "type": "string",
@@ -1873,12 +3168,12 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                             "推荐最小写法（系统自动脚手架）:\n"
                             "async def handle(**kwargs) -> str:\n"
                             "    import json\n"
-                            "    from app.services.credentials import nas_config  # 或 netops_config 等\n"
+                            "    from app.services.credentials import llm_credentials, integration_config\n"
+                            "    llm = llm_credentials()  # 或 llm_credentials('设定里的 llm id')\n"
+                            "    # 业务连接：cfg=integration_config('id')；多记录读 cfg.get('items')\n"
                             "    return json.dumps({...}, ensure_ascii=False)\n\n"
                             "也可手写 def register(registry)，但 registry.register 第一个参数必须等于 name。\n"
-                            "HTTP 模式可省略 handler_code。\n"
-                            "规则: httpx 异步、超时、json.dumps(ensure_ascii=False)、"
-                            "勿硬编码密钥；连接配置用 integrations + credentials。"
+                            "规则: 对话模型走 llm_credentials；业务连接走 integration_config；勿硬编码密钥。"
                         ),
                     },
                     "parameters": {
@@ -1899,20 +3194,82 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     },
                     "update": {
                         "type": "boolean",
-                        "description": "true=就地覆盖 skills/<name>/ 并升版本。修 bug 必须 true。",
+                        "description": "true=就地覆盖并升版本。修 bug 必须 true。",
+                        "default": False,
+                    },
+                    "stage": {
+                        "type": "string",
+                        "description": (
+                            "draft|live|auto。auto=live（当轮可调用）。"
+                            "仅当用户要求先沙箱时用 draft。"
+                        ),
+                    },
+                    "promote": {
+                        "type": "boolean",
+                        "description": "true=写完 draft 后立即 promote 到 skills/ 并热加载。",
                         "default": False,
                     },
                     "force_new": {
                         "type": "boolean",
                         "description": (
                             "仅当确实要新建与已有 skill 名字相近的独立工具时为 true。"
-                            "默认 false：会拦截 nas_fixed 这类等价名。"
+                            "默认 false：会拦截 my_skill_fixed 这类等价名。"
                         ),
                         "default": False,
                     },
                     "changelog": {
                         "type": "string",
                         "description": "本次更新说明（写入 manifest/SKILL.md 版本历史）",
+                    },
+                    "spec_confirmed": {
+                        "type": "boolean",
+                        "description": "用户已看过规格卡并明确确认后才为 true。默认 false。",
+                        "default": False,
+                    },
+                    "user_confirmation": {
+                        "type": "string",
+                        "description": "用户确认原话。不能是「好/行/随便/你看着办」。",
+                    },
+                    "how_to_call": {
+                        "type": "string",
+                        "description": "用户以后怎么喊这个技能，一句人话，如「查一下上海天气」。",
+                    },
+                    "spec_json": {
+                        "type": "string",
+                        "description": (
+                            "规格 JSON："
+                            '{"purpose":"...","trigger":"...","inputs":'
+                            '[{"name":"city","type":"string","example":"上海","required":true}],'
+                            '"success":"...","failure":"...","llm_id":"","integration_id":"","no_params":false}'
+                        ),
+                    },
+                    "llm_id": {
+                        "type": "string",
+                        "description": "绑定的设定→LLM id。技能要调对话模型时填写；空=默认模型。",
+                    },
+                    "llm_fields_json": {
+                        "type": "string",
+                        "description": (
+                            "用户新给的对话模型字段，写入设定→LLM，禁止写进 handler 或 integrations。"
+                            '例：{"name":"DeepSeek","provider":"deepseek","base_url":"https://api.deepseek.com/v1",'
+                            '"api_key":"...","model":"deepseek-chat"}'
+                        ),
+                    },
+                    "integration_id": {
+                        "type": "string",
+                        "description": (
+                            "绑定的集成 id（业务连接）。默认与技能同名。"
+                            "不要把 LLM 供应商 key 写这里。"
+                        ),
+                    },
+                    "integration_fields_json": {
+                        "type": "string",
+                        "description": (
+                            "业务连接字段 JSON，写入设定→集成。"
+                            '单一：{"url":"...","token":"..."}；'
+                            '内容式：{"url":"...","items":{"u1":{"name":"张三","userid":"id"}}}。'
+                            "对话模型请用 llm_fields_json。"
+                        ),
                     },
                     "role": {
                         "type": "string",
@@ -1921,14 +3278,14 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     },
                     "tag": {
                         "type": "string",
-                        "description": "短标签，如 天气 / NAS",
+                        "description": "短标签，如 天气 / 主机",
                     },
                     "group": {
                         "type": "string",
                         "description": (
-                            "UI 分组: vision|media|memory|content|workspace|network|"
-                            "office|schedule|news|infra|dev|other。"
-                            "可省略，系统按 name/description 自动推断。"
+                            "设定→能力/工具函数 的分类：填已有分组的 id 或中文名；"
+                            "没有则新建该分组。省略则放进「其它」，不会按关键词乱分。"
+                            "先 capability_groups action=list 看现有分类。"
                         ),
                     },
                     "scene_keywords": {
@@ -1940,8 +3297,68 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             },
         ),
         (
+            "capability_groups",
+            "【主推·技能分类】设定→能力/工具函数 共用的分组。"
+            "action=list|add|rename|delete|assign。"
+            "新建技能前 list，把 group 传给 create_tool；"
+            "省略 group 会进「其它」，不要按天气/图片等词乱放。"
+            "已有技能改分类：assign + name + group（中文名也可，没有就新建）。",
+            manage_capability_groups,
+            {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "add", "rename", "delete", "assign"],
+                        "description": "list=现有分类；add=新建；rename=改名；delete=删除（技能移到其它）；assign=把技能/工具放进某分类",
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "分组 id（rename/delete）；assign 时也可当技能名后备",
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "中文名（add/rename）；assign 时也可当 group 后备",
+                    },
+                    "icon": {
+                        "type": "string",
+                        "description": "可选图标名，如 picture / folder-open",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "assign 时的技能或工具 id",
+                    },
+                    "group": {
+                        "type": "string",
+                        "description": "assign 的目标分类 id 或中文名",
+                    },
+                    "confirm_id": {
+                        "type": "string",
+                        "description": "delete 时必须与 id 相同",
+                    },
+                },
+                "required": ["action"],
+            },
+        ),
+        (
+            "list_skills",
+            "列出 live(skills/) 与 draft(workspace/skills/) 技能包 id。改 skill 前先 list。",
+            list_skills_tool,
+            {
+                "type": "object",
+                "properties": {
+                    "include_draft": {
+                        "type": "boolean",
+                        "description": "是否包含草稿，默认 true",
+                        "default": True,
+                    },
+                },
+                "required": [],
+            },
+        ),
+        (
             "read_skill",
-            "读取 skills/<name>/ 的 manifest、handler.py、SKILL.md。"
+            "读取 live/draft skill 的 manifest、handler.py、SKILL.md。"
             "更新前必用：read_skill → create_tool(name=同一名字, update=true)。",
             read_skill,
             {
@@ -1949,7 +3366,54 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "主入口 skill 名，如 nas / http / office（不要 *_v2）",
+                        "description": "主入口 skill 名（不要 *_v2）",
+                    },
+                    "stage": {
+                        "type": "string",
+                        "description": "auto|live|draft，默认 auto（优先 live）",
+                    },
+                    "full": {
+                        "type": "boolean",
+                        "description": "true=返回完整 SKILL.md（含长 changelog）；默认 false 省略历史",
+                        "default": False,
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        (
+            "validate_skill",
+            "校验 skill handler 语法/结构（不访问网络）。promote 或 stage=live 前建议调用。",
+            validate_skill_tool,
+            {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "skill id；与 handler_code 二选一或同时（优先 code）",
+                    },
+                    "handler_code": {
+                        "type": "string",
+                        "description": "可选：直接校验这段代码",
+                    },
+                    "stage": {
+                        "type": "string",
+                        "description": "auto|live|draft，从磁盘读 handler 时用",
+                    },
+                },
+                "required": [],
+            },
+        ),
+        (
+            "promote_skill",
+            "将 workspace/skills/<id> 草稿发布到 skills/<id> 并热加载。先 validate 再 promote。",
+            promote_skill_tool,
+            {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "要发布的 skill id",
                     },
                 },
                 "required": ["name"],
@@ -1957,19 +3421,32 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         ),
         (
             "delete_tool",
-            "删除可变业务 skill（删 skills/<name>/）。"
+            "删除可变业务 skill。必须先向用户复述技能名和用途。"
+            "confirm_name 必须等于 name；user_confirmation 必须是用户明确点名同意，不能是「好/删吧」。"
             "不可删 builtin/受保护 skill。"
-            "清理误建的等价包（如 xxx_fixed）时用此工具，主能力请用 update 而非删建。",
+            "HTTP 502/连不上不是删技能的理由。",
             delete_agent_tool,
             {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "要删除的 skill 名（误建的等价包名）",
+                        "description": "要删除的 skill 名",
+                    },
+                    "confirm_name": {
+                        "type": "string",
+                        "description": "必须与 name 完全一致",
+                    },
+                    "user_confirmation": {
+                        "type": "string",
+                        "description": "用户明确同意删除的原话",
+                    },
+                    "stage": {
+                        "type": "string",
+                        "description": "live|draft|both，默认 live",
                     },
                 },
-                "required": ["name"],
+                "required": ["name", "confirm_name"],
             },
         ),
     ]

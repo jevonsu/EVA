@@ -37,6 +37,29 @@ def _resolve_path(ctx: dict[str, Any], path: str) -> Any:
     return cur
 
 
+def _as_text(val: Any, default: str = "") -> str:
+    """Coerce step fields to str. Callables (leaked handlers) have no .strip()."""
+    if val is None:
+        return default
+    if isinstance(val, str):
+        return val
+    if isinstance(val, (bytes, bytearray)):
+        try:
+            return val.decode("utf-8", errors="replace")
+        except Exception:
+            return default
+    if isinstance(val, (dict, list, tuple, set)):
+        if isinstance(val, dict):
+            return str(val.get("name") or val.get("id") or default)
+        return default
+    if callable(val):
+        name = str(getattr(val, "__name__", "") or "").strip()
+        if name and name not in ("<lambda>", "<lambda>"):
+            return name
+        return default
+    return str(val)
+
+
 def render_templates(obj: Any, ctx: dict[str, Any]) -> Any:
     """Replace {{inputs.x}} / {{steps.id.output}} in strings recursively."""
     if isinstance(obj, str):
@@ -151,6 +174,47 @@ async def _ensure_runtime_ready() -> None:
         logger.exception("Workflow runtime rebuild failed")
 
 
+async def resolve_run_session(
+    definition: dict[str, Any],
+    *,
+    session_id: str | None = None,
+    always_new_session: bool = False,
+    session_store: Any = None,
+) -> str:
+    """Pick or create the one conversation this run will write to.
+
+    Priority: always_new → explicit session_id (if it still exists) →
+    definition.default_session_id → create a titled session for this run.
+    """
+    if session_store is None:
+        from app.memory.session import get_session_store
+
+        session_store = get_session_store()
+
+    name = str(definition.get("name") or definition.get("id") or "流程").strip() or "流程"
+    title = f"工作流 · {name}"[:80]
+
+    if always_new_session:
+        created = await session_store.create(title=title)
+        return str(created["session_id"])
+
+    candidates: list[str] = []
+    explicit = str(session_id or "").strip()
+    if explicit:
+        candidates.append(explicit)
+    default = str(definition.get("default_session_id") or "").strip()
+    if default and default not in candidates:
+        candidates.append(default)
+
+    for cand in candidates:
+        existing = await session_store.get(cand)
+        if existing and existing.get("session_id"):
+            return str(existing["session_id"])
+
+    created = await session_store.create(title=title)
+    return str(created["session_id"])
+
+
 class WorkflowEngine:
     def __init__(self, store: WorkflowStore | None = None) -> None:
         self.store = store or get_workflow_store()
@@ -177,8 +241,13 @@ class WorkflowEngine:
         inputs: dict[str, Any] | None = None,
         trigger: str = "manual",
         max_steps: int = 40,
+        session_id: str | None = None,
+        always_new_session: bool = False,
     ) -> dict[str, Any]:
         """Create a pending/running run record without executing steps.
+
+        Pins one conversation for the whole run so every agent step writes
+        to the same session (instead of opening a new chat per step).
 
         Returns ``{"ok": True, "definition", "run", "ctx", "max_steps"}`` or error dict.
         """
@@ -189,11 +258,20 @@ class WorkflowEngine:
             return {"ok": False, "error": f"Workflow disabled: {workflow_id}"}
 
         merged_inputs = self._merge_inputs(definition, inputs)
+        pinned = await resolve_run_session(
+            definition,
+            session_id=session_id,
+            always_new_session=always_new_session,
+        )
         run = await self.store.create_run(
-            definition["id"], inputs=merged_inputs, trigger=trigger
+            definition["id"],
+            inputs=merged_inputs,
+            trigger=trigger,
+            session_id=pinned,
         )
         run["status"] = "running"
         run["workflow_name"] = definition.get("name")
+        run["session_id"] = pinned
         await self.store.save_run(run)
 
         steps = list(definition.get("steps") or [])
@@ -220,9 +298,16 @@ class WorkflowEngine:
         inputs: dict[str, Any] | None = None,
         trigger: str = "manual",
         max_steps: int = 40,
+        session_id: str | None = None,
+        always_new_session: bool = False,
     ) -> dict[str, Any]:
         prepared = await self.prepare_run(
-            workflow_id, inputs=inputs, trigger=trigger, max_steps=max_steps
+            workflow_id,
+            inputs=inputs,
+            trigger=trigger,
+            max_steps=max_steps,
+            session_id=session_id,
+            always_new_session=always_new_session,
         )
         if not prepared.get("ok"):
             return prepared
@@ -308,7 +393,9 @@ class WorkflowEngine:
         """Execute one agent step; returns record dict with status ok."""
         from app.agent.core import get_agent
 
-        prompt = render_templates(step.get("prompt") or step.get("message") or "", ctx)
+        prompt = render_templates(
+            _as_text(step.get("prompt") or step.get("message")), ctx
+        )
         if not str(prompt).strip():
             raise ValueError("agent step missing prompt")
 
@@ -324,15 +411,19 @@ class WorkflowEngine:
         if isinstance(use_memory, str):
             use_memory = use_memory.strip().lower() not in ("0", "false", "no")
 
-        session_id = run.get("session_id")
+        session_id = str(run.get("session_id") or "").strip() or None
+        wf_name = str(run.get("workflow_name") or "").strip()
+        session_title = f"工作流 · {wf_name}"[:80] if wf_name else None
         agent = get_agent()
         token = _workflow_agent_depth.set(_workflow_agent_depth.get() + 1)
         try:
             result = await agent.chat(
                 str(prompt),
                 session_id=session_id,
+                session_title=session_title,
                 use_tools=bool(use_tools),
                 use_memory=bool(use_memory),
+                allow_deputy=True,
             )
         finally:
             _workflow_agent_depth.reset(token)
@@ -389,8 +480,16 @@ class WorkflowEngine:
             return {"ok": False, "run": run, "error": run["error"]}
 
         for step in steps[start_index:]:
-            sid = str(step.get("id") or f"step_{len(run['steps'])}")
-            stype = (step.get("type") or "tool").strip().lower()
+            if not isinstance(step, dict):
+                run["status"] = "failed"
+                run["error"] = f"Step [{len(run['steps']) + 1}] invalid: not an object"
+                run["finished_at"] = run.get("updated_at")
+                await self.store.save_run(run)
+                return {"ok": False, "run": run, "error": run["error"]}
+            sid = _as_text(step.get("id"), f"step_{len(run['steps']) + 1}").strip() or (
+                f"step_{len(run['steps']) + 1}"
+            )
+            stype = _as_text(step.get("type"), "tool").strip().lower() or "tool"
             run["current_step"] = sid
             await self.store.save_run(run)
 
@@ -463,7 +562,9 @@ class WorkflowEngine:
                     continue
 
                 if stype == "tool":
-                    tool_name = (step.get("tool") or step.get("name") or "").strip()
+                    tool_name = _as_text(
+                        step.get("tool") if step.get("tool") not in (None, "") else step.get("name")
+                    ).strip()
                     if not tool_name:
                         raise ValueError("tool step missing tool name")
                     if tool_name in ("create_tool", "delete_tool") and not step.get(

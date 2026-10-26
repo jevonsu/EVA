@@ -1,3 +1,11 @@
-# List Api Models
+# 拉取远程模型
 
-查詢 OpenAI 兼容 API 中轉站點可用嘅模型列表
+系统技能。向任意 OpenAI 兼容站点拉取 `/models`。
+
+**怎么喊：** 模型列表、可用模型、拉取 /models、这个中转站有哪些模型。
+
+**何时用：** 要看某个 API / 中转站当前提供哪些模型；站点可以还没写进设定。
+
+**不要用：** 查看或增删本机「设定→LLM」里已保存的对话模型（用 builtin `llms`）。已保存供应商也可以 `llms action=models`。
+
+可选参数：`api_url`、`api_key`（缺省用设定→LLM 的默认凭证）。受保护，不能卸载或 `create_tool` 覆盖。

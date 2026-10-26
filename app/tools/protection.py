@@ -16,7 +16,7 @@ Policy
 
 Currently protected skills are limited to *tool-system / runtime* packages.
 Workspace FS is a builtin (``workspace``), not a skill package.
-Domain skills (http, office, nas, grok_media, …) are intentionally mutable.
+Domain skills (user-created packs) are intentionally mutable.
 """
 
 from __future__ import annotations
@@ -33,10 +33,23 @@ RESERVED_TOOL_NAMES: frozenset[str] = frozenset({
     "calculator",
     "system_info",
     "create_tool",
+    "capability_groups",
     "delete_tool",
     "read_skill",
+    "list_skills",
+    "validate_skill",
+    "promote_skill",
     "kb",
     "workflow",
+    "scheduled_task",
+    "integrations",
+    "llms",
+    "terminal",
+    "document",
+    "reload_runtime",
+    "list_api_models",
+    "server_health_check",
+    "shell",
     # Retired workspace aliases (merged into workspace)
     "list_workspace",
     "read_workspace_file",
@@ -63,6 +76,8 @@ PROTECTED_SKILLS: frozenset[str] = frozenset({
     "reload_runtime",
     "list_api_models",
     "server_health_check",
+    "terminal",
+    "document",
 })
 
 
@@ -151,8 +166,7 @@ def protection_summary() -> dict[str, Any]:
         "reserved_names": sorted(RESERVED_TOOL_NAMES),
         "protected_skills": sorted(PROTECTED_SKILLS),
         "mutable_hint": (
-            "http / office / nas / grok_media / scheduled_task 等业务 skill "
-            "均可 create_tool(update=true) 或 delete_tool"
+            "已安装的业务 skill 均可 create_tool(update=true) 或 delete_tool"
         ),
     }
 

@@ -13,14 +13,24 @@ from pathlib import Path
 
 
 def project_root() -> Path:
-    """AgentOS project root (directory that contains app/, skills/, workspace/)."""
-    # app/tools/safety.py -> parents[0]=tools, [1]=app, [2]=project
-    return Path(__file__).resolve().parents[2]
+    """Writable project root."""
+    from app.config import PROJECT_ROOT
+
+    return Path(PROJECT_ROOT)
 
 
 def get_workspace_root() -> Path:
-    """Absolute path to the agent workspace directory (created if missing)."""
-    root = (project_root() / "workspace").resolve()
+    """Absolute path to the agent workspace directory (created if missing).
+
+    After linking to Agent Hub this may be the shared office workspace,
+    not this Eva's private folder. Memory / KB / skills stay local.
+    """
+    try:
+        from app.services.workspace_bind import resolved_root
+
+        root = resolved_root()
+    except Exception:
+        root = (project_root() / "workspace").resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root
 

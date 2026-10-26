@@ -33,7 +33,7 @@
  const cancelRequest = (...a) => L.cancelRequest(...a);
  const detachWatchOnly = (...a) =>
   typeof L.detachWatchOnly === "function" ? L.detachWatchOnly(...a) : cancelRequest(...a);
- const setSidebarOpen = (...a) => L.setSidebarOpen(...a);
+ const closeMobileSidebar = (...a) => L.closeMobileSidebar(...a);
  const clearMessages = (...a) => L.clearMessages(...a);
  const showEmpty = (...a) => L.showEmpty(...a);
  const updateTypingPhase = (...a) => L.updateTypingPhase(...a);
@@ -117,7 +117,23 @@
 
  function isDefaultChatTitle() {
  const t = getChatTitleText().trim();
- return !t || t === "新对话" || t === "新对话";
+ return !t || t === "新对话" || t === "对话";
+ }
+
+ function suggestSessionTitle(message) {
+  let t = String(message || "").trim();
+  t = t.replace(/【表单回复】\s*/g, "").replace(/（已上传文件）/g, "");
+  t = t.split(/\r?\n/)[0].trim();
+  const dun = (t.match(/、/g) || []).length;
+  const comma = (t.match(/，/g) || []).length;
+  if (dun >= 2 || comma >= 2) t = t.split(/[、，]/)[0].trim();
+  t = t.split(/[。！？!?]/)[0].trim();
+  t = t.replace(/\s+/g, " ").replace(/^[ ·—-]+|[ ·—-]+$/g, "");
+  if (!t) return "对话";
+  if (t.length > 18) {
+   t = t.slice(0, 18).replace(/[，、,.；;：:\-—…\s]+$/g, "") + "…";
+  }
+  return t;
  }
 
  function clearPhaseTimer() {
@@ -162,6 +178,17 @@
  data = { detail: text };
  }
  if (!res.ok) {
+ if (
+  res.status === 401 &&
+  typeof path === "string" &&
+  !path.startsWith("/api/auth/") &&
+  !String(location.pathname || "").startsWith("/login")
+ ) {
+  const next = location.pathname + location.search;
+  location.replace(
+   "/login?next=" + encodeURIComponent(next.startsWith("/") ? next : "/")
+  );
+ }
  const detail = data?.detail || data?.error || res.statusText;
  throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
  }
@@ -169,26 +196,80 @@
  }
 
  // ==================== 会话管理 ====================
+ /** 卡密套餐 · 有效期（如「体验版套餐 · 剩余 25 天」） */
+ function formatCardPlanMeta(me) {
+  if (!me || !me.authenticated) return "";
+  if (me.auth_enabled === false || me.mode === "open") return "开放访问";
+  const plan = String(me.plan_name || "").trim() || "未分配套餐";
+  const exp = me.card_expires_at;
+  let validity;
+  if (exp == null || exp === "" || Number(exp) === 0) {
+   validity = "永不过期";
+  } else {
+   const leftMs = Number(exp) * 1000 - Date.now();
+   if (leftMs <= 0) {
+    validity = "已过期";
+   } else {
+    const days = Math.floor(leftMs / 86400000);
+    validity = days <= 0 ? "今日到期" : `剩余 ${days} 天`;
+   }
+  }
+  return `${plan} · ${validity}`;
+ }
+
  async function loadHealth() {
  try {
- const h = await api("/health");
- els.agentName.textContent = h.agent || "Lily ";
- const tasksBit =
- h.scheduled_tasks != null ? ` · tasks ${h.scheduled_tasks}` : "";
- els.agentMeta.textContent = `${h.llm_provider || "?"}/${h.llm_model || "?"} · tools ${h.tools || 0}${tasksBit}`;
- document.title = h.agent ? `${h.agent}` : "Lily — AI 助手";
+ // Parallel: health + card meta (was sequential and doubled first-paint wait)
+ const healthP = api("/health");
+ const meP = api("/api/auth/me").catch(() => null);
+ const needAgent = !(state.config && state.config.agent);
+ const agentP = needAgent
+  ? api("/api/config/agent").catch(() => null)
+  : Promise.resolve(null);
+
+ const h = await healthP;
+ const agentLabel = String(h.agent || "").trim() || "Eva";
+ els.agentName.textContent = agentLabel;
+ document.title = `${agentLabel} — AI 助手`;
+ state.agentName = agentLabel;
+ if (typeof h.llm_configured === "boolean") {
+  state.llmConfigured = h.llm_configured;
+ } else {
+  state.llmConfigured = !!(h.llm_model || h.llm_provider);
+ }
+
+ const me = await meP;
+ let meta = me ? formatCardPlanMeta(me) : "";
+ if (!meta) meta = "未登录";
+ els.agentMeta.textContent = meta;
+
+ if (needAgent) {
+  const agent = await agentP;
+  if (agent) {
+   state.config = state.config || {};
+   state.config.agent = agent;
+  }
+ }
+ if (typeof L.refreshHomeHero === "function") L.refreshHomeHero();
  } catch (e) {
  els.agentMeta.textContent = "连接后端失败";
  setStatus(e.message, "error");
  showToast("健康检查失败: " + e.message, "error");
  }
- // 仅当尚未缓存人设时再拉（启动路径会并行拉 /api/config）
- if (!(state.config && state.config.agent)) {
-  try {
-   const agent = await api("/api/config/agent");
-   state.config = state.config || {};
-   state.config.agent = agent;
-  } catch (_) {}
+ }
+
+ async function restoreDeletedSession(snapshot) {
+ if (!snapshot || !snapshot.session_id) return;
+ try {
+  await api("/api/sessions/restore", {
+   method: "POST",
+   body: { session: snapshot },
+  });
+  await loadSessions();
+  await openSession(snapshot.session_id, snapshot.title || "对话");
+  showToast("已撤销删除", "success");
+ } catch (e) {
+  showToast("撤销失败: " + (e.message || e), "error");
  }
  }
 
@@ -197,7 +278,11 @@
  ev.preventDefault();
  ev.stopPropagation();
  }
- if (!confirm("确定删除这段对话？删除后无法恢复。")) return;
+ if (!confirm("确定删除这段对话？可在提示里撤销。")) return;
+ let snapshot = null;
+ try {
+  snapshot = await api(`/api/sessions/${encodeURIComponent(sessionId)}`);
+ } catch (_) {}
  try {
  await api(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
  if (state.sessionId === sessionId) {
@@ -206,7 +291,9 @@
  await loadSessions();
  }
  setStatus("已删除对话", "ok");
- showToast("对话已删除", "success");
+ showToast("对话已删除", "success", 8000, snapshot
+  ? { label: "撤销", onClick: () => restoreDeletedSession(snapshot) }
+  : undefined);
  } catch (e) {
  setStatus("删除失败: " + e.message, "error");
  showToast("删除失败: " + e.message, "error");
@@ -238,7 +325,7 @@
  <button type="button" class="session-rename" title="重命名" aria-label="重命名">${_ipk("edit","ipk-sm")}</button>
  <button type="button" class="session-del" title="删除对话" aria-label="删除">${_ipk("delete","ipk-sm")}</button>`;
  row.querySelector(".session-main").addEventListener("click", () => {
- setSidebarOpen(false);
+ closeMobileSidebar();
  openSession(s.session_id, s.title);
  });
  row.querySelector(".session-del").addEventListener("click", (e) =>
@@ -267,18 +354,30 @@
  }
  }
 
- function filterSessions(q) {
- const query = (q || "").trim().toLowerCase();
+ let sessionSearchGen = 0;
+
+ async function filterSessions(q) {
+ const query = (q || "").trim();
  if (!query) {
  renderSessionList(state.sessionsCache);
  return;
  }
- const filtered = state.sessionsCache.filter((s) => {
- const title = (s.title || "").toLowerCase();
- const id = (s.session_id || "").toLowerCase();
- return title.includes(query) || id.includes(query);
+ const gen = ++sessionSearchGen;
+ const qLower = query.toLowerCase();
+ const localHits = state.sessionsCache.filter((s) => {
+  const title = (s.title || "").toLowerCase();
+  const id = (s.session_id || "").toLowerCase();
+  return title.includes(qLower) || id.includes(qLower);
  });
- renderSessionList(filtered);
+ if (localHits.length) renderSessionList(localHits);
+ try {
+  const rows = await api("/api/sessions?q=" + encodeURIComponent(query));
+  if (gen !== sessionSearchGen) return;
+  renderSessionList(Array.isArray(rows) ? rows : []);
+ } catch (_) {
+  if (gen !== sessionSearchGen) return;
+  if (!localHits.length) renderSessionList([]);
+ }
  }
 
  async function loadSessions() {
@@ -312,24 +411,21 @@
  const data = await api(`/api/sessions/${sessionId}`);
  const messages = data.messages || [];
  if (!messages.length) showEmpty();
+ const lastVis = [...messages]
+  .reverse()
+  .find((x) => x.role === "user" || x.role === "assistant");
  for (const m of messages) {
  const role =
  m.role === "user" || m.role === "assistant" ? m.role : "system";
  if (role === "system") continue;
- const tools = extractToolCalls(m);
- appendMessage(role, m.content || "", {
- tool_calls: tools,
- usage: m.usage || null,
- timestamp: m.created_at || m.timestamp,
- media_paths: m.metadata?.media_paths || m.media_paths || [],
- metadata: m.metadata || null,
- });
+ appendMessage(role, m.content || "", extrasFromStored(m, m === lastVis));
  }
  setStatus("");
  requestAnimationFrame(() => L.scrollMessages(true));
  // 若该会话仍有后台任务，重新附着进度；否则清掉残留绿点
  await reattachSessionRun(sessionId);
  await loadSessions();
+ if (typeof L.loadEvolutionPanel === "function") L.loadEvolutionPanel();
  } catch (e) {
  showEmpty();
  setStatus(e.message, "error");
@@ -347,17 +443,11 @@
  setChatTitleText("新对话");
  els.sessionHint.textContent = "输入消息开始对话";
  clearMessages();
- const greeting = String(
-  (state.config && state.config.agent && state.config.agent.greeting) || ""
- ).trim();
- if (greeting) {
-  appendMessage("assistant", greeting, { ephemeral: true, greeting: true });
- } else {
-  showEmpty();
- }
+ showEmpty();
  setStatus("");
- setSidebarOpen(false);
+ closeMobileSidebar();
  loadSessions();
+ if (typeof L.loadEvolutionPanel === "function") L.loadEvolutionPanel();
  els.input?.focus();
  }
 
@@ -391,17 +481,14 @@
      const messages = data.messages || [];
      clearMessages();
      if (!messages.length) showEmpty();
+     const lastVis = [...messages]
+      .reverse()
+      .find((x) => x.role === "user" || x.role === "assistant");
      for (const m of messages) {
       const role =
        m.role === "user" || m.role === "assistant" ? m.role : "system";
       if (role === "system") continue;
-      appendMessage(role, m.content || "", {
-       tool_calls: extractToolCalls(m),
-       usage: m.usage || null,
-       timestamp: m.created_at || m.timestamp,
-       media_paths: m.metadata?.media_paths || m.media_paths || [],
-       metadata: m.metadata || null,
-      });
+      appendMessage(role, m.content || "", extrasFromStored(m, m === lastVis));
      }
     } catch (_) {}
     await loadSessions();
@@ -417,17 +504,15 @@
     // 重载会话消息
     const data = await api(`/api/sessions/${sessionId}`);
     clearMessages();
-    for (const m of data.messages || []) {
+    const msgs = data.messages || [];
+    const lastVis = [...msgs]
+     .reverse()
+     .find((x) => x.role === "user" || x.role === "assistant");
+    for (const m of msgs) {
      const role =
       m.role === "user" || m.role === "assistant" ? m.role : "system";
      if (role === "system") continue;
-     appendMessage(role, m.content || "", {
-      tool_calls: extractToolCalls(m),
-      usage: m.usage || null,
-      timestamp: m.created_at || m.timestamp,
-      media_paths: m.metadata?.media_paths || m.media_paths || [],
-      metadata: m.metadata || null,
-     });
+     appendMessage(role, m.content || "", extrasFromStored(m, m === lastVis));
     }
     setStatus("后台生成已完成", "ok");
     await loadSessions();
@@ -601,7 +686,7 @@
  }
 
  if (isDefaultChatTitle()) {
- setChatTitleText(message.slice(0, 40));
+ setChatTitleText(suggestSessionTitle(message));
  }
 
  if (!reply) {
@@ -645,6 +730,7 @@
   }
   state.sessionId = sid;
   localStorage.setItem("session_id", sid);
+  if (typeof L.loadEvolutionPanel === "function") L.loadEvolutionPanel();
  }
 
  els.sessionHint.textContent = `会话 ${
@@ -652,7 +738,7 @@
  }… · ${finalData.model || "?"}`;
 
  if (isDefaultChatTitle()) {
-  setChatTitleText(message.slice(0, 40));
+  setChatTitleText(suggestSessionTitle(message));
  }
 
  const rawCalls = finalData.tool_calls || [];
@@ -685,6 +771,17 @@
   usage: finalData.usage || null,
   timestamp: new Date().toISOString(),
   media_paths: finalData.media_paths || [],
+  ask_deputy: !!finalData.ask_deputy,
+  used_deputy: !!finalData.used_deputy,
+  llm_name: finalData.llm_name || "",
+  form: finalData.form || null,
+  metadata: {
+   ask_deputy: !!finalData.ask_deputy,
+   used_deputy: !!finalData.used_deputy,
+   llm_name: finalData.llm_name || "",
+   deputy_reason: finalData.deputy_reason || "",
+   form: finalData.form || null,
+  },
  });
 
  const usage = finalData.usage || {};
@@ -736,13 +833,6 @@
       if (evt.type === "log") {
        toolLogCount += 1;
        appendTypingLog(evt.line);
-       if (toolLogCount === 1 || toolLogCount % 3 === 0) {
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        updateTypingPhase(
-         elapsed,
-         `运行中…（${elapsed}s · ${toolLogCount} 条日志）`
-        );
-       }
       } else if (evt.type === "result") {
        finalData = evt;
       } else if (evt.type === "error") {
@@ -773,7 +863,7 @@
   await applyChatResult(finalData, message, startTime);
  }
 
- async function sendBlocking(message, controller, startTime) {
+ async function sendBlocking(message, controller, startTime, metadata) {
  appendTyping();
  startPhaseTimer(startTime, "block");
 
@@ -784,6 +874,9 @@
  use_memory: els.useMemory.checked,
  stream: false,
  };
+ if (metadata && typeof metadata === "object" && Object.keys(metadata).length) {
+  body.metadata = metadata;
+ }
  const res = await fetch("/api/chat", {
  method: "POST",
  headers: { "Content-Type": "application/json" },
@@ -852,13 +945,6 @@
  } else if (evt.type === "log") {
  toolLogCount += 1;
  appendTypingLog(evt.line);
- if (toolLogCount === 1 || toolLogCount % 3 === 0) {
- const elapsed = Math.floor((Date.now() - startTime) / 1000);
- updateTypingPhase(
- elapsed,
- `运行中…（${elapsed}s · ${toolLogCount} 条日志）`
- );
- }
  } else if (evt.type === "result") {
  finalData = evt;
  } else if (evt.type === "error") {
@@ -891,22 +977,161 @@
  await applyChatResult(finalData, message, startTime);
  }
 
- async function send() {
+ function extrasFromStored(m, isTail) {
+  const meta = m.metadata || {};
+  return {
+   tool_calls: extractToolCalls(m),
+   usage: m.usage || null,
+   timestamp: m.created_at || m.timestamp,
+   media_paths: meta.media_paths || m.media_paths || [],
+   metadata: meta,
+   msgId: m.id || "",
+   used_deputy: !!meta.used_deputy,
+   llm_name: meta.llm_name || "",
+   ask_deputy: !!(isTail && meta.ask_deputy),
+   form: isTail ? meta.form || null : null,
+  };
+ }
+
+ function lastDomUserText() {
+ const nodes = document.querySelectorAll("#messages .msg.user .bubble");
+ if (!nodes.length) return "";
+ return (nodes[nodes.length - 1].textContent || "").trim();
+ }
+
+ function trimDomFromLastUser() {
+ const root = els.messages;
+ if (!root) return;
+ const users = [...root.querySelectorAll(".msg.user")];
+ const last = users[users.length - 1];
+ if (!last) return;
+ let node = last;
+ while (node) {
+ const next = node.nextElementSibling;
+ node.remove();
+ node = next;
+ }
+ if (typeof L.refreshTurnActions === "function") L.refreshTurnActions();
+ }
+
+ function trimDomAfterLastUser() {
+ const root = els.messages;
+ if (!root) return;
+ const users = [...root.querySelectorAll(".msg.user")];
+ const last = users[users.length - 1];
+ if (!last) return;
+ let node = last.nextElementSibling;
+ while (node) {
+ const next = node.nextElementSibling;
+ node.remove();
+ node = next;
+ }
+ if (typeof L.refreshTurnActions === "function") L.refreshTurnActions();
+ }
+
+ async function rewindSessionKeep(keep) {
+ if (!state.sessionId) return;
+ await api(`/api/sessions/${encodeURIComponent(state.sessionId)}/rewind`, {
+ method: "POST",
+ body: { keep },
+ });
+ }
+
+ async function lastStoredUserIndex() {
+ if (!state.sessionId) return { idx: -1, text: "", total: 0 };
+ try {
+ const data = await api(`/api/sessions/${encodeURIComponent(state.sessionId)}`);
+ const msgs = Array.isArray(data?.messages) ? data.messages : [];
+ let idx = -1;
+ for (let i = msgs.length - 1; i >= 0; i--) {
+ if (msgs[i]?.role === "user") {
+ idx = i;
+ break;
+ }
+ }
+ return {
+ idx,
+ text: idx >= 0 ? String(msgs[idx].content || "") : "",
+ total: msgs.length,
+ };
+ } catch (_) {
+ return { idx: -1, text: "", total: 0 };
+ }
+ }
+
+ async function editLastUser(preset) {
+ if (state.busy) {
+ showToast("请先停止当前生成", "warn");
+ return;
+ }
+ const stored = await lastStoredUserIndex();
+ let text = String(preset || "").trim() || stored.text || lastDomUserText();
+ if (!text) {
+ showToast("没有可改写的上一句", "warn");
+ return;
+ }
+ if (stored.idx >= 0) {
+ try {
+ await rewindSessionKeep(stored.idx);
+ } catch (e) {
+ showToast("撤回上一轮失败: " + (e.message || e), "error");
+ return;
+ }
+ }
+ trimDomFromLastUser();
+ els.input.value = text;
+ autoResize();
+ els.input.focus();
+ showToast("已放回输入框，改完再发送", "info");
+ }
+
+ async function retryLastTurn() {
+ if (state.busy) return;
+ const stored = await lastStoredUserIndex();
+ const text = stored.text || lastDomUserText();
+ if (!text) {
+ showToast("没有可重试的上一句", "warn");
+ return;
+ }
+ if (stored.idx >= 0) {
+ try {
+ await rewindSessionKeep(stored.idx + 1);
+ } catch (e) {
+ showToast("撤回失败: " + (e.message || e), "error");
+ return;
+ }
+ }
+ trimDomAfterLastUser();
+ await send({ message: text, skipUserAppend: true });
+ }
+
+ async function send(opts = {}) {
  if (state.busy) {
  cancelRequest();
  return;
  }
+ if (typeof L.hasChatLlm === "function" ? !L.hasChatLlm() : !state.llmConfigured) {
+  showToast("先添加一个对话模型", "warn");
+  if (typeof L.goAddLlm === "function") L.goAddLlm();
+  return;
+ }
 
- const typed = els.input.value.trim();
- const consume =
- typeof L.consumeAttachmentsForSend === "function"
+ const skipUserAppend = !!(opts && opts.skipUserAppend);
+ const metadata =
+  opts && opts.metadata && typeof opts.metadata === "object"
+   ? opts.metadata
+   : null;
+ const forced = opts && typeof opts.message === "string" ? opts.message : "";
+ const typed = forced ? "" : els.input.value.trim();
+ const consume = forced
+ ? { textSuffix: "", attachments: [] }
+ : typeof L.consumeAttachmentsForSend === "function"
  ? L.consumeAttachmentsForSend()
  : { textSuffix: "", attachments: [] };
  const attachments = consume.attachments || [];
- // 有附件时可只发附件不打字
- if (!typed && !attachments.length) return;
+ if (!forced && !typed && !attachments.length) return;
 
- const message = (typed + (consume.textSuffix || "")).trim();
+ const message = (forced || (typed + (consume.textSuffix || ""))).trim();
  if (!message) return;
 
  const controller = new AbortController();
@@ -920,6 +1145,9 @@
  // 默认走后台可脱离的完整模式（关页/切会话仍继续）
  // 仅「无附件 + 明确关工具」时用流式（流式仍绑定当前页）
  const preferStream = !els.useTools.checked && !attachments.length;
+ if (preferStream) {
+  setStatus("纯文本流式（不调技能/工具）");
+ }
 
  setBusy(true);
  els.input.value = "";
@@ -927,12 +1155,28 @@
 
  const empty = els.messages.querySelector(".empty");
  if (empty) empty.remove();
+ // 发送即退出居中主页，输入框回底部（appendMessage 也会再确保一次）
+ if (typeof L.setHomeHeroMode === "function") L.setHomeHeroMode(false);
+ // 手机：发送后保持键盘（多轮对话），并确保滚到最新
+ try {
+  if (window.matchMedia("(max-width: 900px)").matches) {
+   state.stickToBottom = true;
+   requestAnimationFrame(() => {
+    if (typeof L.scrollMessages === "function") L.scrollMessages(true);
+   });
+  }
+ } catch (_) {}
 
- appendMessage("user", typed || "（已上传文件）", {
+ if (!skipUserAppend) {
+ const displayText =
+  (typed || forced || "").trim() ||
+  (attachments.length ? "（已上传文件）" : message);
+ appendMessage("user", displayText, {
  timestamp: new Date().toISOString(),
  attachments,
  media_paths: attachments.map((a) => a.path),
  });
+ }
 
  try {
  sessionStorage.setItem(
@@ -956,10 +1200,10 @@
  if (sm) sm.remove();
  setStatus("流式失败，改用完整模式…", "warn");
  showToast("流式失败，已切换完整模式", "warn");
- await sendBlocking(message, controller, startTime);
+ await sendBlocking(message, controller, startTime, metadata);
  }
  } else {
- await sendBlocking(message, controller, startTime);
+ await sendBlocking(message, controller, startTime, metadata);
  }
  } catch (e) {
  if (state._watchToken === watchToken) removeTyping();
@@ -989,9 +1233,102 @@
   clearPhaseTimer();
   state.abortController = null;
   state.detachWatch = false;
-  if (!wasDetach) els.input?.focus();
+  if (!wasDetach) {
+   const asking = els.messages?.querySelector(
+    ".msg.assistant:last-child .ask-form:not(.is-done)"
+   );
+   if (!asking) els.input?.focus();
+  }
  }
  await loadSessions();
+ if (state._watchToken === watchToken && !state.detachWatch) {
+  if (typeof L.syncDomMessageIds === "function") await L.syncDomMessageIds();
+ }
+ }
+ }
+
+ async function syncDomMessageIds() {
+ if (!state.sessionId || !els.messages) return;
+ try {
+  const data = await api(`/api/sessions/${encodeURIComponent(state.sessionId)}`);
+  const stored = (data.messages || []).filter(
+   (m) => m && (m.role === "user" || m.role === "assistant")
+  );
+  const vis = [...els.messages.querySelectorAll(".msg.user, .msg.assistant")]
+   .filter((el) => !el.classList.contains("typing-msg") && el.dataset.ephemeral !== "1");
+  const n = Math.min(stored.length, vis.length);
+  for (let i = 1; i <= n; i++) {
+   const id = stored[stored.length - i]?.id;
+   if (id) vis[vis.length - i].dataset.msgId = id;
+  }
+ } catch (_) {}
+ }
+
+ function visibleChatMsgs() {
+ if (!els.messages) return [];
+ return [...els.messages.querySelectorAll(".msg.user, .msg.assistant")].filter(
+  (el) => !el.classList.contains("typing-msg") && el.dataset.ephemeral !== "1"
+ );
+ }
+
+ async function deleteChatMessage(wrap) {
+ if (!(wrap instanceof HTMLElement)) return;
+ if (state.busy) {
+  showToast("生成中，请稍后再删", "warn");
+  return;
+ }
+ if (!window.confirm("删除这条消息？可在提示里撤销。")) return;
+ if (wrap.dataset.ephemeral === "1" || !state.sessionId) {
+  wrap.remove();
+  if (!els.messages.querySelector(".msg.user, .msg.assistant")) showEmpty();
+  if (typeof L.refreshTurnActions === "function") L.refreshTurnActions();
+  return;
+ }
+ try {
+  await syncDomMessageIds();
+  const vis = visibleChatMsgs();
+  const index = vis.indexOf(wrap);
+  const msgId = wrap.dataset.msgId || "";
+  if (index < 0 && !msgId) {
+   wrap.remove();
+   if (typeof L.refreshTurnActions === "function") L.refreshTurnActions();
+   return;
+  }
+  const sid = state.sessionId;
+  const title = getChatTitleText();
+  const res = await api(
+   `/api/sessions/${encodeURIComponent(sid)}/messages/delete`,
+   { method: "POST", body: { id: msgId || null, index: index < 0 ? null : index } }
+  );
+  wrap.remove();
+  if (!els.messages.querySelector(".msg.user, .msg.assistant")) showEmpty();
+  if (typeof L.refreshTurnActions === "function") L.refreshTurnActions();
+  await loadSessions();
+  const removed = res && res.removed;
+  const dropAt = res && typeof res.index === "number" ? res.index : null;
+  if (removed && dropAt != null) {
+   showToast("消息已删除", "success", 8000, {
+    label: "撤销",
+    onClick: async () => {
+     try {
+      await api(
+       `/api/sessions/${encodeURIComponent(sid)}/messages/restore`,
+       { method: "POST", body: { message: removed, index: dropAt } }
+      );
+      if (state.sessionId === sid) {
+       await openSession(sid, title);
+      } else {
+       await loadSessions();
+      }
+      showToast("已撤销删除", "success");
+     } catch (err) {
+      showToast("撤销失败: " + (err.message || err), "error");
+     }
+    },
+   });
+  }
+ } catch (e) {
+  showToast("删除失败: " + (e.message || e), "error");
  }
  }
 
@@ -1008,5 +1345,9 @@
  L.sendStream = sendStream;
  L.sendBlocking = sendBlocking;
  L.send = send;
+ L.editLastUser = editLastUser;
+ L.retryLastTurn = retryLastTurn;
+ L.syncDomMessageIds = syncDomMessageIds;
+ L.deleteChatMessage = deleteChatMessage;
  // cancelRequest 以 app-render 的为准（操作 state.abortController）
 })(window.Lily);

@@ -19,6 +19,15 @@ mcp>=1.2.0
 aiofiles>=24.1.0
 orjson>=3.10.0
 
+# Storage (local SQLite default; optional remote drivers)
+SQLAlchemy>=2.0.36
+# PostgreSQL
+psycopg[binary]>=3.2.0
+# MySQL / MariaDB
+PyMySQL>=1.1.0
+# SQL Server (optional; needs ODBC Driver 18 on the host)
+# pyodbc>=5.1.0
+
 # Office / PDF
 PyPDF2>=3.0.0
 pdfplumber>=0.11.0
@@ -39,8 +48,11 @@ pysmb>=1.2.10
 
 # Optional skill extras (safe on Linux; install when needed):
 # paramiko>=3.4.0   # skills/netops SSH/SCP
-# psutil>=5.9.0     # skills/server_health_check
+psutil>=5.9.0
 
 # Auth (card login / admin)
 bcrypt>=4.2.0
+
+# Launcher system tray (Windows)
+pystray>=0.19.5
 
