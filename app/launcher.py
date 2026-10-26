@@ -678,16 +678,29 @@ class EvaLauncher:
         upd_slot = self._slot(form, "更新")
         self._upd_apply_btn = self._browse_btn(upd_slot, self._on_update_apply)
         self._upd_apply_btn.configure(text="更新")
-        self._upd_check_btn = self._browse_btn(upd_slot, self._on_update_check)
-        self._upd_check_btn.configure(text="检查")
-        self._upd_var = tk.StringVar(value=f"v{__version__}")
-        self._upd_entry = self._mk_entry(upd_slot, self._upd_var)
-        self._upd_entry.pack_forget()
-        self._upd_entry.pack(side="left", fill="x", expand=True)
-        self._upd_entry.configure(state="readonly")
+        upd_info = tk.Frame(upd_slot, bg=BG2)
+        upd_info.pack(side="left", fill="x", expand=True)
+        self._upd_cur_lbl = tk.Label(
+            upd_info,
+            text=f"当前  v{__version__}",
+            bg=BG2,
+            fg=FG,
+            font=FONT_UI,
+            anchor="w",
+        )
+        self._upd_cur_lbl.pack(side="left", padx=(0, 16))
+        self._upd_latest_lbl = tk.Label(
+            upd_info,
+            text="最新  检测中…",
+            bg=BG2,
+            fg=MUTED,
+            font=FONT_UI,
+            anchor="w",
+        )
+        self._upd_latest_lbl.pack(side="left", fill="x", expand=True)
         self._upd_hint = tk.Label(
             form,
-            text="检查 GitHub 是否有新版本。更新只换程序，不改 data / 工作区 / .env。",
+            text="启动后自动检测 GitHub 便携包。点「更新」只换 EVA.exe / _internal，不改 data / 工作区 / .env。",
             bg=BG2,
             fg=MUTED,
             font=FONT_UI_SM,
@@ -1324,6 +1337,7 @@ class EvaLauncher:
             )
             if tok:
                 self._upd_token_var.set("")
+            self.root.after(400, self._kick_update_check)
         except Exception as extra:
             self._emit(f"[X] 更新仓库保存失败：{extra}")
 
@@ -1359,49 +1373,76 @@ class EvaLauncher:
                 self._emit(f"[X] 开机启动快捷方式丢失，未能重建：{exc}")
         self._boot_var.set(on)
 
+    @staticmethod
+    def _fmt_ver(raw: str) -> str:
+        s = str(raw or "").strip()
+        if not s:
+            return ""
+        return s if s[:1].lower() == "v" else f"v{s.lstrip('vV')}"
+
+    def _set_update_versions(
+        self,
+        current: str = "",
+        latest: str = "",
+        *,
+        latest_state: str = "ok",
+        newer: bool = False,
+    ) -> None:
+        if current:
+            try:
+                self._upd_cur_lbl.configure(text=f"当前  {self._fmt_ver(current)}")
+            except Exception:
+                pass
+        try:
+            if latest_state == "checking":
+                self._upd_latest_lbl.configure(text="最新  检测中…", fg=MUTED)
+            elif latest_state == "ok" and latest:
+                self._upd_latest_lbl.configure(
+                    text=f"最新  {self._fmt_ver(latest)}",
+                    fg=WARN if newer else FG,
+                )
+            else:
+                self._upd_latest_lbl.configure(text="最新  未能检测", fg=MUTED)
+        except Exception:
+            pass
+
     def _kick_update_check(self) -> None:
         if getattr(self, "_upd_busy", False):
             return
-        threading.Thread(target=self._update_check_worker, args=(True,), daemon=True).start()
-
-    def _on_update_check(self) -> None:
-        if getattr(self, "_upd_busy", False):
-            return
         self._upd_busy = True
-        self._emit("正在检查 GitHub 更新…")
-        threading.Thread(target=self._update_check_worker, args=(False,), daemon=True).start()
+        self._set_update_versions(latest_state="checking")
+        threading.Thread(target=self._update_check_worker, daemon=True).start()
 
-    def _update_check_worker(self, quiet: bool) -> None:
+    def _update_check_worker(self) -> None:
         try:
             from app.services.online_update import check, pending_zip
 
-            status = check(force=not quiet, interactive=not quiet)
+            status = check(force=True, interactive=False)
             local = status.get("local") or {}
             remote = status.get("remote") or {}
             ver = str(local.get("version") or __version__)
-            label = f"v{ver.lstrip('vV')}"
-            if status.get("newer"):
-                tag = str(remote.get("tag") or remote.get("version") or "")
-                label = f"{label} → {tag}" if tag else label
-                msg = f"发现新版本 {tag or ''}。点「更新」下载并替换程序，data / 工作区 / .env 不动。"
+            tag = str(remote.get("tag") or remote.get("version") or "")
+            newer = bool(status.get("newer"))
+            if newer:
+                msg = f"发现新版本 {self._fmt_ver(tag)}。点「更新」下载并替换程序，data / 工作区 / .env 不动。"
             elif pending_zip().is_file():
                 msg = "已下载更新包。请先停止服务，再点「更新」。"
             else:
                 msg = "已是最新版本。"
+
             def _done() -> None:
                 self._upd_busy = False
-                try:
-                    self._upd_var.set(label.strip())
-                except Exception:
-                    pass
-                if (not quiet) or status.get("newer") or pending_zip().is_file():
+                self._set_update_versions(ver, tag, latest_state="ok" if tag else "fail", newer=newer)
+                if newer or pending_zip().is_file():
                     self._emit(msg)
+
             self._ui(_done)
         except Exception as extra:
             def _fail() -> None:
                 self._upd_busy = False
-                if not quiet:
-                    self._emit(f"[X] 检查更新失败：{extra}")
+                self._set_update_versions(latest_state="fail")
+                self._emit(f"[X] 未能检测最新版本：{extra}")
+
             self._ui(_fail)
 
     def _on_update_apply(self) -> None:
@@ -1422,12 +1463,21 @@ class EvaLauncher:
             if pending_zip().is_file():
                 result = apply_pending_zip()
             else:
-                status = check(force=True)
+                status = check(force=True, interactive=False)
                 if not status.get("newer"):
+                    local = status.get("local") or {}
+                    remote = status.get("remote") or {}
+                    ver = str(local.get("version") or __version__)
+                    tag = str(remote.get("tag") or remote.get("version") or "")
+
                     def _latest() -> None:
                         self._upd_busy = False
                         self._busy = False
+                        self._set_update_versions(
+                            ver, tag, latest_state="ok" if tag else "fail", newer=False
+                        )
                         self._emit("已是最新版本。")
+
                     self._ui(_latest)
                     return
                 result = apply_now(force=True)
@@ -1439,6 +1489,7 @@ class EvaLauncher:
                 msg = f"已应用 {tag or '更新'}。请重新点「启动」。data / 工作区 / .env 未改动。"
                 if pip:
                     msg += " " + pip
+
             def _done() -> None:
                 self._upd_busy = False
                 self._busy = False
@@ -1447,15 +1498,20 @@ class EvaLauncher:
                     from app.services.online_update import local_info
 
                     ver = str((local_info().get("version") or __version__))
-                    self._upd_var.set(f"v{ver.lstrip('vV')}")
+                    shown = tag or ver
+                    self._set_update_versions(
+                        ver, shown, latest_state="ok" if shown else "fail", newer=False
+                    )
                 except Exception:
                     pass
+
             self._ui(_done)
         except Exception as extra:
             def _fail() -> None:
                 self._upd_busy = False
                 self._busy = False
                 self._emit(f"[X] 更新失败：{extra}")
+
             self._ui(_fail)
 
     def _on_boot_toggle(self) -> None:

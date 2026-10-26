@@ -1,6 +1,6 @@
 # Eva
 
-Ruyi Studio 出品的本地 **AI 助手**（v0.1.0）。
+Ruyi Studio 出品的本地 **AI 助手**（v0.1.2）。
 
 对话、多模型、工具 / 技能、长期记忆、知识库、定时任务、工作流与 MCP。使用前需 **卡密登录**（卡密由管理员在 CardServer 发卡台发放）。
 
@@ -70,7 +70,10 @@ LLM **不要**写在 `.env`：预置 DeepSeek，登录后在 **设定 → LLM** 
 
 Windows 默认打开 **Eva 启动窗口**（启动 / 停止、改端口、看状态和日志），不再弹出独立终端。
 
+双击项目目录里的 **`run.bat`** 即可（不要双击 `run.py`：`.py` 常被编辑器打开）。
+
 ```bash
+run.bat                       # 打开启动窗口
 python run.py                 # 打开启动窗口；已勾选「开机启动」时自动运行服务
 python run.py --autostart     # 强制打开即启动
 python run.py --no-autostart  # 只打开窗口，等你点「启动」
@@ -95,9 +98,9 @@ Windows 建议用 `.venv\Scripts\python.exe run.py`（会转到 `pythonw.exe`，
 
 ### 4. 升级
 
-启动器左侧「更新」：检查 GitHub 是否有新版本，停止服务后点「更新」。只替换程序，不改 `data/`、工作区、`.env`。私有仓库可在「更多设定」填写 Token，或使用环境变量 `GITHUB_TOKEN`。
+启动器左侧「更新」：检查 GitHub Release 上的便携包（`EVA-update.zip`），停止服务后点「更新」。只替换 `EVA.exe` / `_internal`，不改 `data/`、工作区、`.env`。私有仓库可在「更多设定」填写 Token，或使用环境变量 `GITHUB_TOKEN`。
 
-把 Eva 源码上传到 GitHub 的工具在 **Eva 项目外面**：`OPC/发布EVA`（不随项目上传）。
+打包与发布工具在 **Eva 项目外面**（不随项目上传）：`OPC/发布EVA` 一次 `--publish` 会推送源码备份，再打 `员工/EVA.exe` 并上传便携 zip。启动器「更新」只用 zip，不会覆盖 `data/` / `.env`。只打包不上 GitHub 用 `OPC/打包EVA`。
 
 ---
 

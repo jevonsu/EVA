@@ -72,18 +72,19 @@ def _handoff_venv(argv: list[str], *, gui: bool) -> None:
             target = _pythonw_for(Path(sys.executable))
         if target is None:
             return
-        if _same_python(sys.executable, target):
-            return
-        # Already the venv pythonw (boot shortcut / pythonw double-click).
         me = Path(sys.executable)
-        if me.name.lower() == "pythonw.exe" and target.name.lower() == "pythonw.exe":
-            try:
-                if os.path.normcase(os.path.realpath(me.parent)) == os.path.normcase(
-                    os.path.realpath(target.parent)
-                ):
-                    return
-            except OSError:
-                pass
+        try:
+            me_dir = os.path.normcase(os.path.realpath(me.parent))
+            tgt_dir = os.path.normcase(os.path.realpath(Path(target).parent))
+        except OSError:
+            me_dir = tgt_dir = ""
+        # Already the intended GUI interpreter (double-click run.bat / pythonw).
+        if me.name.lower() == "pythonw.exe" and (
+            _same_python(me, target) or (me_dir and me_dir == tgt_dir)
+        ):
+            return
+        if _same_python(me, target):
+            return
         env = os.environ.copy()
         env["EVA_LAUNCHER"] = "1"
         kwargs: dict = {
@@ -95,9 +96,12 @@ def _handoff_venv(argv: list[str], *, gui: bool) -> None:
             "stderr": subprocess.DEVNULL,
         }
         if sys.platform == "win32":
-            kwargs["creationflags"] = getattr(
-                subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
-            )
+            # Break away from the Explorer / py.exe console so the GUI survives
+            # after the parent console window closes.
+            flags = 0
+            flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+            flags |= int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+            kwargs["creationflags"] = flags
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             si.wShowWindow = 0
@@ -265,14 +269,8 @@ def _want_gui(args: argparse.Namespace) -> bool:
         return True
     if _is_frozen():
         return True
-    if sys.platform != "win32":
-        return False
-    exe = Path(sys.executable).name.lower()
-    if exe == "pythonw.exe":
-        return True
-    if sys.stdin is not None and sys.stdin.isatty():
-        return True
-    return False
+    # Windows default is the control window (double-click run.py / run.bat).
+    return sys.platform == "win32"
 
 
 def _ensure_cli_console() -> None:

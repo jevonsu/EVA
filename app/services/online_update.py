@@ -1,4 +1,4 @@
-"""Online program update from a private GitHub repo (source tree or frozen zip)."""
+"""Online program update from a private GitHub Release portable zip (EVA.exe)."""
 
 from __future__ import annotations
 
@@ -168,7 +168,17 @@ def channel_public() -> dict[str, Any]:
     }
 
 
-def _git_credential_token() -> str:
+def _win_no_window() -> dict[str, Any]:
+    if sys.platform != "win32":
+        return {}
+    return {"creationflags": CREATE_NO_WINDOW}
+
+
+def _git_credential_token(*, allow_prompt: bool = False) -> str:
+    env = os.environ.copy()
+    if not allow_prompt:
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GCM_INTERACTIVE"] = "never"
     try:
         proc = subprocess.run(
             ["git", "credential", "fill"],
@@ -178,6 +188,8 @@ def _git_credential_token() -> str:
             timeout=8,
             encoding="utf-8",
             errors="replace",
+            env=env,
+            **_win_no_window(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -198,6 +210,7 @@ def _gh_cli_token() -> str:
             timeout=8,
             encoding="utf-8",
             errors="replace",
+            **_win_no_window(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -220,9 +233,12 @@ def resolve_token(explicit: str = "", *, interactive: bool = True) -> str:
     tok = _gh_cli_token()
     if tok:
         return tok
+    tok = _git_credential_token(allow_prompt=False)
+    if tok:
+        return tok
     if not interactive:
         return ""
-    return _git_credential_token()
+    return _git_credential_token(allow_prompt=True)
 
 
 def local_info() -> dict[str, Any]:
@@ -334,75 +350,85 @@ def _auth_error(status: int, data: Any) -> str:
             + (f" {msg}" if msg else "")
         )
     if status == 404:
+        if not resolve_token(interactive=False):
+            return (
+                "GitHub 拒绝访问（私有仓库需要 Token）。"
+                "在启动器「更多设定 → Token」填写，或设置环境变量 GITHUB_TOKEN。"
+            )
         return (
             f"GitHub 上还没有发布（{configured_repo()}）。"
-            "预览：python scripts/publish_github.py ；确认后再 --publish。"
+            "确认仓库地址与 Token 权限后重试。"
         )
     return f"GitHub 检查失败 HTTP {status}" + (f"：{msg}" if msg else "")
+
+
+def pick_portable_asset(assets: list[Any]) -> dict[str, Any] | None:
+    """Prefer EVA-update.zip, then EVA-*.zip. Never a source zipball."""
+    named: dict[str, Any] | None = None
+    eva_zip: dict[str, Any] | None = None
+    other_zip: dict[str, Any] | None = None
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        name = str(a.get("name") or "")
+        lower = name.lower()
+        api_url = str(a.get("url") or "")
+        browser = str(a.get("browser_download_url") or "")
+        if not api_url and not browser:
+            continue
+        if not lower.endswith(".zip"):
+            continue
+        if lower in {"source.zip", "src.zip"} or lower.endswith("-source.zip"):
+            continue
+        row = a
+        if name == ASSET_NAME:
+            named = row
+            break
+        if lower.startswith("eva"):
+            eva_zip = eva_zip or row
+        else:
+            other_zip = other_zip or row
+    return named or eva_zip or other_zip
+
+
+def _asset_download_url(asset: dict[str, Any]) -> str:
+    return str(asset.get("url") or asset.get("browser_download_url") or "")
 
 
 def fetch_latest_release(*, token: str = "", interactive: bool = True) -> dict[str, Any]:
     repo = configured_repo()
     status, data = _api("/releases/latest", token=token, interactive=interactive)
     if status == 404:
-        tstatus, tags = _api("/tags?per_page=1", token=token, interactive=interactive)
-        if tstatus >= 400:
-            raise RuntimeError(_auth_error(tstatus, tags))
-        if not isinstance(tags, list) or not tags:
-            raise RuntimeError(
-                f"GitHub 上还没有发布（{repo}）。"
-                "预览：python scripts/publish_github.py ；确认后再 --publish。"
-            )
-        tag = str((tags[0] or {}).get("name") or "")
-        if not tag:
-            raise RuntimeError("GitHub 标签异常")
-        return {
-            "tag": tag,
-            "name": tag,
-            "notes": "",
-            "published_at": "",
-            "download_url": f"https://api.github.com/repos/{repo}/zipball/{tag}",
-            "size": 0,
-            "html_url": f"https://github.com/{repo}/tree/{tag}",
-            "version": tag.lstrip("vV"),
-            "source": "tag",
-        }
+        raise RuntimeError(
+            f"GitHub 上还没有便携包发布（{repo}）。"
+            "请用 OPC/发布EVA 上传打包后的 EVA-update.zip，不要发源码。"
+        )
     if status >= 400:
         raise RuntimeError(_auth_error(status, data))
     if not isinstance(data, dict):
         raise RuntimeError("GitHub 返回异常")
     tag = str(data.get("tag_name") or "")
     assets = data.get("assets") if isinstance(data.get("assets"), list) else []
-    asset_url = ""
-    size = 0
-    for a in assets:
-        if not isinstance(a, dict):
-            continue
-        name = str(a.get("name") or "")
-        url = str(a.get("browser_download_url") or "")
-        if not url:
-            continue
-        if name == ASSET_NAME or name.endswith(".zip"):
-            asset_url = url
-            size = int(a.get("size") or 0)
-            if name == ASSET_NAME:
-                break
-    zipball = str(data.get("zipball_url") or "")
-    download = asset_url or zipball
+    asset = pick_portable_asset(assets)
+    if not asset:
+        raise RuntimeError(
+            f"最新发布 {tag or '(无标签)'} 没有便携包 zip（需要 {ASSET_NAME}）。"
+            "源码 zipball 不能用来更新打包版 Eva。"
+        )
+    download = _asset_download_url(asset)
     if not download:
-        if not tag:
-            raise RuntimeError("最新发布没有下载地址")
-        download = f"https://api.github.com/repos/{repo}/zipball/{tag}"
+        raise RuntimeError("最新发布没有下载地址")
     return {
         "tag": tag,
         "name": str(data.get("name") or tag),
         "notes": str(data.get("body") or ""),
         "published_at": str(data.get("published_at") or ""),
         "download_url": download,
-        "size": size,
+        "asset": str(asset.get("name") or ASSET_NAME),
+        "size": int(asset.get("size") or 0),
         "html_url": str(data.get("html_url") or ""),
         "version": tag.lstrip("vV"),
-        "source": "release",
+        "source": "portable",
     }
 
 
@@ -447,7 +473,9 @@ def download_to_pending(url: str, *, token: str = "") -> Path:
     dest = pending_zip()
     tmp = dest.with_suffix(".part")
     headers = _headers(token=token)
-    if "api.github.com" in url and "zipball" in url:
+    if "/releases/assets/" in url:
+        headers["Accept"] = "application/octet-stream"
+    elif "api.github.com" in url and "zipball" in url:
         headers["Accept"] = "application/vnd.github+json"
     else:
         headers["Accept"] = "application/octet-stream"
@@ -641,7 +669,7 @@ def apply_extracted(src: Path, dest: Path) -> None:
                 shutil.rmtree(target)
             shutil.copytree(pack, target)
 
-    for name in ("version.json", "eva_build.txt", "使用说明.txt"):
+    for name in ("version.json", "eva_build.txt", "使用说明.txt", "start.bat", ".env.example"):
         p = src / name
         if p.is_file():
             shutil.copy2(p, dest / name)
@@ -687,7 +715,18 @@ def apply_pending_zip() -> dict[str, Any]:
         with zipfile.ZipFile(zpath, "r") as zf:
             _safe_extract(zf, tmp)
         src = _find_payload_root(tmp)
-        if _looks_frozen_payload(src):
+        frozen_install = bool(getattr(sys, "frozen", False))
+        frozen_payload = _looks_frozen_payload(src)
+        if frozen_install and not frozen_payload:
+            raise RuntimeError(
+                "当前是打包版 Eva，更新包必须是 EVA.exe + _internal，不能是源码。"
+            )
+        if not frozen_install and frozen_payload:
+            raise RuntimeError(
+                "当前是源码运行，收到的是打包版更新包。"
+                "请使用 OPC/员工/EVA.exe，或继续用 git 更新源码。"
+            )
+        if frozen_payload:
             apply_extracted(src, dest)
             changed = ["EVA.exe", "_internal/"]
             kind = "frozen"

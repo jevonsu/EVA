@@ -141,6 +141,8 @@ def _is_safe_rel(rel: str) -> bool:
     name = Path(rel).name.lower()
     if name in _SKIP_NAMES or name.startswith(".env"):
         return False
+    if ".bak" in name:
+        return False
     suf = Path(rel).suffix.lower()
     if suf in _SKIP_SUFFIXES:
         return False
@@ -879,6 +881,44 @@ def preview_and_install(
                 installed.append(row)
             except Exception as e:
                 failed.append({"id": sdir.name, "error": str(e)})
+
+        # Extra integrations in pack.json (not only the skill's primary id).
+        installed_ids = {str(r.get("id") or "") for r in installed if r.get("id")}
+        seen_iid = {
+            str(r.get("integration_id") or "")
+            for r in installed
+            if r.get("integration_id")
+        }
+        for raw_id, schema in imported_integs.items():
+            if not isinstance(schema, dict):
+                continue
+            iid = str(schema.get("id") or raw_id or "").strip()
+            if not iid or iid in seen_iid:
+                continue
+            linked = [
+                str(s).strip()
+                for s in (schema.get("skills") or [])
+                if str(s).strip() in installed_ids
+            ]
+            sid = linked[0] if linked else next(iter(installed_ids), "")
+            if not sid:
+                continue
+            try:
+                extra = ensure_imported_integration(schema, sid)
+            except Exception:
+                extra = None
+            seen_iid.add(iid)
+            if extra and extra.get("needs_setup"):
+                label = extra.get("name") or iid
+                msg = f"请到设定→集成填写「{label}」（账号密码不会随包导入）"
+                for row in installed:
+                    rid = str(row.get("id") or "")
+                    if linked and rid not in linked:
+                        continue
+                    warns = list(row.get("warnings") or [])
+                    if msg not in warns:
+                        warns.append(msg)
+                    row["warnings"] = warns
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
