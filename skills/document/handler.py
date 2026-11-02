@@ -10,7 +10,10 @@ logger = logging.getLogger(__name__)
 DESC = (
     "文档：在工作区读写编辑删除 Word(.docx)、Excel(.xlsx)、PPT(.pptx)、PDF、Markdown。"
     "action=info|list|read|write|edit|delete。"
-    "批量：paths 数组，或 path 通配符如 reports/*.xlsx，最多 40 个，返回每份结果。"
+    "写入仅允许 uploads/docs/exports/scratch/images/videos/skills；"
+    "新建默认 docs/ 或 exports/ 或 scratch/；禁止工作区根目录。"
+    "覆盖已有文件须先 ask_user，再 overwrite=true。"
+    "批量：paths 数组，或 path 通配符如 docs/*.xlsx，最多 40 个。"
     "列目录、重命名、txt/代码/图片用 workspace。旧版 .doc/.xls/.ppt 请另存为新格式。"
     "Excel 改格子用 cell+value；改一批用 rows_json。PDF 编辑会丢版式。"
 )
@@ -31,6 +34,7 @@ async def handle(
     rows_json: str = "",
     slide: int = 0,
     append: bool = False,
+    overwrite: bool = False,
     max_chars: int = 12000,
 ) -> str:
     from app.services.document_ops import run
@@ -51,6 +55,7 @@ async def handle(
             rows_json=rows_json,
             slide=int(slide or 0),
             append=bool(append),
+            overwrite=bool(overwrite),
             max_chars=int(max_chars or 12000),
         )
     except Exception as extra:
@@ -74,7 +79,7 @@ def register(registry):
                 },
                 "path": {
                     "type": "string",
-                    "description": "相对工作区，如 reports/a.docx。通配符批量：reports/*.xlsx 或 *.md",
+                    "description": "相对工作区，如 docs/a.docx 或 exports/a.xlsx。通配符：docs/*.xlsx。写入禁止根目录。",
                 },
                 "paths": {
                     "type": "array",
@@ -110,6 +115,11 @@ def register(registry):
                 "append": {
                     "type": "boolean",
                     "description": "true=追加（Word 段、Excel 行、PPT 页、PDF 页、Markdown 文末）",
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "description": "true=允许覆盖已存在文件（须先 ask_user 确认）",
+                    "default": False,
                 },
                 "max_chars": {
                     "type": "integer",

@@ -17,6 +17,17 @@ from app.storage.engine import db_connect
 from app.storage.schema import kb_catalog as kb_catalog_t
 from app.storage.schema import kb_pages as kb_pages_t
 from app.storage.util import dumps, loads, run_db
+from app.storage.lifecycle import (
+    NEW_WRITE_CONFIDENCE,
+    STATUS_ACTIVE,
+    STATUS_ARCHIVED,
+    STATUS_STAGING,
+    STAGING_KB_DEFAULT_TTL_DAYS,
+    clamp_confidence,
+    compute_valid_to,
+    is_visible_row,
+    normalize_status,
+)
 
 _MIN_MATCH = 1.5
 _MAX_VERSIONS = 10
@@ -29,6 +40,7 @@ DEFAULT_COLLECTIONS: list[str] = [
     "handbook",
     "daily",
     "reference",
+    "staging",
 ]
 
 # Scene/playbooks owned by a skill — skip wiki dump on that skill's trigger.
@@ -88,6 +100,12 @@ class KnowledgeStore:
             tags = []
         if not isinstance(versions, list):
             versions = []
+        archived = bool(row.archived)
+        status = normalize_status(getattr(row, "status", None), archived_flag=archived)
+        try:
+            confidence = float(getattr(row, "confidence", None) or 1.0)
+        except (TypeError, ValueError):
+            confidence = 1.0
         return {
             "id": row.id,
             "title": row.title or "",
@@ -97,10 +115,15 @@ class KnowledgeStore:
             "content": row.content or "",
             "version": int(row.version or 1),
             "pinned": bool(row.pinned),
-            "archived": bool(row.archived),
+            "archived": archived or status == STATUS_ARCHIVED,
             "versions": versions,
             "created_at": row.created_at or "",
             "updated_at": row.updated_at or "",
+            "status": status,
+            "valid_from": getattr(row, "valid_from", None),
+            "valid_to": getattr(row, "valid_to", None),
+            "confidence": confidence,
+            "supersedes_id": getattr(row, "supersedes_id", None),
         }
 
     def _load_index_sync(self) -> list[dict[str, Any]]:
@@ -118,6 +141,11 @@ class KnowledgeStore:
                     kb_pages_t.c.pinned,
                     kb_pages_t.c.archived,
                     kb_pages_t.c.preview,
+                    kb_pages_t.c.status,
+                    kb_pages_t.c.valid_from,
+                    kb_pages_t.c.valid_to,
+                    kb_pages_t.c.confidence,
+                    kb_pages_t.c.supersedes_id,
                 )
             ).all()
         out: list[dict[str, Any]] = []
@@ -125,6 +153,12 @@ class KnowledgeStore:
             tags = loads(r.tags_json, [])
             if not isinstance(tags, list):
                 tags = []
+            archived = bool(r.archived)
+            status = normalize_status(getattr(r, "status", None), archived_flag=archived)
+            try:
+                confidence = float(getattr(r, "confidence", None) or 1.0)
+            except (TypeError, ValueError):
+                confidence = 1.0
             out.append(
                 {
                     "id": r.id,
@@ -136,8 +170,13 @@ class KnowledgeStore:
                     "updated_at": r.updated_at or "",
                     "created_at": r.created_at or "",
                     "pinned": bool(r.pinned),
-                    "archived": bool(r.archived),
+                    "archived": archived or status == STATUS_ARCHIVED,
                     "preview": r.preview or "",
+                    "status": status,
+                    "valid_from": getattr(r, "valid_from", None),
+                    "valid_to": getattr(r, "valid_to", None),
+                    "confidence": confidence,
+                    "supersedes_id": getattr(r, "supersedes_id", None),
                 }
             )
         return out
@@ -164,6 +203,16 @@ class KnowledgeStore:
     def _write_page_sync(self, page: dict[str, Any]) -> None:
         pid = str(page["id"])
         content = str(page.get("content") or "")
+        status = normalize_status(
+            page.get("status"), archived_flag=bool(page.get("archived"))
+        )
+        archived = bool(page.get("archived")) or status == STATUS_ARCHIVED
+        if archived and status == STATUS_ACTIVE:
+            status = STATUS_ARCHIVED
+        try:
+            confidence = float(page.get("confidence") if page.get("confidence") is not None else 1.0)
+        except (TypeError, ValueError):
+            confidence = 1.0
         vals = dict(
             title=str(page.get("title") or ""),
             slug=str(page.get("slug") or ""),
@@ -172,11 +221,16 @@ class KnowledgeStore:
             content=content,
             version=int(page.get("version") or 1),
             pinned=bool(page.get("pinned")),
-            archived=bool(page.get("archived")),
+            archived=archived,
             versions_json=dumps(page.get("versions") or []),
             created_at=str(page.get("created_at") or ""),
             updated_at=str(page.get("updated_at") or ""),
             preview=content[:160],
+            status=status,
+            valid_from=page.get("valid_from"),
+            valid_to=page.get("valid_to"),
+            confidence=confidence,
+            supersedes_id=page.get("supersedes_id"),
         )
         with db_connect() as conn:
             exists = conn.execute(
@@ -193,6 +247,9 @@ class KnowledgeStore:
         await run_db(lambda: self._write_page_sync(page))
 
     def _index_row(self, page: dict[str, Any]) -> dict[str, Any]:
+        status = normalize_status(
+            page.get("status"), archived_flag=bool(page.get("archived"))
+        )
         return {
             "id": page["id"],
             "title": page.get("title") or "",
@@ -203,8 +260,13 @@ class KnowledgeStore:
             "updated_at": page.get("updated_at") or "",
             "created_at": page.get("created_at") or "",
             "pinned": bool(page.get("pinned")),
-            "archived": bool(page.get("archived")),
+            "archived": bool(page.get("archived")) or status == STATUS_ARCHIVED,
             "preview": (page.get("content") or "")[:160],
+            "status": status,
+            "valid_from": page.get("valid_from"),
+            "valid_to": page.get("valid_to"),
+            "confidence": page.get("confidence", 1.0),
+            "supersedes_id": page.get("supersedes_id"),
         }
 
     async def list_pages(
@@ -217,7 +279,7 @@ class KnowledgeStore:
         rows = await self._load_index()
         out: list[dict[str, Any]] = []
         for r in sorted(rows, key=lambda x: x.get("updated_at") or "", reverse=True):
-            if not include_archived and r.get("archived"):
+            if not is_visible_row(r, include_archived=include_archived):
                 continue
             if collection and (r.get("collection") or "default") != collection:
                 continue
@@ -297,7 +359,7 @@ class KnowledgeStore:
         # also include collections already used by pages (unless explicitly hidden)
         used: list[str] = []
         for r in await self._load_index():
-            if r.get("archived"):
+            if not is_visible_row(r, include_archived=False):
                 continue
             c = (r.get("collection") or "default").strip() or "default"
             used.append(c)
@@ -376,7 +438,7 @@ class KnowledgeStore:
         rows = await self._load_index()
         counts: dict[str, int] = {}
         for r in rows:
-            if r.get("archived"):
+            if not is_visible_row(r, include_archived=False):
                 continue
             c = r.get("collection") or "default"
             counts[c] = counts.get(c, 0) + 1
@@ -424,27 +486,85 @@ class KnowledgeStore:
         tags: list[str] | None = None,
         collection: str = "default",
         pinned: bool = False,
+        confidence: float | None = None,
+        valid_from: str | None = None,
+        valid_to: str | None = None,
+        ttl_days: float | int | None = None,
+        ttl_hours: float | int | None = None,
+        supersedes_id: str | None = None,
+        status: str = STATUS_ACTIVE,
+        source: str = "agent",
+        via_review: bool = False,
     ) -> dict[str, Any]:
         title = (title or "").strip()
         if not title:
             raise ValueError("title required")
         now = _now().isoformat()
         page_id = uuid.uuid4().hex
+        coll = (collection or "default").strip() or "default"
+        st = normalize_status(status)
+        # Phase 2: staging-like collections default to staging + TTL
+        if st == STATUS_ACTIVE and coll.lower() in (
+            "staging",
+            "temp",
+            "draft",
+            "candidate",
+        ):
+            st = STATUS_STAGING
+        # Human gate
+        src = str(source or "agent").strip().lower()
+        if not (via_review or src == "review"):
+            try:
+                from app.memory.human_gate import gate_kb_agent_create, gate_ui_create
+
+                if src == "ui":
+                    g = gate_ui_create(status=st, collection=coll)
+                    st = normalize_status(g["status"])
+                else:
+                    g = gate_kb_agent_create(
+                        status=st,
+                        collection=coll,
+                        valid_to=valid_to,
+                        ttl_days=ttl_days,
+                    )
+                    st = normalize_status(g["status"])
+            except Exception:
+                pass
+        ttl_use = ttl_days
+        if st == STATUS_STAGING and ttl_use is None and not (
+            valid_to and str(valid_to).strip()
+        ):
+            ttl_use = STAGING_KB_DEFAULT_TTL_DAYS
+        vt = compute_valid_to(valid_to=valid_to, ttl_days=ttl_use, ttl_hours=ttl_hours)
+        sid = (str(supersedes_id).strip() if supersedes_id else None) or None
         page = {
             "id": page_id,
             "title": title,
             "slug": _slugify(title),
             "content": content or "",
             "tags": tags or [],
-            "collection": (collection or "default").strip() or "default",
+            "collection": coll,
             "pinned": bool(pinned),
             "archived": False,
             "version": 1,
             "versions": [],
             "created_at": now,
             "updated_at": now,
+            "status": st,
+            "valid_from": (str(valid_from).strip() if valid_from else None) or None,
+            "valid_to": vt,
+            "confidence": clamp_confidence(
+                confidence if confidence is not None else NEW_WRITE_CONFIDENCE
+            ),
+            "supersedes_id": sid,
         }
         await self._write_page(page)
+        if sid:
+            pred = await self._load_page(sid)
+            if pred:
+                pred["status"] = "superseded"
+                pred["updated_at"] = _now().isoformat()
+                await self._write_page(pred)
         return page
 
     async def update(
@@ -458,6 +578,15 @@ class KnowledgeStore:
         pinned: bool | None = None,
         archived: bool | None = None,
         changelog: str = "",
+        status: str | None = None,
+        confidence: float | None = None,
+        valid_from: str | None = None,
+        valid_to: str | None = None,
+        ttl_days: float | int | None = None,
+        ttl_hours: float | int | None = None,
+        supersedes_id: str | None = None,
+        via_review: bool = False,
+        source: str = "ui",
     ) -> dict[str, Any] | None:
         page = await self._load_page(page_id)
         if not page:
@@ -487,6 +616,42 @@ class KnowledgeStore:
             page["pinned"] = bool(pinned)
         if archived is not None:
             page["archived"] = bool(archived)
+            if page["archived"]:
+                page["status"] = STATUS_ARCHIVED
+            elif normalize_status(page.get("status")) == STATUS_ARCHIVED:
+                page["status"] = STATUS_ACTIVE
+        if status is not None:
+            from app.memory.human_gate import ACTOR_REVIEW, ACTOR_UI, gate_status_change
+
+            actor = ACTOR_REVIEW if via_review else ACTOR_UI
+            if str(source or "").lower() == "agent":
+                actor = "agent"
+            chk = gate_status_change(
+                old_status=page.get("status"),
+                new_status=status,
+                actor=actor,
+            )
+            if chk.get("blocked"):
+                raise ValueError(chk.get("message") or chk.get("error") or "blocked")
+            page["status"] = normalize_status(
+                chk.get("status") or status, archived_flag=bool(page.get("archived"))
+            )
+            if page["status"] == STATUS_ARCHIVED:
+                page["archived"] = True
+            elif page["status"] == STATUS_ACTIVE:
+                page["archived"] = False
+        if confidence is not None:
+            page["confidence"] = clamp_confidence(confidence)
+        if valid_from is not None:
+            page["valid_from"] = str(valid_from).strip() or None
+        if ttl_days is not None or ttl_hours is not None:
+            page["valid_to"] = compute_valid_to(
+                valid_to=valid_to, ttl_days=ttl_days, ttl_hours=ttl_hours
+            )
+        elif valid_to is not None:
+            page["valid_to"] = str(valid_to).strip() or None
+        if supersedes_id is not None:
+            page["supersedes_id"] = str(supersedes_id).strip() or None
         page["version"] = int(page.get("version") or 1) + 1
         page["updated_at"] = _now().isoformat()
         await self._write_page(page)
@@ -499,6 +664,7 @@ class KnowledgeStore:
         *,
         heading: str = "",
         changelog: str = "",
+        source: str = "agent",
     ) -> dict[str, Any] | None:
         page = await self._load_page(page_id)
         if not page:
@@ -514,6 +680,7 @@ class KnowledgeStore:
             page_id,
             content=(page.get("content") or "") + block,
             changelog=changelog or "append",
+            source=source,
         )
 
     async def delete(self, page_id: str) -> bool:
@@ -602,6 +769,10 @@ class KnowledgeStore:
             score -= 0.5
         if page.get("pinned"):
             score += 1.0
+        try:
+            score += max(0.0, float(page.get("confidence") or 0.0) - 0.5) * 0.4
+        except (TypeError, ValueError):
+            pass
         # recency mild
         try:
             updated = datetime.fromisoformat(page.get("updated_at", ""))
@@ -619,6 +790,7 @@ class KnowledgeStore:
         limit: int = 5,
         prefer_collections: list[str] | None = None,
         intent_text: str = "",
+        include_archived: bool = False,
     ) -> list[dict[str, Any]]:
         q = (query or "").strip()
         if not q:
@@ -631,7 +803,7 @@ class KnowledgeStore:
         q_tokens = _tokenize(q)
         scored: list[tuple[float, dict[str, Any]]] = []
         for row in await self._load_index():
-            if row.get("archived"):
+            if not is_visible_row(row, include_archived=include_archived):
                 continue
             if collection and (row.get("collection") or "default") != collection:
                 continue
@@ -678,7 +850,7 @@ class KnowledgeStore:
                 r
                 for r in await self._load_index()
                 if r.get("pinned")
-                and not r.get("archived")
+                and is_visible_row(r, include_archived=False)
                 and (r.get("collection") or "").strip() not in _SKILL_OWNED_COLLECTIONS
             ][:2]
             for r in pinned:

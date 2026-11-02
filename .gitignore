@@ -57,3 +57,8 @@ node_modules/
 # Tests live with the publisher (OPC/发布EVA), not in the Eva tree
 tests/
 
+
+# Local agent / scratch (not shipped)
+scratch/
+_agent_sync/
+

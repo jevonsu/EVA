@@ -112,6 +112,9 @@ window.Lily = (() => {
  function showToast(message, type = "info", duration = 3000, action) {
  const container = document.getElementById("toastContainer");
  if (!container) return;
+ // 兼容历史调用：ok → success（否则没有 .toast.ok 样式）
+ if (type === "ok") type = "success";
+ if (type === "err") type = "error";
  const toast = document.createElement("div");
  toast.className = `toast ${type}`;
  const span = document.createElement("span");
@@ -180,6 +183,8 @@ window.Lily = (() => {
  if (!template) return;
  for (let i = 0; i < count; i++) {
  const clone = template.content.cloneNode(true);
+ const card = clone.querySelector(".card.skeleton") || clone.querySelector(".card");
+ if (card) card.classList.add("skeleton-shimmer");
  container.appendChild(clone);
  }
  }
@@ -195,6 +200,11 @@ window.Lily = (() => {
  function stripThinking(text) {
  if (text == null) return "";
  let t = String(text);
+ // DeepSeek DSML tool-call markup (never show raw tags)
+ const dsml = "[|｜]{1,2}\\s*DSML\\s*[|｜]{1,2}";
+ t = t.replace(new RegExp("<" + dsml + "\\s*(?:tool_calls|toolcalls|tool_call|tools|calls|tool)\\s*>[\\s\\S]*?<\\/" + dsml + "\\s*(?:tool_calls|toolcalls|tool_call|tools|calls|tool)\\s*>", "gi"), "");
+ t = t.replace(new RegExp("<" + dsml + "\\s*invoke\\b[\\s\\S]*?<\\/" + dsml + "\\s*invoke\\s*>", "gi"), "");
+ t = t.replace(new RegExp("<\\/?" + dsml + "[^>]*>", "gi"), "");
  // 标签式思考块
  t = t.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "");
  t = t.replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking>/gi, "");
@@ -501,6 +511,8 @@ window.Lily = (() => {
  function setMsg(id, text, type = "", iconName = "") {
  const el = document.getElementById(id);
  if (!el) return;
+ // 统一别名：err→error，保证图标与 .form-msg.error 颜色生效
+ if (type === "err") type = "error";
  const map = { ok: "check-one", error: "close-one", warn: "attention", "": "" };
  const icon = iconName || map[type] || "";
  if (icon) {
@@ -556,7 +568,7 @@ window.Lily = (() => {
  }
  }
  if (!document.getElementById('configModal')) {
- fetch('/static/html/config-modal.html')
+ fetch('/static/html/config-modal.html?v=ux9')
  .then(function(r) { return r.text(); })
  .then(function(html) {
  var c = document.getElementById('configModalContainer');

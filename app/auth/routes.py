@@ -1,18 +1,14 @@
-"""Eva login-only API — card verification via remote control plane."""
+"""Eva login API — local username/password (CardServer optional/deprecated)."""
 
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from app.auth.local_session import (
-    clear_local_session,
-    load_local_session,
-    save_local_session,
-)
 from app.auth.hub_grant import (
     consume_pairing,
     consume_unused_pairing,
@@ -22,35 +18,35 @@ from app.auth.hub_grant import (
     refresh_pairing,
     revoke_pairing,
 )
-
-from app.auth.instance import install_fingerprint
-from app.auth.offline import (
-    check_offline_grant,
-    revoke_all_offline_grants,
-    revoke_offline_grant,
-    save_offline_grant,
-    touch_offline_grant,
+from app.auth.local_session import (
+    clear_local_session,
+    load_local_session,
+    save_local_session,
 )
 from app.auth.login_prefs import load_login_prefs, public_login_prefs, save_login_prefs
-from app.auth.remote import (
-    control_configured,
-    is_allowed_control_url,
-    normalize_control_url,
-    parse_control_presets,
-    pick_reachable_control_url,
-    probe_all_control_urls,
-    remote_login,
-    remote_session_check,
-    resolve_control_base,
-)
 from app.auth.security import client_ip, login_limiter
+from app.auth.users import (
+    change_password,
+    create_user,
+    effective_display_name,
+    ensure_seed_admin_from_env,
+    get_user_by_id,
+    issue_session_token,
+    list_users,
+    needs_setup,
+    public_user,
+    set_display_name,
+    validate_password,
+    validate_username,
+    verify_login,
+)
 from app.config import get_settings
 
 logger = logging.getLogger("app.auth")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# Legacy cookie names. Sessions are file-based now; these are only expired.
+_COOKIE_NAME = "eva_sess"
 _LEGACY_AUTH_COOKIES = (
     "eva_sess",
     "eva_csrf",
@@ -69,8 +65,26 @@ def _ip(request: Request) -> str:
     return client_ip({k.lower(): v for k, v in request.headers.items()}, client)
 
 
+def _session_max_age(settings) -> int:
+    days = int(getattr(settings, "auth_session_days", 7) or 7)
+    return max(3600, days * 86400)
+
+
+def _set_session_cookie(response: Response, settings, token: str, max_age: int) -> None:
+    secure = bool(getattr(settings, "auth_cookie_secure", False))
+    response.set_cookie(
+        key=_COOKIE_NAME,
+        value=token,
+        max_age=max_age,
+        expires=max_age,
+        path="/",
+        httponly=True,
+        secure=secure,
+        samesite="strict",
+    )
+
+
 def _clear_auth_cookies(response: Response, settings) -> None:
-    """Expire leftover host-wide cookies from older Eva builds."""
     secure = bool(getattr(settings, "auth_cookie_secure", False))
     secure_flag = "; Secure" if secure else ""
 
@@ -85,7 +99,6 @@ def _clear_auth_cookies(response: Response, settings) -> None:
         response.delete_cookie(name, path="/", secure=secure, samesite="lax")
         response.delete_cookie(name, path="/")
         http_only = "; HttpOnly" if httponly else ""
-        # Explicit expire (some WebView2 builds only honor Max-Age=0)
         for samesite in ("Strict", "Lax"):
             response.headers.append(
                 "Set-Cookie",
@@ -96,99 +109,83 @@ def _clear_auth_cookies(response: Response, settings) -> None:
         _expire(name, httponly=name != "eva_csrf")
 
 
-async def resolve_auth(
-    request: Request,
-) -> dict[str, Any] | None:
-    """Hub Bearer or this instance's encrypted session file (never shared cookies)."""
+def _card_remote_enabled() -> bool:
+    return bool(getattr(get_settings(), "auth_card_remote", False))
+
+
+async def resolve_auth(request: Request) -> dict[str, Any] | None:
+    """Validate local password session (cookie / Bearer / encrypted file)."""
     authz = (request.headers.get("authorization") or "").strip()
     token = ""
     device_id = (request.headers.get("x-eva-device") or "").strip()
-    control_url = (request.headers.get("x-eva-control") or "").strip()
-    control_key = ""
     from_file = False
+    local = load_local_session()
 
     if authz.lower().startswith("bearer "):
         token = authz[7:].strip()
     else:
-        local = load_local_session()
-        if not local:
+        cookie_tok = (request.cookies.get(_COOKIE_NAME) or "").strip()
+        if local and local.get("session_token"):
+            token = local["session_token"]
+            device_id = device_id or local.get("device_id") or ""
+            from_file = True
+            # Prefer file; if cookie mismatches, ignore cookie
+            if cookie_tok and cookie_tok != token:
+                pass
+        elif cookie_tok:
+            token = cookie_tok
+
+    if not token:
+        return None
+
+    # File session is authoritative for this install
+    if local and hmac_equal(local.get("session_token") or "", token):
+        user_id = str(local.get("user_id") or "")
+        user = get_user_by_id(user_id) if user_id else None
+        if not user or user.get("disabled"):
+            if from_file:
+                clear_local_session()
+                try:
+                    revoke_pairing()
+                except Exception:
+                    pass
             return None
-        token = local["session_token"]
-        device_id = device_id or local["device_id"]
-        control_key = local["control_key"]
-        from_file = True
+        return {
+            "authenticated": True,
+            "mode": "local",
+            "user_id": user_id,
+            "username": str(user.get("username") or local.get("username") or ""),
+            "display_name": effective_display_name(user),
+            "role": str(local.get("role") or user.get("role") or "user"),
+            "expires_at": local.get("expires_at"),
+            "device_id": device_id or local.get("device_id") or "",
+            "_session_token": token,
+            "_device_id": device_id or local.get("device_id") or "",
+        }
 
+    # Bearer-only (Hub) — accept if matches live pairing material
     try:
-        prefs = load_login_prefs()
+        from app.auth.hub_grant import session_from_bearer
+
+        hub_info = session_from_bearer(token)
+        if hub_info:
+            return hub_info
     except Exception:
-        prefs = {}
-    if not control_url:
-        control_url = str(prefs.get("control_url") or "")
-    if not control_key:
-        control_key = (getattr(get_settings(), "auth_control_key", None) or "").strip()
-    if not token or len((device_id or "").strip()) < 8:
-        return None
-
-    info = await remote_session_check(
-        token,
-        device_id=device_id,
-        control_url=control_url or None,
-        control_key=control_key or None,
-    )
-    if info and (info.get("_rejected") or info.get("_auth_config_error")):
-        revoke_offline_grant(token)
-        # Only Eva's own session may wipe pairing. A stale Hub Bearer after
-        # CardServer restart must not delete the code the operator just minted.
-        if from_file:
-            revoke_all_offline_grants()
-            revoke_pairing()
-            clear_local_session()
-        from app.auth.remote import invalidate_local_cache
-
-        invalidate_local_cache(token)
-        return None
-    if info and info.get("_network_error"):
-        offline = check_offline_grant(token, device_id=device_id)
-        return _attach_session_material(offline, token, device_id, control_url)
-    if info and info.get("authenticated"):
-        try:
-            touch_offline_grant(token)
-        except Exception:
-            pass
-        effective = str(info.get("_control_url") or control_url or "").strip()
-        if effective:
-            info["_effective_control_url"] = effective
-        return _attach_session_material(info, token, device_id, control_url)
-    if not control_configured(control_url or None):
-        offline = check_offline_grant(token, device_id=device_id)
-        return _attach_session_material(offline, token, device_id, control_url)
+        pass
     return None
 
 
-def _attach_session_material(
-    info: dict[str, Any] | None,
-    token: str,
-    device_id: str,
-    control_url: str,
-) -> dict[str, Any] | None:
-    if not info:
-        return None
-    info["_session_token"] = token
-    info["_device_id"] = (device_id or "").strip() or str(info.get("device_id") or "")
-    if not info.get("_effective_control_url"):
-        ctrl = str(info.get("_control_url") or control_url or "").strip()
-        if ctrl:
-            info["_effective_control_url"] = ctrl
-    return info
+def hmac_equal(a: str, b: str) -> bool:
+    import hmac as _hmac
+
+    return _hmac.compare_digest((a or "").encode("utf-8"), (b or "").encode("utf-8"))
 
 
 def _pairing_from_auth(info: dict[str, Any], *, rotate: bool) -> dict[str, Any]:
     kwargs = dict(
         session_token=str(info.get("_session_token") or ""),
         device_id=str(info.get("_device_id") or info.get("device_id") or ""),
-        control_url=str(
-            info.get("_effective_control_url") or info.get("_control_url") or ""
-        ),
+        control_url="",
         expires_at=float(info.get("expires_at") or 0),
     )
     if rotate:
@@ -196,54 +193,62 @@ def _pairing_from_auth(info: dict[str, Any], *, rotate: bool) -> dict[str, Any]:
     return ensure_pairing(**kwargs, rotate=False)
 
 
-class CardLoginBody(BaseModel):
-    card_code: str = Field("", max_length=64)
+class PasswordLoginBody(BaseModel):
+    username: str = Field("", max_length=64)
+    password: str = Field("", max_length=200)
     website: str = ""
-    device_id: str = Field(..., min_length=8, max_length=128)
+    device_id: str = Field("", max_length=128)
     device_label: str = Field("", max_length=120)
-    # 用户填写的鉴权网关（可与 .env 默认合并；空则自动选可达预设）
+    # Deprecated card fields (ignored unless AUTH_CARD_REMOTE)
+    card_code: str = Field("", max_length=64)
     control_url: str = Field("", max_length=300)
-    # 控制密钥（网关要求时由用户在登录页填写；也可 .env AUTH_CONTROL_KEY 默认）
     control_key: str = Field("", max_length=200)
-    # 首选网关连不上时是否自动尝试其它预设（默认开）
     auto_failover: bool = True
+
+
+class SetupBody(BaseModel):
+    username: str = Field(..., min_length=3, max_length=64)
+    password: str = Field(..., min_length=8, max_length=200)
+    website: str = ""
+    device_id: str = Field("", max_length=128)
+    device_label: str = Field("", max_length=120)
+
+
+class ChangePasswordBody(BaseModel):
+    old_password: str = Field(..., max_length=200)
+    new_password: str = Field(..., min_length=8, max_length=200)
 
 
 @router.get("/bootstrap")
 async def auth_bootstrap(probe: bool = False) -> dict:
-    """登录页引导。
-
-    不向客户端强推 .env 默认网关。若用户曾在本节点登录成功，
-    通过 login_prefs 在 web / Windows 窗口间共享回填字段与 device_id。
-    """
     settings = get_settings()
-    default_url = normalize_control_url(
-        getattr(settings, "auth_control_url", None) or ""
-    )
-    presets = parse_control_presets()
+    ensure_seed_admin_from_env()
+    setup = needs_setup()
     prefs = load_login_prefs()
     return {
         "ok": True,
-        "default_control_url": default_url,
-        "suggested_control_url": default_url,
-        "presets": presets,
-        "probes": [],
-        "env_has_default": bool(default_url or presets),
-        "env_control_key_set": bool(
-            (getattr(settings, "auth_control_key", None) or "").strip()
-        ),
+        "auth_mode": "password",
+        "needs_setup": setup,
         "auth_enabled": bool(getattr(settings, "auth_enabled", True)),
+        "card_remote_enabled": _card_remote_enabled(),
         "login_prefs": public_login_prefs(prefs),
         "hint": (
-            "客户只需填写卡密。"
-            "发卡网关与控制密钥由发卡方写入本机 .env（AUTH_CONTROL_URL / AUTH_CONTROL_KEY），不要让客户填写。"
+            "首次使用：创建管理员账号与密码。"
+            if setup
+            else "使用本机账号与密码登录。"
         ),
+        # Deprecated fields kept empty for old UI
+        "default_control_url": "",
+        "suggested_control_url": "",
+        "presets": [],
+        "probes": [],
+        "env_has_default": False,
+        "env_control_key_set": False,
     }
 
 
 @router.get("/login-prefs")
 async def get_login_prefs() -> dict:
-    """Node-local form prefs for the login page (secrets masked)."""
     return {"ok": True, **public_login_prefs()}
 
 
@@ -256,12 +261,11 @@ class LoginPrefsBody(BaseModel):
 
 @router.put("/login-prefs")
 async def put_login_prefs(body: LoginPrefsBody, request: Request) -> dict:
-    """Save shared prefs after successful login (requires a session)."""
     info = await resolve_auth(request)
     if not info and getattr(get_settings(), "auth_enabled", True):
         raise HTTPException(401, "未登录")
     prefs = save_login_prefs(
-        control_url=body.control_url,
+        control_url="",
         device_id=body.device_id or None,
         has_saved=True,
     )
@@ -270,60 +274,115 @@ async def put_login_prefs(body: LoginPrefsBody, request: Request) -> dict:
 
 @router.get("/probe")
 async def auth_probe(url: str = "", control_key: str = "") -> dict:
-    """Probe one or all configured control gateways (login page refresh)."""
-    extra = [url] if (url or "").strip() else None
-    key = (control_key or "").strip() or None
-    probes = await probe_all_control_urls(extra, timeout=2.0, control_key=key)
-    suggested = ""
-    for p in probes:
-        if p.get("ok") and p.get("url"):
-            suggested = str(p["url"])
-            break
-    needs_key = any(p.get("needs_control_key") for p in probes)
+    """Deprecated: CardServer probe disabled by default."""
     return {
         "ok": True,
-        "probes": probes,
-        "suggested_control_url": suggested,
-        "any_reachable": any(p.get("ok") for p in probes),
-        "needs_control_key": needs_key,
-        "hint": (
-            "网关可达但可能需要控制密钥，请在登录页填写（管理员提供）"
-            if needs_key
-            else ""
-        ),
+        "probes": [],
+        "suggested_control_url": "",
+        "any_reachable": False,
+        "needs_control_key": False,
+        "hint": "本机已改为账号密码登录，网关探测已停用。",
+        "deprecated": True,
     }
 
 
+def _finish_login(
+    *,
+    response: Response,
+    settings,
+    user: dict[str, Any],
+    device_id: str,
+) -> dict[str, Any]:
+    token = issue_session_token()
+    max_age = _session_max_age(settings)
+    expires_at = time.time() + max_age
+    save_local_session(
+        session_token=token,
+        device_id=device_id,
+        expires_at=expires_at,
+        user_id=str(user.get("id") or ""),
+        username=str(user.get("username") or ""),
+        role=str(user.get("role") or "user"),
+        auth_mode="password",
+    )
+    pairing: dict[str, Any] = {}
+    try:
+        pairing = issue_pairing(
+            session_token=token,
+            device_id=device_id,
+            control_url="",
+            expires_at=expires_at,
+        )
+    except Exception:
+        logger.exception("issue pairing after login failed")
+        pairing = {}
+    try:
+        save_login_prefs(device_id=device_id or None, has_saved=True, control_url="")
+    except Exception:
+        pass
+    _clear_auth_cookies(response, settings)
+    _set_session_cookie(response, settings, token, max_age)
+    return {
+        "ok": True,
+        "redirect": "/",
+        "auth_mode": "password",
+        "username": user.get("username"),
+        "role": user.get("role") or "user",
+        "expires_at": expires_at,
+        "device_bound": bool(device_id),
+        "pairing_code": pairing.get("pairing_code") or "",
+        "pairing_expires_at": pairing.get("expires_at"),
+        "message": "",
+    }
+
+
+@router.post("/setup")
+async def auth_setup(body: SetupBody, request: Request, response: Response) -> dict:
+    """Create the first admin when no users exist."""
+    settings = get_settings()
+    if not getattr(settings, "auth_enabled", True):
+        raise HTTPException(400, "Auth is disabled")
+    ensure_seed_admin_from_env()
+    if not needs_setup():
+        raise HTTPException(400, "已完成初始化，请直接登录")
+    if body.website:
+        raise HTTPException(400, "用户名或密码错误")
+    ip = _ip(request)
+    lim = login_limiter().check(f"setup:{ip}", limit=5, window_sec=300)
+    if not lim.allowed:
+        raise HTTPException(
+            429,
+            detail=f"尝试过于频繁，请 {int(lim.retry_after_sec) + 1} 秒后重试",
+            headers={"Retry-After": str(int(lim.retry_after_sec) + 1)},
+        )
+    try:
+        validate_username(body.username)
+        validate_password(body.password)
+        user = create_user(username=body.username, password=body.password, role="admin")
+    except ValueError as exc:
+        login_limiter().register_failure(f"setup:{ip}")
+        raise HTTPException(400, str(exc)) from exc
+    login_limiter().clear_failures(f"setup:{ip}")
+    device_id = (body.device_id or "").strip()
+    return _finish_login(response=response, settings=settings, user=user, device_id=device_id)
+
+
 @router.post("/login")
-async def card_login(body: CardLoginBody, request: Request, response: Response) -> dict:
+async def password_login(
+    body: PasswordLoginBody, request: Request, response: Response
+) -> dict:
     settings = get_settings()
     if not getattr(settings, "auth_enabled", True):
         raise HTTPException(400, "Auth is disabled")
 
-    typed_url = normalize_control_url(body.control_url)
-    control_url = typed_url or resolve_control_base(None)
-    if not control_url:
-        # Auto-pick first reachable preset when user left URL empty
-        control_url = await pick_reachable_control_url(None)
-    if not control_url:
-        raise HTTPException(
-            400,
-            "发卡服务未配置。请发卡方在本机 .env 填写 AUTH_CONTROL_URL"
-            "（你的 CardServer 地址）后再发给客户。",
-        )
-    # Operator-typed URL is always accepted (CardServer may have moved to a server).
-    # Allowlist only blocks silent failover onto an unknown preset.
-    if not typed_url and not is_allowed_control_url(control_url):
-        raise HTTPException(
-            400,
-            "该网关不在本机允许列表中。请使用 .env 的 AUTH_CONTROL_URL / AUTH_CONTROL_URLS，"
-            "或上次成功登录过的发卡台地址。",
-        )
+    ensure_seed_admin_from_env()
+    if needs_setup():
+        raise HTTPException(400, "请先创建管理员账号（/api/auth/setup）")
+
+    if body.website:
+        raise HTTPException(400, "用户名或密码错误")
 
     ip = _ip(request)
-    if body.website:
-        raise HTTPException(400, "卡密无效或已失效")
-
     lim = login_limiter().check(f"login:{ip}", limit=8, window_sec=60)
     if not lim.allowed:
         raise HTTPException(
@@ -332,147 +391,129 @@ async def card_login(body: CardLoginBody, request: Request, response: Response) 
             headers={"Retry-After": str(int(lim.retry_after_sec) + 1)},
         )
 
-    node_base = (getattr(settings, "auth_node_id", None) or "eva").strip() or "eva"
-    node_id = f"{node_base}:{int(getattr(settings, 'port', 0) or 0)}"
-    device_id = (body.device_id or "").strip()
-    if len(device_id) < 8:
-        raise HTTPException(400, "缺少设备标识，请刷新页面后重试")
-
-    card_code = (body.card_code or "").strip()
-    if len(card_code) < 8:
-        raise HTTPException(400, "请输入有效卡密")
-
-    # Form key (if typed) → .env. Never read leftover cookies / saved keys.
-    form_key = (body.control_key or "").strip()
-    env_key = (getattr(settings, "auth_control_key", None) or "").strip()
-    control_key = form_key or env_key
-
-    payload, err = await remote_login(
-        card_code=card_code,
-        client_ip=ip,
-        user_agent=_ua(request),
-        node_id=node_id,
-        device_id=device_id,
-        device_label=body.device_label or "",
-        control_url=control_url,
-        control_key=control_key or None,
-        try_fallbacks=bool(body.auto_failover),
-    )
-    # Typed key rejected: retry the same gateway with .env key
-    if (
-        not payload
-        and err
-        and "403" in err
-        and form_key
-        and env_key
-        and form_key != env_key
-    ):
-        payload, err = await remote_login(
-            card_code=card_code,
-            client_ip=ip,
-            user_agent=_ua(request),
-            node_id=node_id,
-            device_id=device_id,
-            device_label=body.device_label or "",
-            control_url=control_url,
-            control_key=env_key,
-            try_fallbacks=False,
-        )
-        if payload:
-            control_key = env_key
-    if not payload:
-        login_limiter().register_failure(f"login:{ip}")
-        status = 403 if err and "403" in err else 401
-        if status == 403:
-            err = (
-                "无法通过发卡服务验证（控制密钥与发卡台不一致，或反代丢掉了请求头）。"
-                "请发卡方核对 Eva .env 的 AUTH_CONTROL_URL / AUTH_CONTROL_KEY"
-                "是否与服务器 CardServer 完全相同。客户只需使用卡密，不要填写控制密钥。"
+    username = (body.username or "").strip()
+    password = body.password or ""
+    # Compatibility: if only card_code filled and remote disabled, reject clearly
+    if not username and (body.card_code or "").strip():
+        if _card_remote_enabled():
+            raise HTTPException(
+                400,
+                "卡密登录已弃用。请设置 AUTH_CARD_REMOTE 并使用独立发卡流程，或改用账号密码。",
             )
-        raise HTTPException(status, detail=err or "登录失败")
+        raise HTTPException(400, "请使用账号密码登录（卡密已停用）")
+
+    row = verify_login(username, password)
+    if not row:
+        login_limiter().register_failure(f"login:{ip}")
+        raise HTTPException(401, "用户名或密码错误")
 
     login_limiter().clear_failures(f"login:{ip}")
-    token = payload["session_token"]
-    # Prefer the base that actually accepted login (after failover)
-    used_control = normalize_control_url(
-        str(payload.get("control_url") or control_url)
-    ) or control_url
-    max_age = max(3600, int(payload.get("expires_at", 0) - __import__("time").time()))
-    if max_age > 30 * 86400:
-        max_age = int(getattr(settings, "auth_session_days", 7) * 86400)
+    device_id = (body.device_id or "").strip()
+    return _finish_login(
+        response=response,
+        settings=settings,
+        user=row,
+        device_id=device_id,
+    )
 
-    # Persist shared prefs so web + Windows window see the same card
+
+@router.post("/logout")
+async def auth_logout(request: Request, response: Response) -> dict:
+    settings = get_settings()
     try:
-        save_login_prefs(
-            control_url=used_control,
-            card_code="",
-            control_key="",
-            device_id=device_id,
-            has_saved=True,
-        )
+        revoke_pairing()
     except Exception:
         pass
-
-    pairing: dict[str, Any] = {}
-    try:
-        pairing = issue_pairing(
-            session_token=token,
-            device_id=device_id,
-            control_url=used_control,
-            expires_at=float(payload.get("expires_at") or 0),
-        )
-    except Exception:
-        logger.exception("issue pairing after login failed")
-        pairing = {}
-
-    allow_offline = bool(payload.get("allow_offline"))
-    if allow_offline:
-        save_offline_grant(
-            session_token=token,
-            device_id=device_id,
-            expires_at=float(payload.get("expires_at") or 0),
-            card_expires_at=(
-                float(payload["card_expires_at"])
-                if payload.get("card_expires_at") is not None
-                else None
-            ),
-            card_id=payload.get("card_id"),
-            card_hint=str(payload.get("card_hint") or ""),
-            allow_offline=True,
-            control_url=used_control,
-            plan_name=str(payload.get("plan_name") or ""),
-            instance_id=str(payload.get("instance_id") or ""),
-            instance_fp=install_fingerprint(),
-        )
-
-    used_key = control_key or (getattr(settings, "auth_control_key", None) or "").strip()
-    save_local_session(
-        session_token=token,
-        device_id=device_id,
-        control_key=used_key,
-        expires_at=float(payload.get("expires_at") or 0),
-    )
-    # Drop any leftover host-wide cookies so :8080 / :8081 cannot share a login
+    clear_local_session()
     _clear_auth_cookies(response, settings)
-    fail_overed = used_control.rstrip("/") != control_url.rstrip("/")
+    return {"ok": True}
+
+
+@router.post("/change-password")
+async def auth_change_password(
+    body: ChangePasswordBody, request: Request, response: Response
+) -> dict:
+    settings = get_settings()
+    info = await resolve_auth(request)
+    if not info:
+        raise HTTPException(401, "未登录")
+    try:
+        change_password(
+            str(info.get("user_id") or ""),
+            old_password=body.old_password,
+            new_password=body.new_password,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    # Password change invalidates this install's session — force re-login
+    try:
+        revoke_pairing()
+    except Exception:
+        pass
+    clear_local_session()
+    _clear_auth_cookies(response, settings)
     return {
         "ok": True,
-        "redirect": "/",
-        "card_hint": payload.get("card_hint"),
-        "expires_at": payload.get("expires_at"),
-        "card_expires_at": payload.get("card_expires_at"),
-        "plan_name": payload.get("plan_name") or "",
-        "device_hint": payload.get("device_hint"),
-        "device_bound": True,
-        "allow_offline": allow_offline,
-        "control_url": used_control,
-        "failover": fail_overed,
-        "pairing_code": pairing.get("pairing_code") or "",
-        "pairing_expires_at": pairing.get("expires_at"),
-        "message": (
-            f"已自动切换到可达网关 {used_control}" if fail_overed else ""
-        ),
+        "need_relogin": True,
+        "message": "密码已更新，请重新登录",
     }
+
+
+class DisplayNameBody(BaseModel):
+    display_name: str = Field(..., min_length=1, max_length=64)
+
+
+@router.patch("/profile")
+async def auth_update_profile(body: DisplayNameBody, request: Request) -> dict:
+    """Update EVA's addressable name for the signed-in user (not login password)."""
+    info = await resolve_auth(request)
+    if not info:
+        raise HTTPException(401, "未登录")
+    try:
+        row = set_display_name(str(info.get("user_id") or ""), body.display_name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "ok": True,
+        "username": row.get("username"),
+        "display_name": row.get("display_name"),
+        "message": "称呼已更新",
+    }
+
+
+class CreateUserBody(BaseModel):
+    username: str = Field(..., min_length=3, max_length=64)
+    password: str = Field(..., min_length=8, max_length=200)
+    role: str = Field("user", max_length=16)
+
+
+@router.get("/users")
+async def auth_list_users(request: Request) -> dict:
+    info = await resolve_auth(request)
+    if not info:
+        raise HTTPException(401, "未登录")
+    if str(info.get("role") or "") != "admin":
+        raise HTTPException(403, "需要管理员")
+    return {"ok": True, "users": list_users()}
+
+
+@router.post("/users")
+async def auth_create_user(body: CreateUserBody, request: Request) -> dict:
+    info = await resolve_auth(request)
+    if not info:
+        raise HTTPException(401, "未登录")
+    if str(info.get("role") or "") != "admin":
+        raise HTTPException(403, "需要管理员")
+    role = (body.role or "user").strip().lower()
+    if role not in ("admin", "user"):
+        role = "user"
+    try:
+        validate_username(body.username)
+        validate_password(body.password)
+        row = create_user(username=body.username, password=body.password, role=role)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "user": row}
 
 
 @router.get("/me")
@@ -485,25 +526,23 @@ async def auth_me(request: Request) -> dict:
         return {
             "authenticated": False,
             "auth_enabled": True,
-            "mode": "control",
-            "control_configured": control_configured(
-                (load_login_prefs() or {}).get("control_url")
-            ),
+            "mode": "local",
+            "needs_setup": needs_setup(),
         }
-    effective = str(info.get("_effective_control_url") or info.get("_control_url") or "").strip()
+    display_name = str(info.get("display_name") or "").strip()
+    if not display_name:
+        uid = str(info.get("user_id") or "")
+        row = get_user_by_id(uid) if uid else None
+        display_name = effective_display_name(row) if row else str(info.get("username") or "")
     return {
         "authenticated": True,
         "auth_enabled": True,
-        "mode": "control",
-        "card_hint": info.get("card_hint"),
+        "mode": "local",
+        "username": info.get("username"),
+        "display_name": display_name or info.get("username"),
+        "role": info.get("role"),
+        "user_id": info.get("user_id"),
         "expires_at": info.get("expires_at"),
-        "card_expires_at": info.get("card_expires_at"),
-        "plan_name": info.get("plan_name") or "",
-        "device_bound": True,
-        "allow_offline": bool(info.get("allow_offline")),
-        "offline": bool(info.get("offline")),
-        "control_url": effective
-        or str((load_login_prefs() or {}).get("control_url") or ""),
         "pairing": current_pairing(),
     }
 
@@ -527,16 +566,12 @@ def _is_same_machine(request: Request) -> bool:
 
 @router.post("/hub/adopt")
 async def hub_adopt(request: Request) -> dict:
-    """Same-machine Hub picks up an already-logged-in Eva (no pairing code)."""
     ip = _ip(request)
     lim = login_limiter().check(f"hub-adopt:{ip}", limit=8, window_sec=60)
     if not lim.allowed:
         raise HTTPException(429, "尝试过于频繁")
     if not _is_same_machine(request):
-        raise HTTPException(
-            403,
-            "跨机对接请使用 Eva 连接码（设定 → 办公室）",
-        )
+        raise HTTPException(403, "跨机对接请使用 Eva 连接码（设定 → 办公室）")
     try:
         got = consume_unused_pairing()
     except ValueError as exc:
@@ -546,7 +581,6 @@ async def hub_adopt(request: Request) -> dict:
 
 @router.post("/hub/pair")
 async def hub_pair(body: HubPairBody, request: Request) -> dict:
-    """Hub exchanges a one-time pairing code for the live Eva session (Bearer)."""
     ip = _ip(request)
     lim = login_limiter().check(f"hub-pair:{ip}", limit=10, window_sec=60)
     if not lim.allowed:

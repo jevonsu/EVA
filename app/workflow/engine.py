@@ -424,6 +424,7 @@ class WorkflowEngine:
                 use_tools=bool(use_tools),
                 use_memory=bool(use_memory),
                 allow_deputy=True,
+                route_origin="chat.workflow",
             )
         finally:
             _workflow_agent_depth.reset(token)

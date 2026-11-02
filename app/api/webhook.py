@@ -18,11 +18,14 @@ Inbound:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -75,14 +78,83 @@ def _env_fallback_token() -> str:
     return (os.environ.get("WEBHOOK_TOKEN") or "").strip()
 
 
+def _token_eq(got: str, expected: str) -> bool:
+    """Constant-time compare via SHA-256 digests (handles unequal lengths)."""
+    g = hashlib.sha256((got or "").encode("utf-8")).digest()
+    e = hashlib.sha256((expected or "").encode("utf-8")).digest()
+    return hmac.compare_digest(g, e)
+
+
+def _client_ip(request: Request | None = None) -> str:
+    try:
+        from app.auth.security import client_ip
+
+        if request is None:
+            return "0.0.0.0"
+        scope_client = None
+        if request.client:
+            scope_client = request.client.host
+        return client_ip(dict(request.headers), scope_client)
+    except Exception:
+        try:
+            return (request.client.host if request and request.client else "0.0.0.0")[:64]
+        except Exception:
+            return "0.0.0.0"
+
+
+def _webhook_auth_gate(request: Request | None = None) -> None:
+    """Rate-limit + progressive lockout for webhook token failures."""
+    from app.auth.security import api_limiter
+
+    ip = _client_ip(request)
+    key = f"webhook-auth:{ip}"
+    lim = api_limiter().check(key, limit=30, window_sec=60.0)
+    if not lim.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many webhook auth attempts",
+            headers={"Retry-After": str(int(lim.retry_after_sec) + 1)},
+        )
+
+
+def _webhook_auth_fail(request: Request | None = None) -> None:
+    from app.auth.security import api_limiter
+
+    ip = _client_ip(request)
+    key = f"webhook-auth:{ip}"
+    lock = api_limiter().register_failure(key, base_lock_sec=1.0)
+    # Uniform small delay so failures do not instantly reveal timing
+    time.sleep(min(0.25 + min(lock, 2.0) * 0.05, 0.6))
+
+
+def _webhook_auth_ok(request: Request | None = None) -> None:
+    from app.auth.security import api_limiter
+
+    api_limiter().clear_failures(f"webhook-auth:{_client_ip(request)}")
+
+
+def _clamp_endpoint_tools(ep: dict[str, Any]) -> dict[str, Any]:
+    """F01: unless WEBHOOK_ALLOW_TOOLS, force use_tools off."""
+    from app.tools.protection import webhook_allow_tools
+
+    out = dict(ep)
+    if not webhook_allow_tools():
+        out["use_tools"] = False
+    else:
+        out["use_tools"] = bool(out.get("use_tools", False))
+    return out
+
+
 def _resolve_endpoint(
     *,
     slug: str | None,
     authorization: str | None,
     x_webhook_token: str | None,
     x_api_key: str | None,
+    request: Request | None = None,
 ) -> dict[str, Any]:
     """Resolve inbound endpoint by slug and/or token."""
+    _webhook_auth_gate(request)
     store = get_webhook_store()
     got = _extract_token(authorization, x_webhook_token, x_api_key)
     env_tok = _env_fallback_token()
@@ -99,9 +171,11 @@ def _resolve_endpoint(
             expected = env_tok
         if not expected:
             raise HTTPException(status_code=503, detail="该通道未配置 token")
-        if not got or got != expected:
+        if not got or not _token_eq(got, expected):
+            _webhook_auth_fail(request)
             raise HTTPException(status_code=401, detail="Invalid webhook token")
-        return ep
+        _webhook_auth_ok(request)
+        return _clamp_endpoint_tools(ep)
 
     # no slug: match token across all endpoints
     if got:
@@ -109,13 +183,15 @@ def _resolve_endpoint(
         if ep:
             if not ep.get("enabled", True):
                 raise HTTPException(status_code=403, detail="该 Webhook 通道已停用")
-            return ep
+            _webhook_auth_ok(request)
+            return _clamp_endpoint_tools(ep)
         # env global fallback → first enabled or synthetic
-        if env_tok and got == env_tok:
+        if env_tok and _token_eq(got, env_tok):
+            _webhook_auth_ok(request)
             for row in store.list_raw():
                 if row.get("enabled", True):
-                    return row
-            return {
+                    return _clamp_endpoint_tools(row)
+            return _clamp_endpoint_tools({
                 "id": "env",
                 "name": "WEBHOOK_TOKEN",
                 "slug": "env",
@@ -124,15 +200,16 @@ def _resolve_endpoint(
                 "platform": "custom",
                 "session_mode": "map",
                 "session_id": "",
-                "use_tools": True,
+                "use_tools": False,
                 "use_memory": True,
-            }
+            })
 
     if not store.list_raw() and not env_tok:
         raise HTTPException(
             status_code=503,
             detail="尚未配置任何 Webhook 通道。请打开设定 → Webhook 新建通道。",
         )
+    _webhook_auth_fail(request)
     if not got:
         raise HTTPException(status_code=401, detail="缺少 X-Webhook-Token")
     raise HTTPException(status_code=401, detail="Invalid webhook token")
@@ -340,14 +417,25 @@ async def _run_chat(
         source=source,
     )
 
-    use_tools = ep.get("use_tools", True)
+    # F01: tools off by default; WEBHOOK_ALLOW_TOOLS required to honor endpoint flag.
+    # Payload can only further *restrict* tools, never escalate.
+    from app.tools.protection import (
+        WEBHOOK_DANGEROUS_TOOLS,
+        reset_blocked_tools,
+        set_blocked_tools,
+        webhook_allow_tools,
+    )
+
+    ep = _clamp_endpoint_tools(ep)
+    use_tools = bool(ep.get("use_tools", False)) and webhook_allow_tools()
     use_memory = ep.get("use_memory", True)
-    if "use_tools" in payload and payload["use_tools"] is not None:
-        use_tools = (
-            _truthy(payload.get("use_tools"), bool(use_tools))
+    if use_tools and "use_tools" in payload and payload["use_tools"] is not None:
+        want = (
+            _truthy(payload.get("use_tools"), True)
             if isinstance(payload.get("use_tools"), str)
             else bool(payload["use_tools"])
         )
+        use_tools = bool(want) and webhook_allow_tools()
     if "use_memory" in payload and payload["use_memory"] is not None:
         use_memory = (
             _truthy(payload.get("use_memory"), bool(use_memory))
@@ -358,16 +446,18 @@ async def _run_chat(
     meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
 
     logger.info(
-        "webhook chat ep=%s slug=%s mode=%s external=%s session=%s len=%d",
+        "webhook chat ep=%s slug=%s mode=%s external=%s session=%s tools=%s len=%d",
         ep.get("id"),
         ep.get("slug"),
         ep.get("session_mode"),
         (external_id or "")[:40],
         resolved or "(new)",
+        use_tools,
         len(message),
     )
 
     agent = get_agent()
+    block_token = set_blocked_tools(WEBHOOK_DANGEROUS_TOOLS)
     try:
         result = await agent.chat(
             message,
@@ -375,12 +465,15 @@ async def _run_chat(
             use_tools=bool(use_tools),
             use_memory=bool(use_memory),
             allow_deputy=True,
+            route_origin="chat.webhook",
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("webhook chat failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        reset_blocked_tools(block_token)
 
     mode = str(ep.get("session_mode") or "fixed")
     if mode == "map":
@@ -422,7 +515,7 @@ class WebhookUpsert(BaseModel):
     platform: str | None = "custom"
     session_mode: str | None = "fixed"  # fixed | map | new
     session_id: str | None = None
-    use_tools: bool | None = True
+    use_tools: bool | None = False
     use_memory: bool | None = True
     note: str | None = None
 
@@ -437,8 +530,18 @@ async def list_webhooks() -> dict[str, Any]:
 @mgmt_router.post("")
 async def create_webhook(body: WebhookUpsert) -> dict[str, Any]:
     store = get_webhook_store()
+    data = body.model_dump(exclude_none=False)
+    from app.tools.protection import webhook_allow_tools
+
+    if data.get("use_tools") and not webhook_allow_tools():
+        raise HTTPException(
+            status_code=400,
+            detail="Webhook 工具已禁用：在 .env 设置 WEBHOOK_ALLOW_TOOLS=true 后重启才能开启 use_tools",
+        )
+    if not webhook_allow_tools():
+        data["use_tools"] = False
     try:
-        row = store.create(body.model_dump(exclude_none=False))
+        row = store.create(data)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     # include token once on create
@@ -462,6 +565,15 @@ async def get_webhook(endpoint_id: str) -> dict[str, Any]:
 async def update_webhook(endpoint_id: str, body: WebhookUpsert) -> dict[str, Any]:
     store = get_webhook_store()
     data = body.model_dump(exclude_unset=True)
+    from app.tools.protection import webhook_allow_tools
+
+    if data.get("use_tools") and not webhook_allow_tools():
+        raise HTTPException(
+            status_code=400,
+            detail="Webhook 工具已禁用：在 .env 设置 WEBHOOK_ALLOW_TOOLS=true 后重启才能开启 use_tools",
+        )
+    if not webhook_allow_tools():
+        data["use_tools"] = False
     try:
         row = store.update(endpoint_id, data)
     except ValueError as exc:
@@ -521,7 +633,7 @@ async def webhook_health_global(
         "enabled": ep.get("enabled", True),
         "session_mode": ep.get("session_mode"),
         "session_id": ep.get("session_id") or None,
-        "use_tools": ep.get("use_tools", True),
+        "use_tools": ep.get("use_tools", False),
         "use_memory": ep.get("use_memory", True),
         "endpoint": f"/api/webhook/{slug}/chat",
     }
@@ -550,7 +662,7 @@ async def webhook_health_slug(
         "enabled": ep.get("enabled", True),
         "session_mode": ep.get("session_mode"),
         "session_id": ep.get("session_id") or None,
-        "use_tools": ep.get("use_tools", True),
+        "use_tools": ep.get("use_tools", False),
         "use_memory": ep.get("use_memory", True),
         "endpoint": f"/api/webhook/{ep.get('slug')}/chat",
     }
@@ -568,6 +680,7 @@ async def webhook_chat(
         authorization=authorization,
         x_webhook_token=x_webhook_token,
         x_api_key=x_api_key,
+        request=request,
     )
     payload = await _parse_payload(request)
     return await _run_chat(ep, payload)
@@ -588,6 +701,7 @@ async def webhook_chat_slug(
         authorization=authorization,
         x_webhook_token=x_webhook_token,
         x_api_key=x_api_key,
+        request=request,
     )
     payload = await _parse_payload(request)
     return await _run_chat(ep, payload)

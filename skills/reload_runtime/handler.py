@@ -11,7 +11,9 @@ DESC = (
 
 
 def register(registry):
-    async def handler() -> str:
+    async def handler(reason: str = "") -> str:
+        if reason:
+            logger.info("reload_runtime: %s", reason[:200])
         try:
             from app.services.runtime import rebuild_runtime
 
@@ -33,7 +35,16 @@ def register(registry):
         "reload_runtime",
         DESC,
         handler,
-        {"type": "object", "properties": {}},
+        {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "可选：重载原因，仅写日志；可省略（本技能无必填参数）",
+                }
+            },
+            "required": [],
+        },
         source="skill",
         metadata={"group": "dev", "tag": "热重载"},
     )

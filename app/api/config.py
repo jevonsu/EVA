@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from functools import lru_cache
 from pydantic import BaseModel, Field, field_validator
@@ -27,6 +27,7 @@ router = APIRouter(prefix="/api/config", tags=["config"])
 
 class AgentUpdate(BaseModel):
     name: str | None = None
+    avatar: str | None = Field(default=None, max_length=280_000, description="助手头像 data URL 或 URL")
     role: list[str] | str | None = None
     language: str | None = None
     language_style: list[str] | str | None = None
@@ -37,6 +38,7 @@ class AgentUpdate(BaseModel):
         default=None,
         description="light | medium | deep",
     )
+    roleplay_background: str | None = None
     relationship: str | None = None
     personality: str | None = None
     speech_patterns: str | None = None
@@ -225,24 +227,104 @@ def unwrap_settings_export(body: dict[str, Any]) -> dict[str, Any]:
     raise HTTPException(status_code=400, detail="无法识别的设定文件")
 
 
+def _mask_mcp_env_for_export(data: dict[str, Any]) -> dict[str, Any]:
+    """Mask MCP env values in a public/masked settings export."""
+    from app.config_store import MASK
+
+    servers = data.get("mcp_servers")
+    if not isinstance(servers, list):
+        return data
+    for srv in servers:
+        if not isinstance(srv, dict):
+            continue
+        env = srv.get("env")
+        if not isinstance(env, dict):
+            continue
+        masked: dict[str, Any] = {}
+        for ek, ev in env.items():
+            s = "" if ev is None else str(ev)
+            masked[ek] = MASK if s.strip() else s
+        srv["env"] = masked
+    return data
+
+
+async def _settings_actor(request: Request) -> dict[str, Any]:
+    """Current login info for audit / admin checks."""
+    from app.auth.routes import resolve_auth
+    from app.config import get_settings
+
+    info = await resolve_auth(request)
+    if info:
+        return info
+    if not bool(getattr(get_settings(), "auth_enabled", True)):
+        return {
+            "authenticated": True,
+            "username": "local",
+            "role": "admin",
+            "mode": "open",
+        }
+    return {}
+
+
 @router.get("/export")
-async def export_config() -> Response:
-    """Download settings (agent / LLM / integrations / tools / MCP)."""
+async def export_config(
+    request: Request,
+    include_secrets: bool = Query(
+        False,
+        description="Include plaintext LLM/integration secrets (admin only)",
+    ),
+) -> Response:
+    """Download settings. Default masks secrets (F04); plaintext needs admin."""
+    from app.memory.human_gate import ACTOR_UI, append_audit
+
+    actor = await _settings_actor(request)
+    username = str(actor.get("username") or "") or ACTOR_UI
+    role = str(actor.get("role") or "")
+
     store = get_config_store()
-    raw = store.get_raw()
+    if include_secrets:
+        from app.config import get_settings
+
+        auth_on = bool(getattr(get_settings(), "auth_enabled", True))
+        if auth_on and role != "admin":
+            raise HTTPException(status_code=403, detail="明文密钥导出仅限管理员")
+        raw = store.get_raw()
+        secrets_mode = "included"
+        for llm in raw.get("llms") or []:
+            if isinstance(llm, dict):
+                llm.pop("api_key_set", None)
+    else:
+        raw = store.get_public()
+        raw = _mask_mcp_env_for_export(raw)
+        secrets_mode = "masked"
+
     raw.pop("skills_catalog", None)
     raw.pop("tools_catalog", None)
-    for llm in raw.get("llms") or []:
-        if isinstance(llm, dict):
-            llm.pop("api_key_set", None)
+    # Never ship local account material via settings export
+    for banned in ("users", "password", "password_hash", "auth"):
+        raw.pop(banned, None)
+
     payload = {
         "eva_export": 1,
         "kind": "settings",
         "exported_at": datetime.now(timezone.utc).isoformat(),
+        "secrets": secrets_mode,
         "config": raw,
     }
+    append_audit(
+        "settings_export",
+        actor=username,
+        item_type="config",
+        item_id="settings",
+        detail={"secrets": secrets_mode, "role": role or ""},
+    )
     body = json.dumps(payload, ensure_ascii=False, indent=2)
-    fname = f"eva-settings-{datetime.now().strftime('%Y%m%d')}.json"
+    stamp = datetime.now().strftime("%Y%m%d")
+    fname = (
+        f"eva-settings-secrets-{stamp}.json"
+        if include_secrets
+        else f"eva-settings-{stamp}.json"
+    )
     return Response(
         content=body.encode("utf-8"),
         media_type="application/json; charset=utf-8",
@@ -251,17 +333,40 @@ async def export_config() -> Response:
 
 
 @router.post("/import")
-async def import_config(body: dict[str, Any]) -> dict[str, Any]:
-    """Replace settings from an exported file. Does not touch KB / workflows / chats."""
+async def import_config(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    """Replace settings from an exported file. Does not touch KB / workflows / chats / users."""
     from app.agent.persona import persona_public_view
+    from app.memory.human_gate import ACTOR_UI, append_audit
 
+    actor = await _settings_actor(request)
+    username = str(actor.get("username") or "") or ACTOR_UI
+    secrets_meta = body.get("secrets") if isinstance(body, dict) else None
     data = unwrap_settings_export(body)
+    # Account DB is separate; ignore if a hand-edited file embeds it
+    if isinstance(data, dict):
+        for banned in ("users", "password", "password_hash", "auth"):
+            data.pop(banned, None)
     store = get_config_store()
     store.replace(data)
     summary = await rebuild_runtime(reconnect_mcp=True)
     public = store.get_public()
     public["agent"] = persona_public_view(store.get_agent())
-    return {"ok": True, "config": public, "runtime": summary}
+    append_audit(
+        "settings_import",
+        actor=username,
+        item_type="config",
+        item_id="settings",
+        detail={
+            "secrets_meta": secrets_meta if isinstance(secrets_meta, str) else "",
+            "llm_count": len(public.get("llms") or []),
+        },
+    )
+    return {
+        "ok": True,
+        "config": public,
+        "runtime": summary,
+        "note": "脱敏字段会保留本机已有密钥；账号密码不随设定导入",
+    }
 
 
 # ---- Agent ----
@@ -1196,3 +1301,63 @@ def _tools_catalog() -> list[dict[str, Any]]:
     _tools_catalog_cache = result
     _tools_catalog_cache_sig = sig
     return result
+
+
+# --- 模型路由（场景 / 技能 → 模型）---
+
+
+@router.get("/model_routing")
+async def get_model_routing() -> dict[str, Any]:
+    from app.llm.routing import FEATURES, get_routing
+
+    llms = []
+    for x in get_config_store().list_llms():
+        from app.llm.client import LLMClient, recover_cli_command
+
+        is_cli = False
+        try:
+            is_cli = bool(LLMClient.from_llm_config(x).is_cli)
+        except Exception:
+            prov = str(x.get("provider") or "").strip().lower()
+            cmd, _ = recover_cli_command(x)
+            is_cli = prov == "cli" or bool(cmd)
+        llms.append(
+            {
+                "id": x.get("id"),
+                "name": x.get("name") or x.get("model") or x.get("id"),
+                "model": x.get("model") or "",
+                "enabled": x.get("enabled", True) is not False,
+                "is_default": bool(x.get("is_default")),
+                "is_cli": is_cli,
+                "provider": x.get("provider") or "",
+            }
+        )
+    skills: list[dict[str, str]] = []
+    try:
+        from app.tools.registry import get_tool_registry
+
+        for spec in get_tool_registry().list_tools():
+            if spec.source == "skill":
+                meta = spec.metadata if isinstance(spec.metadata, dict) else {}
+                skills.append({"id": spec.name, "label": str(meta.get("skill_id") or spec.name)})
+    except Exception:
+        pass
+    skills.sort(key=lambda s: s["id"])
+    return {
+        "routing": get_routing(),
+        "features": [
+            {"id": k, "label": label, "group": group, "hint": hint}
+            for k, label, group, hint in FEATURES
+        ],
+        "llms": llms,
+        "skills": skills,
+    }
+
+
+@router.put("/model_routing")
+async def put_model_routing(body: dict[str, Any]) -> dict[str, Any]:
+    from app.llm.routing import normalize_routing
+
+    value = normalize_routing(body.get("routing", body) if isinstance(body, dict) else {})
+    get_config_store().update_section("model_routing", value)
+    return {"ok": True, "routing": value}

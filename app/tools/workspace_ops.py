@@ -13,6 +13,9 @@ _OFFICE_BIN_EXT = {".docx", ".xlsx", ".xlsm", ".pptx", ".pdf"}
 
 from app.tools.registry import ToolRegistry
 from app.tools.safety import (
+    WRITE_BUCKETS,
+    enforce_write_relpath,
+    ensure_workspace_buckets,
     get_workspace_root,
     normalize_workspace_relpath,
     resolve_workspace_path,
@@ -39,6 +42,11 @@ def _source_meta() -> dict[str, str]:
 
 
 def register_workspace_tools(registry: ToolRegistry) -> None:
+    try:
+        ensure_workspace_buckets()
+    except Exception:
+        logger.debug("ensure_workspace_buckets failed", exc_info=True)
+
     def _root() -> Path:
         return get_workspace_root()
 
@@ -141,34 +149,55 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
             ensure_ascii=False,
         )
 
-    async def write_workspace_file(path: str, content: str) -> str:
-        rel0 = normalize_workspace_relpath(path)
-        hint = _office_bin_hint(rel0)
+    async def write_workspace_file(
+        path: str, content: str, *, overwrite: bool = False
+    ) -> str:
+        rel_enforced, err, rewritten = enforce_write_relpath(path, rewrite=True)
+        if err or not rel_enforced:
+            return _ws_err(
+                err or "非法写路径",
+                path=path,
+                allowed_buckets=sorted(WRITE_BUCKETS),
+                hint="新建默认 scratch/ 或 exports/；禁止工作区根目录散落文件。",
+            )
+        hint = _office_bin_hint(rel_enforced)
         if hint:
-            return _ws_err(hint, path=rel0, use_tool="document")
+            return _ws_err(hint, path=rel_enforced, use_tool="document")
         try:
             from app.services.workspace_bind import uses_hub_http
             from app.services.hub_ws_client import tool_write
 
             if uses_hub_http():
-                return tool_write(path, content)
+                # Hub path still goes through enforced relative path
+                return tool_write(rel_enforced, content)
         except Exception as exc:
             logger.debug("Hub workspace write failed, using local: %s", exc)
-        target, rel = _resolve(path)
+        target, rel = _resolve(rel_enforced)
         if target is None:
-            return _ws_err("Path outside workspace is not allowed", path=path)
+            return _ws_err("Path outside workspace is not allowed", path=rel_enforced)
+        if target.exists() and target.is_file() and not overwrite:
+            return _ws_err(
+                f"文件已存在：{rel}。覆盖前须 ask_user 确认，再带 overwrite=true 重试。",
+                path=rel,
+                action_required="confirm_overwrite",
+                hint=(
+                    "调用 ask_user(title='覆盖确认', options='覆盖现有文件\n取消，换个路径')；"
+                    "用户选覆盖后再 workspace write overwrite=true。"
+                ),
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        return json.dumps(
-            {
-                "ok": True,
-                "path": rel,
-                "bytes": len(content.encode("utf-8")),
-                "workspace_root": str(_root()),
-                **_source_meta(),
-            },
-            ensure_ascii=False,
-        )
+        out = {
+            "ok": True,
+            "path": rel,
+            "bytes": len(content.encode("utf-8")),
+            "workspace_root": str(_root()),
+            **_source_meta(),
+        }
+        if rewritten:
+            out["rewritten_from"] = normalize_workspace_relpath(path)
+            out["hint"] = "路径已自动归入白名单目录（默认 scratch/）。"
+        return json.dumps(out, ensure_ascii=False)
 
     async def delete_workspace_file(path: str) -> str:
         target, rel = _resolve(path)
@@ -213,20 +242,36 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
             ensure_ascii=False,
         )
 
-    async def file_rename(source: str, dest: str) -> str:
+    async def file_rename(source: str, dest: str, *, overwrite: bool = False) -> str:
         import shutil
 
         src, srel = _resolve(source)
-        dst, drel = _resolve(dest)
         if src is None:
             return _ws_err("源路径越界", path=source)
-        if dst is None:
-            return _ws_err("目标路径越界", path=dest)
         if not src.exists():
             return _ws_err(f"源不存在: {srel}", path=srel)
+        dest_enforced, err, rewritten = enforce_write_relpath(dest, rewrite=True)
+        if err or not dest_enforced:
+            return _ws_err(
+                err or "非法目标路径",
+                path=dest,
+                allowed_buckets=sorted(WRITE_BUCKETS),
+            )
+        dst, drel = _resolve(dest_enforced)
+        if dst is None:
+            return _ws_err("目标路径越界", path=dest_enforced)
+        if dst.exists() and not overwrite:
+            return _ws_err(
+                f"目标已存在：{drel}。覆盖前须 ask_user 确认，再带 overwrite=true。",
+                path=drel,
+                action_required="confirm_overwrite",
+            )
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dst))
-        return json.dumps({"ok": True, "source": srel, "dest": drel}, ensure_ascii=False)
+        out = {"ok": True, "source": srel, "dest": drel}
+        if rewritten:
+            out["rewritten_from"] = normalize_workspace_relpath(dest)
+        return json.dumps(out, ensure_ascii=False)
 
     async def workspace_tool(
         action: str,
@@ -236,6 +281,7 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
         pattern: str = "*",
         source: str = "",
         dest: str = "",
+        overwrite: bool = False,
     ) -> str:
         act = str(action if action is not None else "").strip().lower()
         if act in ("list", "ls", "dir"):
@@ -244,8 +290,12 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
             return await read_workspace_file(path=path, max_chars=max_chars)
         if act in ("write", "put", "save"):
             if not path or path in (".",):
-                return _ws_err("write 需要具体文件 path")
-            return await write_workspace_file(path=path, content=content)
+                return _ws_err(
+                    "write 需要具体文件 path；默认 scratch/文件名 或 exports/文件名，禁止根目录。"
+                )
+            return await write_workspace_file(
+                path=path, content=content, overwrite=bool(overwrite)
+            )
         if act in ("delete", "rm", "remove", "unlink"):
             return await delete_workspace_file(path=path)
         if act in ("find", "search", "glob"):
@@ -253,15 +303,21 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
         if act in ("rename", "move", "mv"):
             if not source or not dest:
                 return _ws_err("rename 需要 source 与 dest")
-            return await file_rename(source=source, dest=dest)
+            return await file_rename(
+                source=source, dest=dest, overwrite=bool(overwrite)
+            )
         if act in ("info", "root", "where"):
             return json.dumps(
                 {
                     "ok": True,
                     "workspace_root": str(_root()),
+                    "write_buckets": sorted(WRITE_BUCKETS),
                     "hint": (
-                        "所有 path 均相对于此目录，例如 uploads/a.jpg 或 notes.md；"
-                        "不要写 workspace/uploads/a.jpg（会自动去掉多余前缀）。"
+                        "path 相对工作区。写入仅允许 "
+                        + "/".join(sorted(WRITE_BUCKETS))
+                        + "/；新建默认 scratch/ 或交付件 exports/；"
+                        "禁止根目录散落。覆盖已有文件须 ask_user 后 overwrite=true。"
+                        "不要加 workspace/ 前缀。"
                     ),
                 },
                 ensure_ascii=False,
@@ -273,9 +329,11 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
     registry.register(
         "workspace",
         "【工作区】目录与普通文件：list|read|write|delete|find|rename|info。"
-        "txt/代码/图片/任意文件名用本工具；Word/Excel/PPT/PDF 用 document（读文本会乱码）。"
-        "Markdown 短笔记可用本工具；要按标题/查找替换也可用 document。"
-        "path 相对工作区，如 notes.md、uploads/a.jpg，不要加 workspace/ 前缀。",
+        "txt/代码/图片用本工具；Word/Excel/PPT/PDF 用 document。"
+        "写入仅允许 uploads/docs/exports/scratch/images/videos/skills；"
+        "新建默认 scratch/ 或交付 exports/；禁止工作区根目录新建。"
+        "覆盖已有文件：先 ask_user，再 overwrite=true。"
+        "path 相对工作区，如 scratch/notes.md、uploads/a.jpg，不要加 workspace/ 前缀。",
         workspace_tool,
         {
             "type": "object",
@@ -295,7 +353,7 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
                 },
                 "path": {
                     "type": "string",
-                    "description": "相对 workspace 的路径",
+                    "description": "相对路径；写入用 scratch/… 或 exports/… 等白名单桶",
                     "default": ".",
                 },
                 "content": {"type": "string", "description": "write 时文件内容"},
@@ -310,7 +368,12 @@ def register_workspace_tools(registry: ToolRegistry) -> None:
                     "default": "*",
                 },
                 "source": {"type": "string", "description": "rename 源路径"},
-                "dest": {"type": "string", "description": "rename 目标路径"},
+                "dest": {"type": "string", "description": "rename 目标路径（须在白名单桶内）"},
+                "overwrite": {
+                    "type": "boolean",
+                    "description": "true=允许覆盖已存在文件（须先 ask_user 确认）",
+                    "default": False,
+                },
             },
             "required": ["action"],
         },

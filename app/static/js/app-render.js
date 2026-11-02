@@ -706,6 +706,11 @@
 
  function scrollMessages(force = false) {
  if (!els.messages) return;
+ // 用户上滚阅读历史：不强制吸底，只亮出「回到底部」（未读计数见 app-chat-ux.js）
+ if (state.readingHistory) {
+  document.getElementById("btnScrollBottom")?.classList.remove("hidden");
+  return;
+ }
  if (force || state.stickToBottom || nearBottom(els.messages)) {
  els.messages.scrollTop = els.messages.scrollHeight;
  state.stickToBottom = true;
@@ -873,15 +878,28 @@
  const atEnd = (ta.selectionEnd ?? 0) >= (ta.value || "").length;
  ta.style.height = "auto";
  // 主流 AI 输入：默认单行高度，随内容增高（手机略矮，避免占满屏）
- let maxH = 200;
+ // 桌面按视口高度给到 ~38vh（160–320px），手机 140/170，键盘弹出时收紧
+ let maxH = Math.round(Math.min(320, Math.max(160, window.innerHeight * 0.38)));
  try {
-  if (window.matchMedia("(max-width: 640px)").matches) maxH = 120;
-  else if (window.matchMedia("(max-width: 900px)").matches) maxH = 160;
-  if (document.body.classList.contains("kb-open")) maxH = Math.min(maxH, 100);
+  if (window.matchMedia("(max-width: 640px)").matches) maxH = 140;
+  else if (window.matchMedia("(max-width: 900px)").matches) maxH = 170;
+  if (document.body.classList.contains("kb-open")) maxH = Math.min(maxH, 110);
  } catch (_) {}
- const minH = 24;
+ // 限高 ~10 行，超出框内滚动
+ try {
+  const lh = parseFloat(getComputedStyle(ta).lineHeight) || 22;
+  maxH = Math.min(maxH, Math.round(lh * 10 + 12));
+ } catch (_) {}
+ let minH = 24;
+ try {
+  const cs = getComputedStyle(ta);
+  const lh1 = parseFloat(cs.lineHeight) || 22; // CSS: line-height 22px + padding 1+1 => 24
+  minH = Math.max(24, Math.round(lh1 + (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0)));
+ } catch (_) {}
  const next = Math.min(Math.max(ta.scrollHeight, minH), maxH);
  ta.style.height = next + "px";
+ ta.style.overflowY = ta.scrollHeight > maxH + 1 ? "auto" : "hidden";
+ ta.closest(".composer-box")?.classList.toggle("is-multiline", next > minH + 8);
  // height:"auto" 会把 scrollTop 打回 0；超高后要把光标所在行滚进视口
  const pinCaret = () => {
   if (atEnd || (ta.selectionEnd ?? 0) >= (ta.value || "").length) {
@@ -1101,45 +1119,58 @@
  setHomeHeroMode(false);
  }
 
- /** 空会话主页：居中标题 + 输入框；有消息后退出 */
+ /** 空会话主页：文档流欢迎台 + 底栏输入；有消息后退出 */
  function setHomeHeroMode(on) {
   const active = !!on;
   document.body.classList.toggle("home-hero", active);
   const main = document.querySelector("main.main");
   if (main) main.classList.toggle("home-hero", active);
   const head = document.getElementById("homeHeroHead");
-  if (head) head.hidden = !active;
+  if (head) {
+   head.hidden = true;
+   head.setAttribute("aria-hidden", "true");
+  }
   const chips = document.getElementById("homeHeroChips");
   if (chips) {
-   chips.classList.toggle("hidden", !active);
+   chips.classList.add("hidden");
+   chips.hidden = true;
    if (!active) chips.innerHTML = "";
+  }
+  const setup = document.getElementById("homeSetup");
+  if (setup) {
+   setup.classList.add("hidden");
+   setup.hidden = true;
   }
  }
 
  const QUICK_PROMPTS = [
  {
   label: "现在几点",
+  desc: "问一下当前时间",
   text: "现在几点了？",
   icon: "time",
  },
  {
   label: "你有什么技能",
+  desc: "看看能帮你做什么",
   text: "你有什么技能",
   icon: "puzzle",
  },
  {
   label: "记一条偏好",
+  desc: "把习惯写进记忆",
   text: "请记住：以后用中文简短回复。",
   icon: "brain",
  },
  {
   label: "今天的任务",
+  desc: "查看定时任务近况",
   text: "当前有哪些定时任务？最近跑得怎么样？",
   icon: "alarm-clock",
  },
  ];
 
- const PRODUCT_NAME = "EVA System OS";
+ const PRODUCT_NAME = "有什么可以帮你的？";
 
  function hasChatLlm() {
   if (typeof state.llmConfigured === "boolean") return state.llmConfigured;
@@ -1169,19 +1200,19 @@
  function refreshHomeHero() {
   if (!document.body.classList.contains("home-hero")) return;
   const ready = hasChatLlm();
-  const titleEl = document.getElementById("homeHeroTitle");
-  const subEl = document.getElementById("homeHeroSub");
-  const setup = document.getElementById("homeSetup");
-  const chips = document.getElementById("homeHeroChips");
+  const welcome = document.getElementById("homeWelcome");
+  const titleEl = welcome && welcome.querySelector(".home-welcome-title");
+  const subEl = welcome && welcome.querySelector(".home-welcome-sub");
+  const setup = welcome && welcome.querySelector(".home-welcome-setup");
+  const grid = welcome && welcome.querySelector(".home-capability-grid");
   if (titleEl) titleEl.textContent = PRODUCT_NAME;
   if (subEl) {
    subEl.textContent = ready
-    ? "有什么可以帮你的？"
+    ? "选一个开始，或直接在下方输入"
     : "先添加一个对话模型，才能开始聊天。";
-   subEl.removeAttribute("title");
   }
   if (setup) setup.classList.toggle("hidden", ready);
-  if (chips) chips.classList.toggle("hidden", !ready);
+  if (grid) grid.classList.toggle("hidden", !ready);
   if (els.input) {
    els.input.placeholder = ready
     ? "有什么可以帮你的？"
@@ -1194,42 +1225,69 @@
   }
   if (typeof L.hydrateIconPark === "function") {
    try {
-    L.hydrateIconPark(document.getElementById("homeHeroHead"));
-    L.hydrateIconPark(setup);
-    L.hydrateIconPark(chips);
+    L.hydrateIconPark(welcome);
    } catch (_) {}
   }
  }
 
  function showEmpty() {
  setHomeHeroMode(true);
- els.messages.innerHTML = `<div class="empty" id="emptyStage"></div>`;
- const wrap = document.getElementById("homeHeroChips");
- if (wrap) {
-  wrap.innerHTML = "";
-  for (const p of QUICK_PROMPTS) {
-   const btn = document.createElement("button");
-   btn.type = "button";
-   btn.className = "empty-chip home-hero-chip";
-   btn.title = p.text;
-   if (p.icon) {
-    btn.innerHTML = `${_ipk(p.icon, "ipk-xs")} <span>${escapeHtml(p.label)}</span>`;
-   } else {
-    btn.textContent = p.label;
-   }
+ const ready = hasChatLlm();
+ const cards = QUICK_PROMPTS.map((p) => {
+  const icon = p.icon
+   ? `<span class="home-cap-icon">${_ipk(p.icon, "ipk-xs")}</span>`
+   : "";
+  return `<button type="button" class="home-cap-card" data-prompt="${escapeHtml(p.text)}" title="${escapeHtml(p.text)}">
+  ${icon}
+  <span class="home-cap-label">${escapeHtml(p.label)}</span>
+  <span class="home-cap-desc">${escapeHtml(p.desc || "")}</span>
+ </button>`;
+ }).join("");
+ els.messages.innerHTML = `<div class="home-welcome" id="homeWelcome">
+  <div class="home-welcome-greeting">
+   <h2 class="home-welcome-title">${escapeHtml(PRODUCT_NAME)}</h2>
+   <p class="home-welcome-sub">${ready ? "选一个开始，或直接在下方输入" : "先添加一个对话模型，才能开始聊天。"}</p>
+  </div>
+  <div class="home-welcome-setup${ready ? " hidden" : ""}" id="homeWelcomeSetup">
+   <p class="home-setup-title">还没有对话模型</p>
+   <p class="home-setup-hint">先添加一个本地或云端模型，才能开始聊天。</p>
+   <button type="button" class="btn primary icon-inline" id="btnHomeWelcomeAddLlm">
+    <span data-ipk="lightning" data-ipk-class="ipk-xs"></span> 添加模型
+   </button>
+  </div>
+  <div class="home-capability-grid${ready ? "" : " hidden"}" id="homeCapabilityGrid" aria-label="快速开始">
+   ${cards}
+  </div>
+ </div>`;
+ const welcome = document.getElementById("homeWelcome");
+ const addBtn = document.getElementById("btnHomeWelcomeAddLlm");
+ if (addBtn) {
+  addBtn.addEventListener("click", () => {
+   if (typeof L.goAddLlm === "function") L.goAddLlm();
+  });
+ }
+ if (welcome) {
+  welcome.querySelectorAll(".home-cap-card").forEach((btn) => {
    btn.addEventListener("click", () => {
     if (state.busy) return;
     if (!hasChatLlm()) {
      if (typeof L.goAddLlm === "function") L.goAddLlm();
      return;
     }
-    els.input.value = p.text;
+    const prompt = btn.getAttribute("data-prompt") || "";
+    els.input.value = prompt;
     autoResize();
     els.input.focus();
     if (typeof L.send === "function") L.send();
    });
-   wrap.appendChild(btn);
-  }
+  });
+ }
+ // 旧节点保持隐藏
+ const legacyChips = document.getElementById("homeHeroChips");
+ if (legacyChips) {
+  legacyChips.innerHTML = "";
+  legacyChips.classList.add("hidden");
+  legacyChips.hidden = true;
  }
  refreshHomeHero();
  }
@@ -1319,6 +1377,27 @@
  if (role === "user") return "你";
  if (role === "assistant") return assistantAvatarLetter();
  return "系";
+ }
+
+
+ function buildMsgAvatar(role) {
+ const av = document.createElement("div");
+ av.className = "msg-avatar";
+ av.setAttribute("aria-hidden", "true");
+ const url = role === "assistant" ? String(state.config?.agent?.avatar || state.config?.agent?.avatar_url || "").trim() : "";
+ if (url) {
+  const img = document.createElement("img");
+  img.src = url; img.alt = ""; img.loading = "lazy";
+  img.onerror = () => { img.remove(); av.textContent = roleAvatarLetter(role); };
+  av.appendChild(img);
+ } else {
+  av.textContent = roleAvatarLetter(role);
+ }
+ return av;
+ }
+ function msgAvatarHtml() {
+ const ch = String(assistantAvatarLetter()).replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
+ return `<div class="msg-avatar" aria-hidden="true">${ch}</div>`;
  }
 
  function _actionIconBtn(cls, title, iconName) {
@@ -1768,9 +1847,9 @@
  }
 
  function appendMessage(role, content, extra = null) {
- const empty = els.messages.querySelector(".empty");
+ const empty = els.messages.querySelector(".empty, .home-welcome");
  if (empty) empty.remove();
- // 有实际消息后：退出居中主页，输入框回到底部
+ // 有实际消息后：退出空态欢迎，输入框保持底栏
  setHomeHeroMode(false);
 
  // 助手正文：去掉思考块 + 误贴的上传/裸文件名图堆（用户气泡已有预览）
@@ -1783,40 +1862,30 @@
  .trimEnd();
  }
  const wrap = document.createElement("div");
- wrap.className = `msg ${role}`;
+ wrap.className = `msg ${role} msg-enter`;
  if (extra?.msgId) wrap.dataset.msgId = extra.msgId;
  if (extra?.ephemeral) wrap.dataset.ephemeral = "1";
  const roleLabel =
  role === "user" ? "你" : role === "assistant" ? assistantDisplayName() : "系统";
 
- const tsIso = extra?.timestamp || (role !== "system" ? new Date().toISOString() : "");
+ const tsIso = extra?.timestamp || (role !== "system" && !extra?.fromStore ? new Date().toISOString() : "");
  const timestamp = tsIso ? (formatMsgTime || timeAgo)(tsIso) : "";
 
  const main = document.createElement("div");
  main.className = "msg-main";
 
- if (role !== "system") {
- const av = document.createElement("div");
- av.className = "msg-avatar";
- av.setAttribute("aria-hidden", "true");
- av.textContent = roleAvatarLetter(role);
- main.appendChild(av);
- }
-
+ // A：助手/用户均无头像；角色名不展示（副模型标签保留在脚注）
  const col = document.createElement("div");
  col.className = "msg-col";
 
  const actions = buildMsgActions(role, clean, extra);
 
- const roleRow = document.createElement("div");
- roleRow.className = "role-row";
- const roleEl = document.createElement("div");
- roleEl.className = "role";
- roleEl.textContent = roleLabel;
- roleRow.appendChild(roleEl);
  const usedDeputy = !!(extra?.used_deputy || extra?.metadata?.used_deputy);
  const llmName = String(extra?.llm_name || extra?.metadata?.llm_name || "").trim();
+ let roleRow = null;
  if (role === "assistant" && (usedDeputy || llmName)) {
+  roleRow = document.createElement("div");
+  roleRow.className = "role-row";
   const tag = document.createElement("span");
   tag.className = "msg-llm-tag" + (usedDeputy ? " is-deputy" : "");
   tag.textContent = usedDeputy
@@ -1838,7 +1907,8 @@
  bubble.textContent = clean;
  }
 
- col.appendChild(roleRow);
+ if (roleRow) col.appendChild(roleRow);
+ if (role === "user" || role === "assistant") main.appendChild(buildMsgAvatar(role));
  main.appendChild(col);
  wrap.appendChild(main);
 
@@ -1994,9 +2064,8 @@
  const t = document.createElement("span");
  t.className = "msg-time";
  t.textContent = timestamp;
- t.title = extra?.timestamp
- ? new Date(extra.timestamp).toLocaleString()
- : new Date().toLocaleString();
+ t.title = new Date(tsIso).toLocaleString("zh-CN", { hour12: false });
+ t.dateTime = tsIso;
  meta.appendChild(t);
  }
  col.appendChild(meta);
@@ -2023,30 +2092,40 @@
  function appendTyping() {
  removeTyping();
  const wrap = document.createElement("div");
- wrap.className = "msg assistant typing-msg";
+ wrap.className = "msg assistant typing-msg msg-enter";
  wrap.id = "typing";
  // 结构拆开：工具活动面板（独立） + 轻量状态条（非回复气泡）
  wrap.innerHTML = `
  <div class="msg-main">
- <div class="msg-avatar" aria-hidden="true">${assistantAvatarLetter()}</div>
+ ${msgAvatarHtml()}
  <div class="msg-col">
  <div class="role-row">
- <div class="role">${escapeHtml(assistantDisplayName())}</div>
  <div class="msg-actions">
  <button type="button" class="btn-cancel" id="btnCancelRequest" title="停止这次生成">停止</button>
  </div>
  </div>
- <div class="status-strip" id="typingStrip">
+ <div class="status-strip is-live hidden" id="typingStrip" aria-hidden="true">
  <span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>
- <span class="typing-phase" id="typingPhase">已收到，正在发给模型…</span>
+ <span class="typing-phase" id="typingPhase">思考中…</span>
  </div>
- <div class="tool-activity hidden is-collapsed" id="toolActivity" aria-live="polite">
+ <div class="tool-activity is-live is-collapsed" id="toolActivity" aria-live="polite">
  <button type="button" class="tool-activity-head" id="toolActivityToggle" aria-expanded="false" title="展开步骤">
- <span class="tool-activity-title">正在做</span>
- <span class="tool-activity-status" id="toolActivityStatus">准备中…</span>
+ <span class="tool-activity-pulse" aria-hidden="true"></span>
+ <span class="tool-activity-title">运行状态</span>
+ <span class="tool-activity-status" id="toolActivityStatus">思考中…</span>
+ <span class="tool-activity-chevron" aria-hidden="true"></span>
  </button>
- <div class="tool-activity-now" id="toolActivityNow"></div>
- <ol class="tool-activity-steps" id="toolActivitySteps"></ol>
+ <div class="tool-activity-now" id="toolActivityNow">思考中 · 模型正在分析你的问题</div>
+ <ol class="tool-activity-steps" id="toolActivitySteps">
+  <li class="tool-activity-step is-current is-phase" data-kind="phase" data-phase="thinking" data-ts="${Date.now()}">
+   <span class="tool-step-idx">·</span>
+   <span class="tool-step-body">
+    <span class="tool-step-title">思考中</span>
+    <span class="tool-step-detail">等待模型回应</span>
+    <span class="tool-step-badge">进行中</span>
+   </span>
+  </li>
+ </ol>
  </div>
  </div>
  </div>`;
@@ -2215,6 +2294,235 @@
  return null;
  }
 
+
+ /** 结构化 SSE：phase / tool_start / tool_end */
+ function ensureToolActivityVisible() {
+  const panel = document.getElementById("toolActivity");
+  if (!panel) return null;
+  panel.classList.remove("hidden");
+  panel.classList.add("is-live");
+  // 默认保持折叠：一行状态；用户点开才看完整步骤
+  return panel;
+ }
+
+ function setTypingPhaseText(text) {
+  const phaseEl = document.getElementById("typingPhase");
+  if (phaseEl && text) phaseEl.textContent = text;
+  const strip = document.getElementById("typingStrip");
+  if (strip) strip.classList.add("is-live");
+ }
+
+ function summarizeArgs(args) {
+  if (!args || typeof args !== "object") return "";
+  const keys = Object.keys(args);
+  if (!keys.length) return "";
+  const parts = keys.slice(0, 4).map((k) => {
+   let v = args[k];
+   if (v == null) return `${k}=—`;
+   if (typeof v === "object") {
+    try { v = JSON.stringify(v); } catch (_) { v = String(v); }
+   }
+   v = String(v).replace(/\s+/g, " ").trim();
+   if (v.length > 40) v = v.slice(0, 40) + "…";
+   return `${k}=${v}`;
+  });
+  if (keys.length > 4) parts.push(`…+${keys.length - 4}`);
+  return parts.join(" · ");
+ }
+
+ function applyRunPhase(evt) {
+  const panel = ensureToolActivityVisible();
+  const stepsEl = document.getElementById("toolActivitySteps");
+  const nowEl = document.getElementById("toolActivityNow");
+  const st = document.getElementById("toolActivityStatus");
+  const phase = (evt && evt.phase) || "thinking";
+  const label =
+   (evt && evt.label) ||
+   (phase === "writing" ? "生成回复" : phase === "tools" ? "调用工具" : "思考中");
+  setTypingPhaseText(label + "…");
+  if (nowEl) nowEl.textContent = label;
+  if (st) st.textContent = label.endsWith("…") ? label : label + "…";
+
+  if (!stepsEl) return;
+  // Mark previous phase/current as done
+  Array.from(stepsEl.querySelectorAll(".tool-activity-step.is-current")).forEach((el) => {
+   if (el.dataset.kind === "phase" || el.classList.contains("is-running")) {
+    el.classList.remove("is-current", "is-running");
+    if (!el.classList.contains("is-error")) el.classList.add("is-done");
+    const badge = el.querySelector(".tool-step-badge");
+    if (badge && !el.classList.contains("is-error")) badge.textContent = "完成";
+   }
+  });
+
+  // Reuse last phase step of same phase if recent
+  const last = stepsEl.lastElementChild;
+  if (
+   last &&
+   last.dataset.kind === "phase" &&
+   last.dataset.phase === phase &&
+   Date.now() - Number(last.dataset.ts || 0) < 4000
+  ) {
+   last.classList.add("is-current", "is-running");
+   last.classList.remove("is-done");
+   last.querySelector(".tool-step-title").textContent = label;
+   const badge = last.querySelector(".tool-step-badge");
+   if (badge) badge.textContent = "进行中";
+   last.dataset.ts = String(Date.now());
+   scrollMessages(false);
+   return;
+  }
+
+  const li = document.createElement("li");
+  li.className = "tool-activity-step is-current is-running is-phase";
+  li.dataset.kind = "phase";
+  li.dataset.phase = phase;
+  li.dataset.ts = String(Date.now());
+  li.innerHTML = `
+  <span class="tool-step-idx">·</span>
+  <span class="tool-step-body">
+   <span class="tool-step-title"></span>
+   <span class="tool-step-detail"></span>
+   <span class="tool-step-badge">进行中</span>
+  </span>`;
+  li.querySelector(".tool-step-title").textContent = label;
+  const detail =
+   phase === "writing"
+    ? "正在组织最终回答"
+    : phase === "thinking"
+      ? "模型推理中"
+      : "";
+  li.querySelector(".tool-step-detail").textContent = detail;
+  stepsEl.appendChild(li);
+  while (stepsEl.children.length > 12) stepsEl.removeChild(stepsEl.firstChild);
+  scrollMessages(false);
+ }
+
+ function applyToolStart(evt) {
+  const panel = ensureToolActivityVisible();
+  const stepsEl = document.getElementById("toolActivitySteps");
+  const nowEl = document.getElementById("toolActivityNow");
+  const st = document.getElementById("toolActivityStatus");
+  if (!stepsEl || !evt) return;
+
+  const name = evt.name || "";
+  const title =
+   evt.label ||
+   (typeof toolActionLabel === "function" ? toolActionLabel(name) : "") ||
+   `调用 ${name}`;
+  const detail =
+   evt.detail ||
+   summarizeArgs(evt.arguments) ||
+   "";
+
+  // Close previous current
+  Array.from(stepsEl.querySelectorAll(".tool-activity-step.is-current")).forEach((el) => {
+   if (el.dataset.kind === "phase") {
+    el.classList.remove("is-current", "is-running");
+    el.classList.add("is-done");
+    const badge = el.querySelector(".tool-step-badge");
+    if (badge) badge.textContent = "完成";
+   }
+  });
+
+  setTypingPhaseText(`调用工具：${title}`);
+  if (nowEl) nowEl.textContent = detail ? `${title}（${detail}）` : title;
+  if (st) st.textContent = detail ? `${title} · ${detail}` : title;
+
+  const li = document.createElement("li");
+  li.className = "tool-activity-step is-current is-running";
+  li.dataset.kind = "tool";
+  li.dataset.tool = name;
+  li.dataset.ts = String(Date.now());
+  li.dataset.status = "running";
+  li.innerHTML = `
+  <span class="tool-step-idx"></span>
+  <span class="tool-step-body">
+   <span class="tool-step-title"></span>
+   <span class="tool-step-detail"></span>
+   <span class="tool-step-badge">调用中</span>
+   <details class="tool-step-result hidden">
+    <summary>查看结果</summary>
+    <pre class="tool-step-result-body"></pre>
+   </details>
+  </span>`;
+  const toolCount = stepsEl.querySelectorAll('.tool-activity-step[data-kind="tool"]').length + 1;
+  li.querySelector(".tool-step-idx").textContent = String(toolCount);
+  li.querySelector(".tool-step-title").textContent = title;
+  li.querySelector(".tool-step-detail").textContent = detail;
+  stepsEl.appendChild(li);
+  while (stepsEl.children.length > 14) stepsEl.removeChild(stepsEl.firstChild);
+  // renumber tools only
+  let i = 0;
+  Array.from(stepsEl.querySelectorAll('.tool-activity-step[data-kind="tool"]')).forEach((el) => {
+   i += 1;
+   const idx = el.querySelector(".tool-step-idx");
+   if (idx) idx.textContent = String(i);
+  });
+  if (panel) panel.classList.remove("hidden");
+  scrollMessages(false);
+ }
+
+ function applyToolEnd(evt) {
+  const stepsEl = document.getElementById("toolActivitySteps");
+  const nowEl = document.getElementById("toolActivityNow");
+  const st = document.getElementById("toolActivityStatus");
+  if (!stepsEl || !evt) return;
+  const name = evt.name || "";
+  const ok = evt.ok !== false;
+  const title =
+   evt.label ||
+   (typeof toolActionLabel === "function" ? toolActionLabel(name) : "") ||
+   name;
+  const resultText = (evt.result != null ? String(evt.result) : "").trim();
+
+  // Find matching running step
+  let target = null;
+  const tools = Array.from(
+   stepsEl.querySelectorAll('.tool-activity-step[data-kind="tool"]')
+  );
+  for (let i = tools.length - 1; i >= 0; i--) {
+   const el = tools[i];
+   if (el.dataset.tool === name && el.dataset.status === "running") {
+    target = el;
+    break;
+   }
+  }
+  if (!target && tools.length) target = tools[tools.length - 1];
+
+  if (target) {
+   target.classList.remove("is-running");
+   target.classList.add(ok ? "is-done" : "is-error");
+   target.classList.remove("is-current");
+   target.dataset.status = ok ? "done" : "error";
+   const badge = target.querySelector(".tool-step-badge");
+   if (badge) badge.textContent = ok ? "完成" : "失败";
+   if (resultText) {
+    const box = target.querySelector(".tool-step-result");
+    const body = target.querySelector(".tool-step-result-body");
+    if (box && body) {
+     box.classList.remove("hidden");
+     body.textContent = resultText.slice(0, 1200);
+    }
+    const d = target.querySelector(".tool-step-detail");
+    if (d && !d.textContent) d.textContent = resultText.slice(0, 80);
+   }
+  }
+
+  setTypingPhaseText(ok ? `完成：${title}` : `失败：${title}`);
+  if (nowEl) nowEl.textContent = ok ? `已完成 · ${title}` : `出错 · ${title}`;
+  if (st) {
+   st.textContent = ok ? `完成 · ${title}` : `失败 · ${title}`;
+  }
+  scrollMessages(false);
+ }
+
+ function applyRunProgressEvent(evt) {
+  if (!evt || !evt.type) return;
+  if (evt.type === "phase" || evt.type === "status") return applyRunPhase(evt);
+  if (evt.type === "tool_start") return applyToolStart(evt);
+  if (evt.type === "tool_end") return applyToolEnd(evt);
+ }
+
  /** 工具进度：只显示「正在做什么」步骤，不刷原始日志 */
  function appendTypingLog(line) {
  const panel = document.getElementById("toolActivity");
@@ -2301,17 +2609,16 @@
 
  /** 流式助手气泡：边写边渲染 */
  function appendStreamBubble() {
- const empty = els.messages.querySelector(".empty");
+ const empty = els.messages.querySelector(".empty, .home-welcome");
  if (empty) empty.remove();
  const wrap = document.createElement("div");
- wrap.className = "msg assistant";
+ wrap.className = "msg assistant msg-enter";
  wrap.id = "streamMsg";
  wrap.innerHTML = `
  <div class="msg-main">
- <div class="msg-avatar" aria-hidden="true">${assistantAvatarLetter()}</div>
+ ${msgAvatarHtml()}
  <div class="msg-col">
  <div class="role-row">
- <div class="role">${escapeHtml(assistantDisplayName())}</div>
  <div class="msg-actions">
  <button type="button" class="btn-cancel" id="btnCancelRequest" title="停止这次生成">停止</button>
  </div>
@@ -2409,6 +2716,10 @@
  L.setBusy = setBusy;
  L.updateTypingPhase = updateTypingPhase;
  L.appendTypingLog = appendTypingLog;
+ L.applyRunProgressEvent = applyRunProgressEvent;
+ L.applyRunPhase = applyRunPhase;
+ L.applyToolStart = applyToolStart;
+ L.applyToolEnd = applyToolEnd;
  L.formatUsage = formatUsage;
  L.appendMessage = appendMessage;
  L.refreshTurnActions = refreshTurnActions;

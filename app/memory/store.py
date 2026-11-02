@@ -14,6 +14,25 @@ from app.models.schemas import MemoryItem
 from app.storage.engine import db_connect
 from app.storage.schema import memories as memories_t
 from app.storage.util import loads, run_db
+from app.storage.lifecycle import (
+    NEW_WRITE_CONFIDENCE,
+    STATUS_ACTIVE,
+    STATUS_STAGING,
+    clamp_confidence,
+    compute_valid_to,
+    is_visible_row,
+    normalize_status,
+)
+from app.memory.control_plane import (
+    CONTROL_KINDS,
+    STAGING_KINDS as CP_STAGING_KINDS,
+    classify_memory_write,
+    find_supersede_id,
+    is_control_kind,
+    is_staging_kind,
+    short_summary,
+    should_prefer_kb,
+)
 
 
 def _now() -> datetime:
@@ -44,9 +63,27 @@ _LONG_POINTER_HEAD = 120
 
 
 def is_pin_row(row: dict[str, Any]) -> bool:
-    """Explicit pin tags only — kind=rule is not a standing pin."""
+    """Standing prefs: explicit pin tags, or Phase-2 control kinds.
+
+    Staging / evidence never counts as standing (even if mistagged).
+    """
+    status = str(row.get("status") or "").strip().lower()
+    if status == STATUS_STAGING or status in (
+        "expired",
+        "archived",
+        "superseded",
+        "conflicted",
+        "review_required",
+    ):
+        return False
+    kind = str(row.get("kind") or "").strip().lower()
+    if kind in CP_STAGING_KINDS or is_staging_kind(kind):
+        return False
     tags = {str(t).lower() for t in (row.get("tags") or [])}
-    return bool(tags & _PIN_TAGS)
+    if tags & _PIN_TAGS:
+        return True
+    # Control-plane kinds are standing constitution (Phase 2)
+    return kind in CONTROL_KINDS or is_control_kind(kind)
 
 
 _SOURCE_RE = re.compile(
@@ -153,6 +190,13 @@ def render_memory_context(
     q_tokens = _tokenize(q) if q else set()
     suppress = list(suppress_terms or [])
 
+    # Never inject staging into standing or match blocks
+    items = [
+        row
+        for row in items
+        if str(row.get("status") or "").lower() != STATUS_STAGING
+        and str(row.get("kind") or "").lower() not in CP_STAGING_KINDS
+    ]
     pin_rows = [row for row in items if is_pin_row(row)]
     pin_rows.sort(
         key=lambda r: (str(r.get("created_at") or ""), str(r.get("id") or ""))
@@ -284,6 +328,11 @@ class MemoryStore:
         tags = loads(row.tags_json, [])
         if not isinstance(tags, list):
             tags = []
+        status = normalize_status(getattr(row, "status", None))
+        try:
+            confidence = float(getattr(row, "confidence", None) or 1.0)
+        except (TypeError, ValueError):
+            confidence = 1.0
         return {
             "id": row.id,
             "content": row.content,
@@ -291,14 +340,22 @@ class MemoryStore:
             "tags": tags,
             "session_id": row.session_id,
             "created_at": row.created_at,
+            "status": status,
+            "valid_from": getattr(row, "valid_from", None),
+            "valid_to": getattr(row, "valid_to", None),
+            "confidence": confidence,
+            "supersedes_id": getattr(row, "supersedes_id", None),
         }
 
-    def _load_all_sync(self) -> list[dict[str, Any]]:
+    def _load_all_sync(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
         with db_connect() as conn:
             rows = conn.execute(
                 select(memories_t).order_by(memories_t.c.created_at.asc())
             ).all()
-        return [self._row_dict(r) for r in rows]
+        out = [self._row_dict(r) for r in rows]
+        if include_archived:
+            return out
+        return [r for r in out if is_visible_row(r, include_archived=False)]
 
     def _to_item(self, d: dict[str, Any], score: float | None = None) -> MemoryItem:
         created = d.get("created_at") or _now().isoformat()
@@ -314,6 +371,11 @@ class MemoryStore:
             session_id=d.get("session_id"),
             created_at=created_at,
             score=score,
+            status=normalize_status(d.get("status")),
+            valid_from=d.get("valid_from"),
+            valid_to=d.get("valid_to"),
+            confidence=float(d.get("confidence") if d.get("confidence") is not None else 1.0),
+            supersedes_id=d.get("supersedes_id"),
         )
 
     async def add(
@@ -323,15 +385,142 @@ class MemoryStore:
         kind: str = "note",
         tags: list[str] | None = None,
         session_id: str | None = None,
+        confidence: float | None = None,
+        valid_from: str | None = None,
+        valid_to: str | None = None,
+        ttl_days: float | int | None = None,
+        ttl_hours: float | int | None = None,
+        supersedes_id: str | None = None,
+        status: str = STATUS_ACTIVE,
+        explicit_status: bool = False,
+        auto_supersede: bool = True,
+        apply_control_plane: bool = True,
+        source: str = "agent",
+        via_review: bool = False,
     ) -> MemoryItem:
+        text_in = content or ""
+        tag_in = list(tags or [])
+        st_in = status
+        ttl_in = ttl_days
+        conf_in = confidence
+        kind_in = kind
+        meta: dict[str, Any] = {}
+        if apply_control_plane:
+            meta = classify_memory_write(
+                kind=kind_in,
+                tags=tag_in,
+                content=text_in,
+                status=st_in,
+                ttl_days=ttl_in,
+                valid_to=valid_to,
+                confidence=conf_in,
+                explicit_status=explicit_status,
+            )
+            kind_in = meta["kind"]
+            tag_in = list(meta["tags"])
+            st_in = meta["status"]
+            if meta.get("ttl_days") is not None and not (
+                valid_to and str(valid_to).strip()
+            ):
+                ttl_in = meta["ttl_days"]
+            if confidence is None:
+                conf_in = meta["confidence"]
+            # Long factual bodies: keep a short summary pointer in memory
+            if meta.get("prefer_kb") and len(text_in.strip()) > 120:
+                summary = short_summary(text_in)
+                text_in = (
+                    f"{summary} 【长文宜入知识库；本条为控制/索引摘要】"
+                )
+                if "needs_kb" not in {t.lower() for t in tag_in}:
+                    tag_in.append("needs_kb")
+
+        # Human gate: agent cannot invent gold; UI blank creates → staging
+        src = str(source or "agent").strip().lower()
+        if via_review or src == "review":
+            pass
+        else:
+            try:
+                from app.memory.human_gate import (
+                    gate_agent_memory_write,
+                    gate_ui_create,
+                )
+
+                if src == "ui":
+                    g = gate_ui_create(kind=kind_in, status=st_in)
+                    st_in = g["status"]
+                else:
+                    g = gate_agent_memory_write(
+                        kind=kind_in,
+                        status=st_in,
+                        valid_to=valid_to,
+                        ttl_days=ttl_in,
+                        explicit_status=explicit_status,
+                    )
+                    st_in = g["status"]
+            except Exception:
+                pass
+
+        # Auto-supersede same-key control preference when not specified
+        sid = (str(supersedes_id).strip() if supersedes_id else None) or None
+        if (
+            auto_supersede
+            and not sid
+            and apply_control_plane
+            and meta.get("plane") == "control"
+        ):
+            try:
+                existing = self._load_all_sync(include_archived=False)
+                sid = find_supersede_id(
+                    existing, kind=kind_in, content=content or "", tags=tag_in
+                )
+            except Exception:
+                sid = None
+
+        vt = compute_valid_to(valid_to=valid_to, ttl_days=ttl_in, ttl_hours=ttl_hours)
+        # Staging without expiry: force default TTL via classify (already set ttl_in)
+        if normalize_status(st_in) == STATUS_STAGING and not vt and ttl_in:
+            vt = compute_valid_to(ttl_days=ttl_in)
+        vf = (str(valid_from).strip() if valid_from else None) or None
         row = {
             "id": uuid.uuid4().hex,
-            "content": content,
-            "kind": kind,
-            "tags": tags or [],
+            "content": text_in,
+            "kind": kind_in,
+            "tags": tag_in,
             "session_id": session_id,
             "created_at": _now().isoformat(),
+            "status": normalize_status(st_in),
+            "valid_from": vf,
+            "valid_to": vt,
+            "confidence": clamp_confidence(
+                conf_in if conf_in is not None else NEW_WRITE_CONFIDENCE
+            ),
+            "supersedes_id": sid,
         }
+
+        # Phase 3: refuse soft writes that contradict active hard constraints
+        try:
+            from app.knowledge.refs import detect_and_handle_write_conflict
+
+            existing_all = self._load_all_sync(include_archived=False)
+            pre = detect_and_handle_write_conflict(
+                existing_rows=existing_all,
+                incoming_kind=row["kind"],
+                incoming_content=content or row["content"],
+                incoming_id=None,
+                incoming_tags=row["tags"],
+                supersedes_id=row.get("supersedes_id"),
+                auto_link=False,
+            )
+            if pre.get("blocked"):
+                raise ValueError(
+                    "blocked_hard_constraint: 新内容与现有硬约束冲突，"
+                    "请显式 supersedes_id 或先写入参照锚点后再改。"
+                    f" details={pre.get('notes')}"
+                )
+        except ValueError:
+            raise
+        except Exception:
+            pass
 
         def _do() -> None:
             with db_connect() as conn:
@@ -343,21 +532,114 @@ class MemoryStore:
                         tags_json=json.dumps(row["tags"], ensure_ascii=False),
                         session_id=row["session_id"],
                         created_at=row["created_at"],
+                        status=row["status"],
+                        valid_from=row["valid_from"],
+                        valid_to=row["valid_to"],
+                        confidence=row["confidence"],
+                        supersedes_id=row["supersedes_id"],
                     )
                 )
+                # Optional: mark superseded predecessor
+                sid = row["supersedes_id"]
+                if sid:
+                    conn.execute(
+                        update(memories_t)
+                        .where(memories_t.c.id == sid)
+                        .values(status="superseded")
+                    )
 
         await run_db(_do)
+
+        # Phase 3: attach knowledge_refs / controls; post-write conflict edges
+        try:
+            from app.knowledge.refs import (
+                EDGE_CONTROLS,
+                EDGE_REFERENCES,
+                attach_controls_edge,
+                attach_kb_ref_for_memory,
+                detect_and_handle_write_conflict,
+                get_ref_store,
+                parse_ref_tags,
+            )
+            from app.memory.control_plane import is_control_kind as _is_ctrl
+
+            store_refs = get_ref_store()
+            for spec in parse_ref_tags(row.get("tags") or []):
+                try:
+                    et = spec.get("edge_type") or EDGE_REFERENCES
+                    if et == EDGE_CONTROLS:
+                        attach_controls_edge(
+                            memory_id=row["id"],
+                            target_type=spec["to_type"],
+                            target_id=spec["to_id"],
+                        )
+                    elif spec.get("to_type") == "kb":
+                        attach_kb_ref_for_memory(
+                            memory_id=row["id"],
+                            kb_id=spec["to_id"],
+                            edge_type=et,
+                        )
+                    else:
+                        store_refs.link_sync(
+                            from_type="memory",
+                            from_id=row["id"],
+                            to_type=spec["to_type"],
+                            to_id=spec["to_id"],
+                            edge_type=et,
+                            created_by="system:remember",
+                        )
+                except Exception:
+                    pass
+
+            # Control memories that reference kb also get a controls edge
+            if _is_ctrl(row.get("kind")):
+                for spec in parse_ref_tags(row.get("tags") or []):
+                    if (
+                        spec.get("edge_type") == EDGE_REFERENCES
+                        and spec.get("to_type") == "kb"
+                    ):
+                        try:
+                            attach_controls_edge(
+                                memory_id=row["id"],
+                                target_type="kb",
+                                target_id=spec["to_id"],
+                                reason="control→kb",
+                            )
+                        except Exception:
+                            pass
+
+            existing_all = self._load_all_sync(include_archived=False)
+            detect_and_handle_write_conflict(
+                existing_rows=existing_all,
+                incoming_kind=row["kind"],
+                incoming_content=content or row["content"],
+                incoming_id=row["id"],
+                incoming_tags=row["tags"],
+                supersedes_id=row.get("supersedes_id"),
+                auto_link=True,
+            )
+        except Exception:
+            pass
+
         return self._to_item(row)
 
-    async def list_all(self, limit: int = 100) -> list[MemoryItem]:
-        items = await run_db(self._load_all_sync)
+    async def list_all(
+        self, limit: int = 100, *, include_archived: bool = False
+    ) -> list[MemoryItem]:
+        items = await run_db(
+            lambda: self._load_all_sync(include_archived=include_archived)
+        )
         return [self._to_item(i) for i in items[-limit:][::-1]]
 
     def _score_item(self, item: dict[str, Any], q_tokens: set[str], query: str) -> float:
         return _score_memory_item(item, q_tokens, query)
 
-    async def search(self, query: str, limit: int = 5) -> list[MemoryItem]:
-        items = await run_db(self._load_all_sync)
+    async def search(
+        self, query: str, limit: int = 5, *, include_archived: bool = False
+    ) -> list[MemoryItem]:
+        items = await run_db(
+            lambda: self._load_all_sync(include_archived=include_archived)
+        )
         q = (query or "").strip()
         if not items:
             return []
@@ -368,10 +650,34 @@ class MemoryStore:
         scored: list[tuple[float, dict[str, Any]]] = []
         for item in items:
             s = self._score_item(item, q_tokens, q)
+            # mild confidence boost
+            try:
+                s += max(0.0, float(item.get("confidence") or 0.0) - 0.5) * 0.5
+            except (TypeError, ValueError):
+                pass
             if s >= _MIN_MATCH_SCORE:
                 scored.append((s, item))
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [self._to_item(item, score=s) for s, item in scored[:limit]]
+        hits = scored[:limit]
+        # Phase 3: lightly touch outbound refs for recalled memories
+        try:
+            from app.knowledge.refs import get_ref_store
+
+            rs = get_ref_store()
+            for _, item in hits[:8]:
+                mid = str(item.get("id") or "")
+                if not mid:
+                    continue
+                for edge in rs.list_refs_sync(
+                    node_type="memory", node_id=mid, direction="out", limit=5
+                ):
+                    try:
+                        rs.touch_sync(edge["id"])
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return [self._to_item(item, score=s) for s, item in hits]
 
     async def update(
         self,
@@ -382,6 +688,15 @@ class MemoryStore:
         tags: list[str] | None = None,
         session_id: str | None = None,
         clear_session: bool = False,
+        status: str | None = None,
+        confidence: float | None = None,
+        valid_from: str | None = None,
+        valid_to: str | None = None,
+        ttl_days: float | int | None = None,
+        ttl_hours: float | int | None = None,
+        supersedes_id: str | None = None,
+        via_review: bool = False,
+        source: str = "ui",
     ) -> MemoryItem | None:
         def _do() -> dict[str, Any] | None:
             with db_connect() as conn:
@@ -401,6 +716,43 @@ class MemoryStore:
                     d["session_id"] = None
                 elif session_id is not None:
                     d["session_id"] = session_id
+                if status is not None:
+                    from app.memory.human_gate import (
+                        ACTOR_REVIEW,
+                        ACTOR_UI,
+                        gate_status_change,
+                    )
+
+                    actor = ACTOR_REVIEW if via_review else ACTOR_UI
+                    if str(source or "").lower() == "agent":
+                        actor = "agent"
+                    chk = gate_status_change(
+                        old_status=d.get("status"),
+                        new_status=status,
+                        actor=actor,
+                        kind=d.get("kind"),
+                    )
+                    if chk.get("blocked"):
+                        raise ValueError(chk.get("message") or chk.get("error") or "blocked")
+                    d["status"] = normalize_status(chk.get("status") or status)
+                if confidence is not None:
+                    d["confidence"] = clamp_confidence(confidence)
+                if valid_from is not None:
+                    d["valid_from"] = str(valid_from).strip() or None
+                if (
+                    valid_to is not None
+                    or ttl_days is not None
+                    or ttl_hours is not None
+                ):
+                    d["valid_to"] = compute_valid_to(
+                        valid_to=valid_to if valid_to is not None else d.get("valid_to"),
+                        ttl_days=ttl_days,
+                        ttl_hours=ttl_hours,
+                    ) if (ttl_days is not None or ttl_hours is not None) else (
+                        str(valid_to).strip() or None if valid_to is not None else d.get("valid_to")
+                    )
+                if supersedes_id is not None:
+                    d["supersedes_id"] = str(supersedes_id).strip() or None
                 conn.execute(
                     update(memories_t)
                     .where(memories_t.c.id == item_id)
@@ -409,6 +761,11 @@ class MemoryStore:
                         kind=d["kind"],
                         tags_json=json.dumps(d["tags"], ensure_ascii=False),
                         session_id=d["session_id"],
+                        status=d["status"],
+                        valid_from=d.get("valid_from"),
+                        valid_to=d.get("valid_to"),
+                        confidence=d.get("confidence", 1.0),
+                        supersedes_id=d.get("supersedes_id"),
                     )
                 )
                 return d
@@ -438,7 +795,7 @@ class MemoryStore:
         max_pin: int = 6,
         suppress_terms: list[str] | None = None,
     ) -> str:
-        items = await run_db(self._load_all_sync)
+        items = await run_db(lambda: self._load_all_sync(include_archived=False))
         return render_memory_context(
             items,
             query,

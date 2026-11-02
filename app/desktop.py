@@ -267,13 +267,18 @@ class EvaServer:
             settings = get_settings()
             auth_on = bool(getattr(settings, "auth_enabled", True))
             if auth_on:
-                if (getattr(settings, "auth_control_url", "") or "").strip() and (
-                    getattr(settings, "auth_control_key", "") or ""
-                ).strip():
-                    lines.append("  鉴权     已登录则直接进入；客户只需在登录页填卡密")
+                card_remote = bool(getattr(settings, "auth_card_remote", False))
+                has_gateway = bool(
+                    (getattr(settings, "auth_control_url", "") or "").strip()
+                    and (getattr(settings, "auth_control_key", "") or "").strip()
+                )
+                if card_remote and has_gateway:
+                    lines.append(
+                        "  鉴权     远程卡密模式已开启；已登录则直接进入"
+                    )
                 else:
                     lines.append(
-                        "  鉴权     未配置发卡网关。发货前请在 .env 填写 AUTH_CONTROL_URL 与 AUTH_CONTROL_KEY"
+                        "  鉴权     本机账号密码登录；已登录则直接进入（首次可打开 /login 建管理员）"
                     )
             if self.debug:
                 lines.append("  Debug    开（详细日志 / 访问记录）")

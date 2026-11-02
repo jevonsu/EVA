@@ -33,15 +33,12 @@
  const chip = $("modeHint");
  if (!chip) return;
  const toolsOn = !els.useTools || els.useTools.checked;
- const narrow =
-  typeof window.matchMedia === "function" &&
-  window.matchMedia("(max-width: 640px)").matches;
  chip.setAttribute("aria-pressed", toolsOn ? "true" : "false");
  if (toolsOn) {
- chip.textContent = narrow ? "工具开" : "模式：工具开启 · 完整回复";
+ chip.textContent = "工具开";
  chip.title = "点一下关闭工具，改为流式回复";
  } else {
- chip.textContent = narrow ? "流式" : "模式：工具关闭 · 流式回复";
+ chip.textContent = "流式";
  chip.title = "点一下开启工具，可调用技能（完整回复）";
  }
  }
@@ -67,11 +64,20 @@
     ? L.collectAgentFormPayload()
     : {
        name: $("cfgAgentName")?.value || "",
-       role: L.getMsSelection?.("role") || [],
+       avatar: $("cfgAgentAvatar")?.value || "",
+       role: [],
        language: $("cfgLanguage")?.value || "跟随用户",
-       language_style: L.getMsSelection?.("language_style") || [],
-       background: $("cfgBackground")?.value || "",
-
+       language_style: [],
+       // cfgBackground 已更名为 cfgRoleBackground；旧 id 不存在会导致背景被清空
+       background: ($("cfgRoleBackground")?.value || "").trim(),
+       roleplay_enabled: !!$("cfgRoleplayEnabled")?.checked,
+       roleplay_intensity: $("cfgRoleplayIntensity")?.value || "medium",
+       roleplay_background: $("cfgRoleplayBackground")?.value || "",
+       relationship: $("cfgRelationship")?.value || "",
+       personality: $("cfgPersonality")?.value || "",
+       speech_patterns: $("cfgSpeechPatterns")?.value || "",
+       example_dialogue: $("cfgExampleDialogue")?.value || "",
+       ooc_rules: $("cfgOocRules")?.value || "",
        max_tool_rounds: parseInt($("cfgMaxRounds")?.value, 10) || 8,
        max_history_messages: parseInt($("cfgMaxHistory")?.value, 10) || 40,
        evolution_enabled: ($("cfgEvoEnabled")?.value || "1") !== "0",
@@ -148,7 +154,12 @@
    return;
   }
 
-  if (t.id === "btnHomeAddLlm" || t.closest("#btnHomeAddLlm")) {
+  if (
+   t.id === "btnHomeAddLlm" ||
+   t.closest("#btnHomeAddLlm") ||
+   t.id === "btnHomeWelcomeAddLlm" ||
+   t.closest("#btnHomeWelcomeAddLlm")
+  ) {
    e.preventDefault();
    if (typeof L.goAddLlm === "function") L.goAddLlm();
    return;
@@ -186,6 +197,11 @@
  $("btnMenu")?.addEventListener("click", () => {
   setSidebarOpen(!isSidebarOpen());
  });
+ const logoMenu = $("btnLogoMenu");
+ logoMenu?.addEventListener("click", () => setSidebarOpen(!isSidebarOpen()));
+ logoMenu?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSidebarOpen(!isSidebarOpen()); }
+ });
  $("sidebarScrim")?.addEventListener("click", () => setSidebarOpen(false));
 
  $("btnQuickTasks")?.addEventListener("click", () => {
@@ -203,6 +219,15 @@
  $("btnQuickWorkspace")?.addEventListener("click", () => {
   openConfig("workspace");
   closeMobileSidebar();
+ });
+ $("btnQuickMore")?.addEventListener("click", () => {
+  const panel = $("quickRowMore");
+  const btn = $("btnQuickMore");
+  if (!panel || !btn) return;
+  const open = !panel.classList.contains("is-open");
+  panel.classList.toggle("is-open", open);
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  btn.textContent = open ? "收起" : "更多";
  });
  $("modeHint")?.addEventListener("click", () => {
   if (!els.useTools) return;
@@ -271,7 +296,13 @@
  root.style.setProperty("--vv-offset", `${Math.round(vv.offsetTop || 0)}px`);
  root.style.setProperty("--vv-top", `${Math.round(vv.offsetTop || 0)}px`);
  // 键盘弹出：可视高度明显小于布局高度（短屏阈值更低）
- const full = Math.max(window.innerHeight || 0, screen?.height || 0, height);
+ // 基线取本方向下见过的最大可见高度（不用 screen.height：iOS 有地址栏时会误判为键盘常开）
+ const orient = (window.innerWidth || 0) > (window.innerHeight || 0) ? "l" : "p";
+ if (syncMobileViewport._orient !== orient) {
+  syncMobileViewport._orient = orient;
+  syncMobileViewport._base = 0;
+ }
+ const full = (syncMobileViewport._base = Math.max(syncMobileViewport._base || 0, window.innerHeight || 0, height));
  const threshold = full < 700 ? 80 : 120;
  const open = height < full - threshold;
  document.body.classList.toggle("kb-open", open);

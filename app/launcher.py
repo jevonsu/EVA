@@ -55,7 +55,7 @@ _STATUS = {
 
 _HOST_LAN = "0.0.0.0"
 _HOST_LOCAL = "127.0.0.1"
-_HOST_CHOICES = (_HOST_LAN, _HOST_LOCAL)
+_HOST_CHOICES = (_HOST_LOCAL, _HOST_LAN)  # F03: prefer loopback
 
 _OFFICE_MODE_LABEL = {
     "local": "本机工作区",
@@ -302,7 +302,7 @@ class EvaLauncher:
         self._tk = tk
         env = parse_env()
         self.port = int(port)
-        self.host = self._normalize_host(host or env.get("HOST") or _HOST_LAN)
+        self.host = self._normalize_host(host or env.get("HOST") or _HOST_LOCAL)
         self.debug = bool(debug) if debug else _truthy(env.get("DEBUG", "false"))
         if auto_start is None:
             try:
@@ -321,7 +321,7 @@ class EvaLauncher:
         self._log_handler: logging.Handler | None = None
         self._log_lines = 0
         self._lock_widgets: list[Any] = []
-        self._card_shown = False
+        self._pwd_shown = False
         self._tray = None
 
         self.root = tk.Tk()
@@ -353,7 +353,7 @@ class EvaLauncher:
 
     @staticmethod
     def _normalize_host(raw: str) -> str:
-        h = (raw or "").strip() or _HOST_LAN
+        h = (raw or "").strip() or _HOST_LOCAL
         if h in ("localhost", "::1"):
             return _HOST_LOCAL
         if h in ("*", "::"):
@@ -618,7 +618,7 @@ class EvaLauncher:
 
         host0 = str(prefs.get("host") or self.host)
         self._host_var = tk.StringVar(
-            value=host0 if host0 in _HOST_CHOICES else _HOST_LAN
+            value=host0 if host0 in _HOST_CHOICES else _HOST_LOCAL
         )
         self._host_combo = ttk.Combobox(
             self._slot(form, "监听"),
@@ -629,21 +629,23 @@ class EvaLauncher:
         )
         self._host_combo.pack(fill="x")
 
-        self._gw_var = tk.StringVar(
-            value=env.get("AUTH_CONTROL_URL") or env.get("AUTH_CONTROL_URLS") or ""
-        )
-        self._gw_entry = self._mk_entry(self._slot(form, "网关"), self._gw_var)
+        # Legacy StringVars kept empty so old prefs/env writers do not break
+        self._gw_var = tk.StringVar(value="")
+        self._key_var = tk.StringVar(value="")
+        self._card_var = tk.StringVar(value="")
 
-        self._key_var = tk.StringVar(value=env.get("AUTH_CONTROL_KEY") or "")
-        self._card_var = tk.StringVar(value=str(prefs.get("card") or ""))
-        card_slot = self._slot(form, "卡密")
-        self._card_entry = self._mk_entry(card_slot, self._card_var, show="•")
-        self._card_entry.pack_forget()
-        self._card_entry.pack(side="left", fill="x", expand=True)
-        self._card_toggle = tk.Button(
-            card_slot,
+        self._user_var = tk.StringVar(value=str(prefs.get("username") or ""))
+        self._user_entry = self._mk_entry(self._slot(form, "用户名"), self._user_var)
+
+        self._pwd_var = tk.StringVar(value="")
+        pwd_slot = self._slot(form, "密码")
+        self._pwd_entry = self._mk_entry(pwd_slot, self._pwd_var, show="•")
+        self._pwd_entry.pack_forget()
+        self._pwd_entry.pack(side="left", fill="x", expand=True)
+        self._pwd_toggle = tk.Button(
+            pwd_slot,
             text="显示",
-            command=self._toggle_card,
+            command=self._toggle_pwd,
             bg=BG2,
             fg=MUTED,
             bd=0,
@@ -652,7 +654,66 @@ class EvaLauncher:
             cursor="hand2",
             padx=8,
         )
-        self._card_toggle.pack(side="right")
+        self._pwd_toggle.pack(side="right")
+
+        auth_btns = tk.Frame(form, bg=BG2)
+        auth_btns.pack(fill="x", pady=(8, 0))
+        self._login_now_btn = tk.Button(
+            auth_btns,
+            text="登录 / 写入会话",
+            command=self._on_login_now,
+            bg=BG3,
+            fg=FG,
+            bd=0,
+            relief="flat",
+            font=FONT_UI_SM,
+            cursor="hand2",
+            padx=10,
+            pady=4,
+        )
+        self._login_now_btn.pack(side="left")
+        self._logout_sess_btn = tk.Button(
+            auth_btns,
+            text="注销会话",
+            command=self._on_logout_session,
+            bg=BG2,
+            fg=MUTED,
+            bd=0,
+            relief="flat",
+            font=FONT_UI_SM,
+            cursor="hand2",
+            padx=10,
+            pady=4,
+        )
+        self._logout_sess_btn.pack(side="left", padx=(8, 0))
+        self._rename_user_btn = tk.Button(
+            auth_btns,
+            text="改用户名",
+            command=self._on_rename_user,
+            bg=BG2,
+            fg=MUTED,
+            bd=0,
+            relief="flat",
+            font=FONT_UI_SM,
+            cursor="hand2",
+            padx=10,
+            pady=4,
+        )
+        self._rename_user_btn.pack(side="left", padx=(8, 0))
+        self._change_pwd_btn = tk.Button(
+            auth_btns,
+            text="改密码",
+            command=self._on_change_password,
+            bg=BG2,
+            fg=MUTED,
+            bd=0,
+            relief="flat",
+            font=FONT_UI_SM,
+            cursor="hand2",
+            padx=10,
+            pady=4,
+        )
+        self._change_pwd_btn.pack(side="left", padx=(8, 0))
 
         self._browser_var = tk.BooleanVar(value=bool(prefs.get("open_browser")))
         self._debug_var = tk.BooleanVar(
@@ -1310,7 +1371,8 @@ class EvaLauncher:
         save_launch_prefs(
             port=port,
             host=self._normalize_host(self._host_var.get()),
-            card=(self._card_var.get() or "").strip(),
+            username=(self._user_var.get() or "").strip(),
+            card="",  # deprecated
             open_browser=bool(self._browser_var.get()),
             debug=bool(self._debug_var.get()),
             start_on_boot=want_boot,
@@ -1348,7 +1410,7 @@ class EvaLauncher:
             self._persist_form(port)
             self._apply_more(persist_all=True)
             self._more_dirty = False
-            self._emit("配置已保存（含卡密）。下次打开启动器会自动填入。")
+            self._emit("配置已保存。用户名会记住；密码不落盘。")
         except ValueError as extra:
             self._emit(f"[X] {extra}")
 
@@ -1555,25 +1617,36 @@ class EvaLauncher:
             self._boot_var.set(not want)
             self._emit(f"[X] 开机启动设置失败：{extra}")
 
+    def _toggle_pwd(self) -> None:
+        self._pwd_shown = not self._pwd_shown
+        self._pwd_entry.configure(show="" if self._pwd_shown else "•")
+        self._pwd_toggle.configure(text="隐藏" if self._pwd_shown else "显示")
+
     def _toggle_card(self) -> None:
-        self._card_shown = not self._card_shown
-        self._card_entry.configure(show="" if self._card_shown else "•")
-        self._card_toggle.configure(text="隐藏" if self._card_shown else "显示")
+        # Back-compat alias
+        self._toggle_pwd()
 
     def _refresh_auth_hint(self) -> None:
         try:
-            from app.auth.desktop_login import session_ok
+            from app.auth.desktop_login import session_info, session_ok
 
-            logged = session_ok()
+            info = session_info()
+            logged = bool(info.get("ok")) if info else session_ok()
+            uname = str((info or {}).get("username") or "").strip()
         except Exception:
             logged = False
+            uname = ""
         if logged:
+            who = f"「{uname}」" if uname else "本机"
             self._auth_hint.configure(
-                text="本机已有登录会话，打开页面无需再填卡密。"
+                text=(
+                    f"已登录 {who}。账号集中在此管理：可改用户名/密码，或注销会话。"
+                    "网页右上角可改「称呼」，设定页不再改账号密码。"
+                )
             )
         else:
             self._auth_hint.configure(
-                text="卡密仅用于换会话，不落盘。控制密钥不在界面显示。"
+                text="未登录：填写用户名与密码后点「登录 / 写入会话」或「启动」。首次无用户时将创建管理员。"
             )
 
     def _install_log_capture(self) -> None:
@@ -1670,21 +1743,13 @@ class EvaLauncher:
     def _apply_env(self, port: int) -> None:
         host = self._normalize_host(self._host_var.get())
         debug = bool(self._debug_var.get())
-        gw = (self._gw_var.get() or "").strip()
-        key = (self._key_var.get() or "").strip()
         os.environ["PORT"] = str(port)
         os.environ["HOST"] = host
         os.environ["DEBUG"] = "true" if debug else "false"
-        os.environ["AUTH_CONTROL_URL"] = gw
-        if key:
-            os.environ["AUTH_CONTROL_KEY"] = key
         env_keys = {
             "HOST": host,
             "DEBUG": "true" if debug else "false",
-            "AUTH_CONTROL_URL": gw,
         }
-        if key:
-            env_keys["AUTH_CONTROL_KEY"] = key
         written = upsert_env(env_keys)
         try:
             from app.config import get_settings
@@ -1863,26 +1928,222 @@ class EvaLauncher:
         shown = str((row or {}).get("name") or payload["name"])
         return f"模型 {shown}"
 
+    def _ask_text_dialog(
+        self,
+        *,
+        title: str,
+        fields: list[tuple[str, str, bool]],
+    ) -> dict[str, str] | None:
+        """Simple modal form. fields: (key, label, is_password)."""
+        tk = self._tk
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.configure(bg=BG2)
+        win.transient(self.root)
+        win.grab_set()
+        win.resizable(False, False)
+        body = tk.Frame(win, bg=BG2, padx=16, pady=14)
+        body.pack(fill="both", expand=True)
+        tk.Label(body, text=title, bg=BG2, fg=FG, font=FONT_SEC, anchor="w").pack(fill="x", pady=(0, 8))
+        vars_map: dict[str, Any] = {}
+        for field in fields:
+            key, label, is_pwd = field[0], field[1], field[2]
+            initial = field[3] if len(field) > 3 else ""
+            slot = tk.Frame(body, bg=BG2)
+            slot.pack(fill="x", pady=(0, 8))
+            tk.Label(slot, text=label, bg=BG2, fg=MUTED, font=FONT_UI_SM, anchor="w").pack(fill="x")
+            var = tk.StringVar(value=str(initial or ""))
+            ent = tk.Entry(
+                slot,
+                textvariable=var,
+                bg=BG3,
+                fg=FG,
+                insertbackground=FG,
+                relief="flat",
+                font=FONT_UI,
+                show="•" if is_pwd else "",
+            )
+            ent.pack(fill="x", ipady=4)
+            vars_map[key] = var
+        result: dict[str, str] = {}
+
+        def _ok() -> None:
+            for k, v in vars_map.items():
+                result[k] = v.get()
+            win.destroy()
+
+        def _cancel() -> None:
+            result.clear()
+            win.destroy()
+
+        btns = tk.Frame(body, bg=BG2)
+        btns.pack(fill="x", pady=(4, 0))
+        tk.Button(
+            btns, text="确定", command=_ok, bg=ACCENT, fg=ACCENT_FG, bd=0, relief="flat",
+            font=FONT_UI_SM, cursor="hand2", padx=14, pady=4,
+        ).pack(side="right")
+        tk.Button(
+            btns, text="取消", command=_cancel, bg=BG3, fg=FG, bd=0, relief="flat",
+            font=FONT_UI_SM, cursor="hand2", padx=14, pady=4,
+        ).pack(side="right", padx=(0, 8))
+        win.protocol("WM_DELETE_WINDOW", _cancel)
+        win.update_idletasks()
+        try:
+            x = self.root.winfo_rootx() + 40
+            y = self.root.winfo_rooty() + 80
+            win.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+        win.wait_window()
+        return result or None
+
+    def _on_rename_user(self) -> None:
+        cur = (self._user_var.get() or "").strip()
+        data = self._ask_text_dialog(
+            title="修改登录用户名",
+            fields=[
+                ("current", "当前用户名", False, cur),
+                ("password", "当前密码（校验）", True),
+                ("new_username", "新用户名（3–64 位字母/数字/._-）", False),
+            ],
+        )
+        if not data:
+            return
+        current = (data.get("current") or cur or "").strip()
+        if current and not (self._user_var.get() or "").strip():
+            self._user_var.set(current)
+        threading.Thread(
+            target=self._rename_user_worker,
+            args=(current, data.get("password") or "", data.get("new_username") or ""),
+            daemon=True,
+        ).start()
+
+    def _rename_user_worker(self, username: str, password: str, new_username: str) -> None:
+        try:
+            from app.auth.desktop_login import launcher_rename_user
+
+            ok, msg = launcher_rename_user(
+                username=username,
+                password=password,
+                new_username=new_username,
+            )
+        except Exception as exc:
+            ok, msg = False, str(exc)
+        if ok:
+            self._ui(lambda: self._user_var.set((new_username or "").strip()))
+            self._ui(lambda: self._persist_form(self.port))
+        self._emit(msg if ok else f"[鉴权] {msg}")
+        self._ui(self._refresh_auth_hint)
+
+    def _on_change_password(self) -> None:
+        cur = (self._user_var.get() or "").strip()
+        data = self._ask_text_dialog(
+            title="修改登录密码",
+            fields=[
+                ("username", "用户名", False),
+                ("old_password", "当前密码", True),
+                ("new_password", "新密码（至少 8 位）", True),
+                ("new_password2", "确认新密码", True),
+            ],
+        )
+        if not data:
+            return
+        if (data.get("new_password") or "") != (data.get("new_password2") or ""):
+            self._emit("[鉴权] 两次新密码不一致")
+            return
+        username = (data.get("username") or cur or "").strip()
+        if username:
+            self._user_var.set(username)
+        threading.Thread(
+            target=self._change_password_worker,
+            args=(username, data.get("old_password") or "", data.get("new_password") or ""),
+            daemon=True,
+        ).start()
+
+    def _change_password_worker(self, username: str, old_password: str, new_password: str) -> None:
+        try:
+            from app.auth.desktop_login import launcher_change_password
+
+            ok, msg = launcher_change_password(
+                username=username,
+                old_password=old_password,
+                new_password=new_password,
+            )
+        except Exception as exc:
+            ok, msg = False, str(exc)
+        try:
+            self._ui(lambda: self._pwd_var.set(""))
+        except Exception:
+            pass
+        self._emit(msg if ok else f"[鉴权] {msg}")
+        self._ui(self._refresh_auth_hint)
+
+    def _on_login_now(self) -> None:
+        port = self.port
+        try:
+            port = self._read_port()
+        except Exception:
+            pass
+        self._persist_form(port)
+        threading.Thread(target=self._login_now_worker, args=(port,), daemon=True).start()
+
+    def _login_now_worker(self, port: int) -> None:
+        self._do_login(port)
+        self._ui(self._refresh_auth_hint)
+
+    def _on_logout_session(self) -> None:
+        try:
+            from app.auth.desktop_login import launcher_logout
+
+            ok, msg = launcher_logout()
+            self._emit(msg if ok else f"[鉴权] {msg}")
+        except Exception as exc:
+            self._emit(f"[鉴权] 注销失败：{exc}")
+        self._refresh_auth_hint()
+        try:
+            self._refresh_pairing()
+        except Exception:
+            pass
+
+    def _ui_open_url(self, port: int) -> None:
+        try:
+            from app.auth.desktop_login import session_ok
+
+            logged = session_ok()
+        except Exception:
+            logged = False
+        base = local_url(port).rstrip("/")
+        url = base if logged else f"{base}/login"
+        try:
+            webbrowser.open(url)
+            self._emit(f"已打开 {url}")
+        except Exception as exc:
+            self._emit(f"打开浏览器失败：{exc}")
+
     def _do_login(self, port: int) -> None:
         from app.auth.desktop_login import launcher_login, session_ok
 
-        card = (self._card_var.get() or "").strip()
-        if not card:
+        user = (self._user_var.get() or "").strip()
+        pwd = self._pwd_var.get() or ""
+        if not user or not pwd:
             if session_ok():
-                self._emit("本机已有登录会话，打开页面无需再填卡密。")
+                self._emit("本机已有登录会话，打开页面无需再填密码。")
             else:
-                self._emit("未填卡密：启动后打开页面仍会进入登录页。")
+                self._emit("未填账号密码：启动后打开页面将进入登录页。")
             self._ui(self._refresh_auth_hint)
             self._ui(self._refresh_pairing)
             return
         ok, msg = launcher_login(
-            card_code=card,
-            control_url=(self._gw_var.get() or "").strip(),
-            control_key=(self._key_var.get() or "").strip(),
+            username=user,
+            password=pwd,
             port=port,
         )
         if ok:
             self._emit(msg)
+            try:
+                self._pwd_var.set("")
+            except Exception:
+                pass
         else:
             self._emit(f"[鉴权] {msg}")
         self._ui(self._refresh_auth_hint)
@@ -1934,10 +2195,7 @@ class EvaLauncher:
                 self._emit(line)
         self._emit("服务已启动。关闭窗口或点「停止」会关掉服务。")
         if self._browser_var.get():
-            try:
-                webbrowser.open(local_url(port))
-            except Exception as exc:
-                self._emit(f"打开浏览器失败：{exc}")
+            self._ui_open_url(port)
         self._ui(self._finish_running)
 
     def _finish_running(self) -> None:
@@ -1969,10 +2227,7 @@ class EvaLauncher:
     def _open_page(self) -> None:
         if not self._server.running:
             return
-        try:
-            webbrowser.open(local_url(self._server.port))
-        except Exception as extra:
-            self._emit(f"打开浏览器失败：{extra}")
+        self._ui_open_url(self._server.port)
 
     def _setup_tray(self) -> None:
         if sys.platform != "win32":

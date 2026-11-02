@@ -1,8 +1,8 @@
 # Eva
 
-Ruyi Studio 出品的本地 **AI 助手**（v0.1.3）。
+Ruyi Studio 出品的本地 **AI 助手**（v0.1.4）。
 
-对话、多模型、工具 / 技能、长期记忆、知识库、定时任务、工作流与 MCP。使用前需 **卡密登录**（卡密由管理员在 CardServer 发卡台发放）。
+对话、多模型、工具 / 技能、长期记忆、知识库、定时任务、工作流与 MCP。使用前需 **账号密码登录**（首次打开创建管理员，或在 `.env` 设置 `EVA_ADMIN_USER` / `EVA_ADMIN_PASSWORD`）。
 
 ---
 
@@ -12,19 +12,19 @@ Ruyi Studio 出品的本地 **AI 助手**（v0.1.3）。
 |------|------|
 | 对话 | 多会话、工具调用、流式 / 完整模式 |
 | LLM | 预置 DeepSeek；也可添加其它 OpenAI 兼容接口（xAI、Ollama 等） |
-| 工具 / 技能 | 内置工具 + `skills/` 技能包；可在对话中创建 / 更新业务技能 |
+| 工具 / 技能 | 内置工具 + `skills/` 技能包；业务技能请用设定 → Skills 导入 `.evaskill`（对话内热创建默认关闭） |
 | 记忆 | 长期偏好与规则注入 |
 | 知识库 | Wiki 式页面：检索、读写、版本 |
 | 任务 | 定时 / 手动任务调度 |
 | 工作流 | 可编排多步流程 |
 | MCP | 连接外部 MCP Server，扩展工具 |
-| 鉴权 | CardServer 卡密 + 本机安装绑定；同一目录再启动不用重输卡密 |
+| 鉴权 | 本机用户名/密码（bcrypt）+ 加密会话；同一目录再启动保持登录 |
 
-界面：`http://127.0.0.1:<端口>/` 或 `http://<本机IP>:<端口>/`（需登录）  
+界面：`http://127.0.0.1:<端口>/`  
 登录：`http://127.0.0.1:<端口>/login`  
-健康检查：`http://127.0.0.1:<端口>/health`  
+健康检查：`http://127.0.0.1:<端口>/health`
 
-默认 `HOST=0.0.0.0`，局域网用 **http://本机IP:端口** 打开（不要用 https）。若打不开，检查 Windows 防火墙是否放行该端口入站。仅本机访问时把 `.env` 改成 `HOST=127.0.0.1`。
+**默认只听本机** `HOST=127.0.0.1`。**不要**改成 `0.0.0.0` 除非你明确要暴露到局域网/公网——本机会话文件在无 Cookie 时仍可被识别为已登录，打到端口的客户端约等于已登录。局域网场景请另加反向代理与鉴权，勿当作已安全交付。
 
 ---
 
@@ -32,7 +32,7 @@ Ruyi Studio 出品的本地 **AI 助手**（v0.1.3）。
 
 - **Python 3.11+**（推荐 3.11 / 3.12）
 - 可访问的 **LLM API**（OpenAI 兼容）
-- 管理员提供的 **鉴权网关地址**、**控制密钥**（与 CardServer 相同）和 **卡密**
+- 本机管理员 **用户名** 与 **密码**（首次启动时创建；日常改名/改密在**启动器**）
 
 ---
 
@@ -63,12 +63,20 @@ pip install -r requirements.txt
 
 ### 2. 配置
 
-项目里只有一份 **`.env`**，启动时直接读取。按需改网关与 `AUTH_CONTROL_KEY`。  
+项目里只有一份 **`.env`**，启动时直接读取（可参考 `.env.example`）。  
 LLM **不要**写在 `.env`：预置 DeepSeek，登录后在 **设定 → LLM** 填写 API Key。
+
+发布安全相关默认：
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `ALLOW_CREATE_TOOL` | `false` | 关闭对话内 `create_tool` 落盘热加载 |
+| `WEBHOOK_ALLOW_TOOLS` | `false` | 禁止 Webhook 通道开启工具 |
+| `HOST` | `127.0.0.1` | 仅本机监听 |
 
 ### 3. 启动
 
-Windows 默认打开 **Eva 启动窗口**（启动 / 停止、改端口、看状态和日志），不再弹出独立终端。
+Windows 默认打开 **Eva 启动窗口**（启动 / 停止、改端口、登录与账号、看状态和日志）。
 
 双击项目目录里的 **`run.bat`** 即可（不要双击 `run.py`：`.py` 常被编辑器打开）。
 
@@ -104,17 +112,20 @@ Windows 建议用 `.venv\Scripts\python.exe run.py`（会转到 `pythonw.exe`，
 
 ---
 
-## 鉴权
+## 鉴权与账号
 
 | 场景 | 行为 |
 |------|------|
-| 该目录第一次使用 | 登录页填写网关 + 卡密 |
-| 同一目录再启动（可换端口） | 校验本机会话，**不用重输卡密**，没有注销按钮 |
-| 复制整个文件夹再开 | 视为新安装，须重新鉴权。原卡已被占用时，发卡台先 **解绑设备/项目** |
-| CardServer 吊销该卡 | 约十几秒内本机失效；重启后必须重新登录，原卡密无法再登 |
+| 该目录第一次使用 | 登录页或启动器创建管理员用户名+密码（或 .env 种子） |
+| 同一目录再启动（可换端口） | 校验本机会话，**不用重输密码** |
+| 改用户名 / 改密码 | **启动器**（设定页不再管理账号） |
+| 称呼 | 顶栏一体菜单可改 `display_name`；对话默认用它称呼你 |
+| 注销 | 启动器或顶栏菜单；或清 `data/auth/local_session*` |
 
-会话存在本目录 `data/auth/`（加密会话文件 + 安装 ID），**不用 Cookie**。  
-发卡网关与控制密钥由**发卡方**写在发给客户的 `.env` 里（`AUTH_CONTROL_URL` + `AUTH_CONTROL_KEY`）。客户登录页只填卡密。
+会话存在本目录 `data/auth/`（加密会话文件 + 安装 ID）。  
+账号密码存在本机 `data/auth/users.json`（仅 bcrypt 哈希）。可选用 `.env` 的 `EVA_ADMIN_USER` / `EVA_ADMIN_PASSWORD` 种子首个管理员。
+
+**本机会话语义**：无 Cookie/Bearer 时仍可能读到加密会话并视为已登录。这是本机单用户特性；一旦把 `HOST` 改成 `0.0.0.0`，任何打到该端口的客户端都可能等于已登录。
 
 ---
 
@@ -122,28 +133,30 @@ Windows 建议用 `.venv\Scripts\python.exe run.py`（会转到 `pythonw.exe`，
 
 ```env
 # —— 服务 ——
-HOST=0.0.0.0           # 本机 + 局域网；仅本机改 127.0.0.1
+HOST=127.0.0.1         # 仅本机；勿随意改 0.0.0.0
 PORT=8080              # 仅首次建议端口；选定后记在 data/launch.json
 DEBUG=false            # 交付关闭。true 或 --debug：终端详细日志 + 访问记录
-CORS_ORIGINS=*
+CORS_ORIGINS=http://127.0.0.1:8080,http://localhost:8080
 
 AGENT_NAME=Eva
 DATA_DIR=./data
 MCP_SERVERS=
 
-# —— 卡密鉴权 ——
+# —— 账号密码鉴权 ——
 AUTH_ENABLED=true
-AUTH_CONTROL_URL=              # 空=登录页手填。部署后写 http://CardServer主机:8090
-AUTH_CONTROL_URLS=             # 可选多网关：公司内网=http://10.x.x.x,外出公网=http://公网:端口
-AUTH_CONTROL_KEY=      # 必须与 CardServer 相同；空则登录页必填，否则网关 403
-AUTH_NODE_ID=eva
+# EVA_ADMIN_USER=admin
+# EVA_ADMIN_PASSWORD=change-me-now
 AUTH_SESSION_DAYS=7
 AUTH_COOKIE_SECURE=false
+
+# —— 发布安全（默认关闭危险能力）——
+ALLOW_CREATE_TOOL=false
+WEBHOOK_ALLOW_TOOLS=false
 ```
 
 - **DEBUG**：交付保持 `false`（终端只有启动摘要）。开发观察请求 / 鉴权时改 `true`。
 - **LLM**：预置 DeepSeek（`deepseek-flash`），API Key 为空。登录后在 **设定 → LLM** 填写 Key，写入 `data/config.json`。
-- 403：检查 `AUTH_CONTROL_KEY` 是否与**当前发卡台**一致。CardServer 部署到服务器后，以服务器管理台「控制密钥」为准，本机旧密钥通常对不上。Eva `.env` 为空时登录页必须填写。
+- **导出**：设定导出默认脱敏；含明文密钥需管理员二次确认并记审计。账号密码不随配置导入导出。
 
 ---
 
@@ -169,7 +182,7 @@ eva/
 | `config.json` | 人设 / LLM / 工具 / 集成（含密钥，不进业务库） |
 | `storage.json` | 存储后端配置 |
 | `eva.db` | 默认业务库（会话 / 记忆 / 知识库 / 任务 / 工作流） |
-| `auth/` | 本机安装 ID、加密会话、登录网关记忆 |
+| `auth/` | 本机安装 ID、加密会话、用户哈希 |
 | `workflows/definitions/` | 工作流定义 |
 | `webhooks/` | Webhook 通道 |
 | `tools/meta_dynamic.json` | 动态工具元数据 |
@@ -185,9 +198,9 @@ eva/
 
 | 工具 | 作用 |
 |------|------|
-| `create_tool` | 创建 / 更新业务 skill（`update=true` 就地覆盖） |
+| `create_tool` | 创建 / 更新业务 skill（**默认禁用**；需 `ALLOW_CREATE_TOOL=true`） |
 | `read_skill` | 读取 skill 源码 |
-| `delete_tool` | 删除业务 skill |
+| `delete_tool` | 删除业务 skill（随 create 开关） |
 | `list_skills` / `validate_skill` / `promote_skill` | 技能列表、校验、草稿晋升 |
 | `integrations` | 读写集成配置（密钥不要写进 skill） |
 | `workspace` | 工作区文件操作 |
@@ -202,19 +215,27 @@ eva/
 | `list_api_models` | 列出 API 可用模型 |
 | `server_health_check` | 本机健康检查 |
 
-业务技能可放在 `skills/<id>/`，或通过对话创建后写入 `workspace/skills/`（草稿）再晋升到 `skills/`。
+业务技能可放在 `skills/<id>/`，或通过设定 → Skills 导入 `.evaskill`。对话内热创建默认关闭，避免模型输出落盘并 `exec_module`。
 
 设定 → **Skills**：导出 / 导入 `.evaskill` 技能包，卸载业务技能。系统技能（`reload_runtime` 等）不能卸载。员工包默认只带系统技能，业务包按需导入。
 
 ---
 
+## Webhook
+
+- 管理：设定 → Webhook；入站需 Token（恒定时间比较 + 失败限流）。
+- 默认 `use_tools=false`，且 **不可**在 UI/API 打开，除非 `.env` 设 `WEBHOOK_ALLOW_TOOLS=true`。
+- 即便开启工具，也会屏蔽 `create_tool` / `delete_tool` / `promote_skill` / `terminal` 等危险工具。
+
+---
+
 ## 使用提示
 
-1. 第一次启动选端口，登录页填 **网关 + 卡密**。  
-2. 登录后在 **设定** 中配置 LLM、人设与需要的 MCP。  
-3. 同一目录以后再开，直接进入，不必重输卡密。  
-4. 复制项目到新目录再开，须重新鉴权；发卡台可能要先解绑。  
-5. 吊销卡密后，本机很快不能继续用。  
+1. 第一次启动选端口，登录页或启动器创建 **用户名 + 密码**。  
+2. 登录后在 **设定** 中配置 LLM、人设与需要的 MCP；账号改密只在启动器。  
+3. 同一目录以后再开，直接进入，不必重输密码（本机会话）。  
+4. 复制项目到新目录再开，须重新鉴权。  
+5. 设定导出默认脱敏；勿把含明文密钥的导出文件外传。  
 6. 改代码后需重启进程。`DEBUG=true` 只增加终端日志，**不会**热重载。
 
 ---

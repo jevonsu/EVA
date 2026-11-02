@@ -18,6 +18,10 @@ class PageCreate(BaseModel):
     tags: list[str] = Field(default_factory=list)
     collection: str = "default"
     pinned: bool = False
+    confidence: float | None = None
+    valid_to: str | None = None
+    ttl_days: float | None = None
+    supersedes_id: str | None = None
 
 
 class PageUpdate(BaseModel):
@@ -28,6 +32,10 @@ class PageUpdate(BaseModel):
     pinned: bool | None = None
     archived: bool | None = None
     changelog: str = ""
+    status: str | None = None
+    confidence: float | None = None
+    valid_to: str | None = None
+    ttl_days: float | None = None
 
 
 class PageAppend(BaseModel):
@@ -84,9 +92,15 @@ async def search_pages(
     q: str = Query(..., min_length=1),
     collection: str | None = None,
     limit: int = Query(10, ge=1, le=50),
+    include_archived: bool = False,
 ) -> list[dict[str, Any]]:
     store = get_knowledge_store()
-    return await store.search(q, collection=collection, limit=limit)
+    return await store.search(
+        q,
+        collection=collection,
+        limit=limit,
+        include_archived=include_archived,
+    )
 
 
 @router.get("/pages/{page_id}")
@@ -102,34 +116,67 @@ async def get_page(page_id: str) -> dict[str, Any]:
 
 @router.post("/pages")
 async def create_page(body: PageCreate) -> dict[str, Any]:
+    from app.memory.human_gate import ACTOR_UI, append_audit
+
     store = get_knowledge_store()
     try:
-        return await store.create(
+        page = await store.create(
             title=body.title,
             content=body.content,
             tags=body.tags,
             collection=body.collection,
             pinned=body.pinned,
+            confidence=body.confidence,
+            valid_to=body.valid_to,
+            ttl_days=body.ttl_days,
+            supersedes_id=body.supersedes_id,
+            source="ui",
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    append_audit(
+        "ui_create_kb",
+        actor=ACTOR_UI,
+        item_type="kb",
+        item_id=str(page.get("id") or ""),
+        detail={"status": page.get("status"), "collection": page.get("collection")},
+    )
+    return page
 
 
 @router.patch("/pages/{page_id}")
 async def update_page(page_id: str, body: PageUpdate) -> dict[str, Any]:
+    from app.memory.human_gate import ACTOR_UI, append_audit
+
     store = get_knowledge_store()
-    page = await store.update(
-        page_id,
-        title=body.title,
-        content=body.content,
-        tags=body.tags,
-        collection=body.collection,
-        pinned=body.pinned,
-        archived=body.archived,
-        changelog=body.changelog,
-    )
+    try:
+        page = await store.update(
+            page_id,
+            title=body.title,
+            content=body.content,
+            tags=body.tags,
+            collection=body.collection,
+            pinned=body.pinned,
+            archived=body.archived,
+            changelog=body.changelog,
+            status=body.status,
+            confidence=body.confidence,
+            valid_to=body.valid_to,
+            ttl_days=body.ttl_days,
+            source="ui",
+            via_review=False,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
     if not page:
         raise HTTPException(404, "Page not found")
+    append_audit(
+        "ui_edit_kb",
+        actor=ACTOR_UI,
+        item_type="kb",
+        item_id=page_id,
+        detail={"status": page.get("status"), "changelog": body.changelog},
+    )
     return page
 
 

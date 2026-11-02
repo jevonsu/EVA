@@ -44,6 +44,18 @@ _DENY = (
     re.compile(r"\bschtasks\s+/create\b", re.I),
     re.compile(r"powershell\s+(-e|-enc|-encodedcommand)\b", re.I),
     re.compile(r"cmd\s+/c\s+.*&\s*rd\s+/s", re.I),
+    # 绕过变体：编码/缩写参数、间接执行、路径与扩展名变体
+    re.compile(r"\b(?:powershell|pwsh)(?:\.exe)?[\"']?\s+(?:.*\s)?[-/]e(?:c|n\w*)?(?:\s|$)", re.I),
+    re.compile(r"\b(?:invoke-command|icm)\b.*-scriptblock|\[scriptblock\]::create", re.I),
+    re.compile(r"\b(?:certutil)\b.*-(?:decode|urlcache)", re.I),
+    re.compile(r"\b(?:mshta|regsvr32|rundll32|wscript|cscript|bitsadmin)(?:\.exe)?\b", re.I),
+    re.compile(r"\b(?:format|diskpart|bcdedit|shutdown|vssadmin|wbadmin|cipher)(?:\.exe|\.com)?\b.*(?:/w|delete|[a-z]:|/s|/r|/p|shadows)", re.I),
+    re.compile(r"\breg(?:\.exe)?\s+(?:delete|add\s+hk(?:lm|ey_local_machine))", re.I),
+    re.compile(r"\b(?:rm|rmdir|rd|del|erase|remove-item|ri)\b.*(?:-rf?|/s|-recurse).*(?:^|\s|[\"'])(?:[c-z]:[\\/]?(?:\s|[\"']|$)|%systemroot%|\$env:windir|/\s*$|~\s*$)", re.I),
+    re.compile(r"\b(?:set-mppreference|add-mppreference)\b|\bnetsh\s+advfirewall\b", re.I),
+    re.compile(r"\bpython[\d.]*(?:\.exe)?\s+-c\s+.*(?:base64|b64decode|exec\s*\(|os\.system|subprocess)", re.I),
+    re.compile(r"\|\s*(?:iex|invoke-expression|sh|bash|cmd(?:\.exe)?|powershell|pwsh)\b", re.I),
+    re.compile(r"\b(?:curl|wget|iwr|invoke-webrequest|irm|invoke-restmethod)\b.*\|", re.I),
 )
 
 _AUTO_BG = re.compile(

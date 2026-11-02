@@ -1,0 +1,150 @@
+/* ============================================
+ Eva — 手机端体验补强（最后加载，覆盖 chat-c / llama 的移动端细节）
+ 只作用于 ≤900px 或触屏；不改桌面布局
+ ============================================ */
+
+/* —— 触屏通用：去双击缩放延迟、按钮不选中文字 —— */
+@media (pointer: coarse) {
+ button,
+ .btn,
+ a,
+ label,
+ [role="button"],
+ [role="menuitem"] {
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+ }
+ /* 消息正文仍可长按选择复制 */
+ .messages,
+ .messages * {
+  -webkit-user-select: text;
+  user-select: text;
+ }
+ .messages button,
+ .messages .btn {
+  -webkit-user-select: none;
+  user-select: none;
+ }
+}
+
+@media (max-width: 900px) {
+ /* —— 点按目标 ≥44px —— */
+ .icon-btn,
+ #btnMenu,
+ .composer-icon-btn,
+ .composer-plus-item,
+ .top-hint-chip,
+ .scroll-bottom {
+  min-width: 44px;
+  min-height: 44px;
+ }
+ .composer-plus-item {
+  padding-top: 10px;
+  padding-bottom: 10px;
+ }
+ #btnSend,
+ .send-btn,
+ #btnStop {
+  min-width: 44px;
+  min-height: 44px;
+ }
+
+ /* —— 顶栏：避开刘海 / 状态栏 —— */
+ .topbar {
+  margin-top: max(8px, env(safe-area-inset-top)) !important;
+  margin-left: max(10px, env(safe-area-inset-left)) !important;
+  margin-right: max(10px, env(safe-area-inset-right)) !important;
+ }
+ #chatTitleText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 52vw;
+  display: inline-block;
+  vertical-align: bottom;
+ }
+
+ /* —— 消息区：独立滚动、不带动整页回弹，长内容不撑破横向 —— */
+ .messages {
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+ }
+ .messages pre,
+ .messages table,
+ .messages .table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+ }
+ .messages img,
+ .messages video {
+  max-width: 100%;
+  height: auto;
+ }
+
+ /* —— 底栏输入：左右安全区；键盘弹起时去掉底部安全区留白 —— */
+ .composer {
+  padding-left: max(10px, env(safe-area-inset-left));
+  padding-right: max(10px, env(safe-area-inset-right));
+ }
+ body.kb-open .composer {
+  padding-bottom: 6px !important;
+ }
+ #input {
+  font-size: 16px !important; /* iOS < 16px 聚焦会自动放大 */
+  max-height: 34vh;
+  max-height: 34dvh;
+ }
+ body.kb-open #input {
+  max-height: 24vh;
+  max-height: 24dvh;
+ }
+
+ /* 「回到底部」浮钮不压在输入框 / 安全区上 */
+ .scroll-bottom {
+  bottom: calc(12px + env(safe-area-inset-bottom)) !important;
+ }
+
+ /* —— 侧栏抽屉：内部滚动不穿透，底部留安全区 —— */
+ .sidebar {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: env(safe-area-inset-bottom);
+ }
+ body.sidebar-open .messages {
+  overflow: hidden;
+ }
+}
+
+/* —— 毛玻璃在手机上降级：模糊半径减半 + 背景更实，保证可读与滚动流畅 —— */
+@media (max-width: 900px) and (pointer: coarse) {
+ .topbar,
+ .composer-box {
+  backdrop-filter: blur(14px) saturate(1.2) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(1.2) !important;
+ }
+ .sidebar {
+  backdrop-filter: blur(18px) saturate(1.2) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(1.2) !important;
+  background:
+   linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03)),
+   rgba(18, 18, 20, 0.92) !important;
+ }
+}
+
+/* —— 横屏短屏：压缩顶栏与欢迎台 —— */
+@media (max-width: 900px) and (max-height: 480px) and (orientation: landscape) {
+ .topbar {
+  margin-top: 4px !important;
+  min-height: 44px;
+ }
+ .home-hero-sub {
+  display: none;
+ }
+ #input {
+  max-height: 30vh;
+ }
+}

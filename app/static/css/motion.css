@@ -1,0 +1,724 @@
+﻿/* EVA motion — llama pure dark; flashier tier; load after llama-theme.css */
+
+:root {
+  --motion-fast: 220ms;
+  --motion-base: 420ms;
+  --motion-slow: 640ms;
+  --motion-glass: 720ms;
+  --motion-spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --glow-ambient: rgba(255, 255, 255, 0.14);
+  --glow-ambient-2: rgba(250, 250, 250, 0.10);
+  --glow-focus: rgba(255, 255, 255, 0.22);
+}
+
+/* ========== Chat ambient glow (subtle, not neon) ========== */
+.main {
+  isolation: isolate;
+}
+
+.messages-wrap::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 70% 45% at 50% -8%, var(--glow-ambient), transparent 58%),
+    radial-gradient(ellipse 45% 35% at 88% 72%, var(--glow-ambient-2), transparent 55%),
+    radial-gradient(ellipse 40% 30% at 8% 85%, rgba(255, 255, 255, 0.025), transparent 50%);
+  opacity: 1;
+  animation: ambientDrift 14s ease-in-out infinite alternate;
+}
+
+.messages-wrap > .messages,
+.messages-wrap > .scroll-bottom {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes ambientDrift {
+  from { opacity: 0.45; transform: scale(1) translate3d(0, 0, 0); }
+  to { opacity: 0.7; transform: scale(1.03) translate3d(0, -1.5%, 0); }
+}
+
+body.home-hero .messages-wrap::before {
+  background:
+    radial-gradient(ellipse 80% 55% at 50% 28%, rgba(255, 255, 255, 0.055), transparent 60%),
+    radial-gradient(ellipse 50% 40% at 20% 80%, rgba(255, 255, 255, 0.03), transparent 55%);
+}
+
+/* ========== Sidebar frosted glass + transitions ========== */
+.sidebar {
+  background: rgba(20, 20, 20, 0.78) !important;
+  backdrop-filter: blur(22px) saturate(1.15);
+  -webkit-backdrop-filter: blur(22px) saturate(1.15);
+  transition:
+    transform var(--motion-glass) var(--motion-spring),
+    box-shadow var(--motion-glass) var(--motion-ease),
+    opacity var(--motion-slow) var(--motion-ease),
+    width var(--motion-glass) var(--motion-spring),
+    padding var(--motion-slow) var(--motion-ease),
+    border-color var(--motion-base) ease,
+    background var(--motion-base) ease;
+  will-change: transform, opacity;
+}
+
+.sidebar-scrim {
+  transition: opacity var(--motion-base) var(--motion-ease), backdrop-filter var(--motion-glass) ease;
+  background: rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.sidebar-scrim:not(.hidden) {
+  animation: scrimIn var(--motion-base) var(--motion-ease);
+}
+
+@keyframes scrimIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (max-width: 900px) {
+  .sidebar {
+    background: rgba(18, 18, 18, 0.72) !important;
+    backdrop-filter: blur(28px) saturate(1.2);
+    -webkit-backdrop-filter: blur(28px) saturate(1.2);
+    transition:
+      transform var(--motion-glass) var(--motion-spring),
+      box-shadow var(--motion-glass) var(--motion-ease),
+      opacity var(--motion-slow) ease !important;
+  }
+
+  body.sidebar-open .sidebar {
+    box-shadow:
+      8px 0 40px rgba(0, 0, 0, 0.55),
+      0 0 0 1px rgba(255, 255, 255, 0.06);
+  }
+}
+
+/* Desktop collapse: keep 2 columns (0fr + 1fr) so main stays beside, not stacked */
+@media (min-width: 901px) {
+  .app {
+    transition: grid-template-columns var(--motion-glass) var(--motion-spring);
+  }
+
+  body.sidebar-collapsed .app {
+    grid-template-columns: var(--sidebar-rail-w, 68px) 1fr !important;
+  }
+
+  body.sidebar-collapsed .sidebar {
+    /* rail visible; chat-c.css owns icon-only layout */
+    display: flex !important;
+    opacity: 1;
+    overflow: hidden;
+    pointer-events: auto;
+    transform: none;
+  }
+
+  body:not(.sidebar-collapsed) .sidebar {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 「更多」height animate */
+.quick-row-more {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  margin-top: 0 !important;
+  padding-top: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+  transition:
+    max-height var(--motion-slow) var(--motion-spring),
+    opacity var(--motion-base) var(--motion-ease),
+    transform var(--motion-base) var(--motion-spring),
+    margin-top var(--motion-base) ease,
+    padding-top var(--motion-base) ease;
+}
+
+.quick-row-more.is-open {
+  max-height: 96px;
+  opacity: 1;
+  transform: none;
+  margin-top: 0;
+  padding-top: 0;
+  pointer-events: auto;
+}
+
+#btnQuickMore {
+  transition: background var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease, transform var(--motion-fast) var(--motion-spring);
+}
+
+/* ========== Buttons: hover lift + press scale + focus ========== */
+.btn {
+  transition:
+    background var(--motion-fast) ease,
+    border-color var(--motion-fast) ease,
+    color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease,
+    transform var(--motion-fast) var(--motion-spring),
+    filter var(--motion-fast) ease !important;
+  transform: translateZ(0);
+}
+
+.btn:hover:not(:disabled):not(.btn-send) {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+}
+
+.btn:active:not(:disabled):not(.btn-send) {
+  transform: scale(0.97);
+  filter: brightness(0.97);
+}
+
+.btn.primary:hover:not(:disabled):not(.btn-send) {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+}
+
+.btn.primary:active:not(:disabled):not(.btn-send) {
+  transform: scale(0.97);
+}
+
+.btn.ghost:hover:not(:disabled),
+.btn.ghost-sm:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.btn.ghost:active:not(:disabled),
+.btn.ghost-sm:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px #171717, 0 0 0 4px rgba(255, 255, 255, 0.45) !important;
+}
+
+.btn.icon-btn:hover:not(:disabled) {
+  transform: translateY(-1px) scale(1.03);
+}
+
+.btn.icon-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.btn.primary.btn-send:active:not(:disabled):not(.is-empty) {
+  transform: scale(0.94) !important;
+}
+
+.session-item {
+  transition: background var(--motion-fast) ease, border-color var(--motion-fast) ease, transform var(--motion-fast) var(--motion-spring) !important;
+}
+
+.session-item:hover {
+  transform: translateX(2px);
+}
+
+.session-item:active {
+  transform: scale(0.99);
+}
+
+.home-hero-chip,
+.empty-chip,
+.home-cap-card {
+  transition:
+    background var(--motion-fast) ease,
+    border-color var(--motion-fast) ease,
+    color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease,
+    transform var(--motion-fast) var(--motion-spring) !important;
+}
+
+.home-hero-chip:hover,
+.empty-chip:hover,
+.home-cap-card:hover {
+  transform: translateY(-2px);
+}
+
+.home-hero-chip:active,
+.empty-chip:active,
+.home-cap-card:active {
+  transform: scale(0.97);
+}
+
+.home-welcome {
+  animation: heroIn 0.42s var(--motion-spring) both;
+}
+
+/* ========== Composer focus glow ========== */
+.composer-box {
+  transition:
+    border-color var(--motion-base) ease,
+    box-shadow var(--motion-base) ease,
+    background var(--motion-base) ease,
+    transform var(--motion-slow) var(--motion-spring) !important;
+}
+
+.composer-box:focus-within {
+  border-color: rgba(255, 255, 255, 0.32) !important;
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.08),
+    0 0 36px rgba(255, 255, 255, 0.07),
+    0 12px 40px rgba(0, 0, 0, 0.38) !important;
+}
+
+body.home-hero .composer-box:focus-within,
+.main.home-hero .composer-box:focus-within {
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.1),
+    0 0 48px rgba(255, 255, 255, 0.08),
+    0 16px 48px rgba(0, 0, 0, 0.42) !important;
+}
+
+#btnComposerPlus.composer-icon-btn {
+  transition: background var(--motion-fast) ease, color var(--motion-fast) ease, transform var(--motion-fast) var(--motion-spring), border-color var(--motion-fast) ease !important;
+}
+
+#btnComposerPlus.composer-icon-btn:hover {
+  transform: scale(1.06);
+}
+
+#btnComposerPlus.composer-icon-btn:active {
+  transform: scale(0.94);
+}
+
+.composer-plus-menu:not(.hidden) {
+  animation: plusMenuIn var(--motion-base) var(--motion-spring);
+  transform-origin: bottom left;
+}
+
+@keyframes plusMenuIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ========== Messages enter ========== */
+.msg {
+  animation: msgEnter var(--motion-slow) var(--motion-spring) both !important;
+}
+
+.msg.msg-enter {
+  animation: msgEnter var(--motion-slow) var(--motion-spring) both !important;
+}
+
+@keyframes msgEnter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+@keyframes msgIn {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+.typing-msg,
+.status-strip,
+.tool-activity {
+  animation: msgEnter var(--motion-base) var(--motion-spring) both;
+}
+
+.stream-cursor {
+  animation: blink 0.9s step-end infinite, cursorGlow 1.6s ease-in-out infinite;
+}
+
+@keyframes cursorGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+  50% { box-shadow: 0 0 8px 1px rgba(255, 255, 255, 0.35); }
+}
+
+/* ========== Modal open / close ========== */
+.modal-backdrop:not(.hidden) {
+  animation: modalBackdropIn var(--motion-base) var(--motion-ease);
+}
+
+.modal-backdrop:not(.hidden) > .modal,
+.modal-backdrop:not(.hidden) .modal {
+  animation: modalPanelIn var(--motion-slow) var(--motion-spring);
+  transform-origin: center center;
+}
+
+.modal-backdrop.is-leaving {
+  display: flex !important;
+  animation: modalBackdropOut var(--motion-base) var(--motion-ease) forwards;
+  pointer-events: none;
+}
+
+.modal-backdrop.is-leaving > .modal,
+.modal-backdrop.is-leaving .modal {
+  animation: modalPanelOut var(--motion-base) var(--motion-ease) forwards;
+}
+
+@keyframes modalBackdropIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalBackdropOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes modalPanelIn {
+  from { opacity: 0; transform: translateY(28px) scale(0.9); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes modalPanelOut {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(8px) scale(0.97); }
+}
+
+body.modal-open .main {
+  transition: filter var(--motion-slow) ease;
+}
+
+/* ========== Skeleton shimmer ========== */
+.card.skeleton,
+.card.skeleton-shimmer,
+.skeleton-shimmer.card {
+  position: relative;
+  overflow: hidden;
+  animation: none !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  background: #1c1c1c !important;
+}
+
+.card.skeleton::after,
+.card.skeleton-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    transparent 40%,
+    rgba(255, 255, 255, 0.06) 50%,
+    transparent 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: skeletonShimmer 1.35s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.skeleton-line {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(90deg, #262626 0%, #333 50%, #262626 100%) !important;
+  background-size: 200% 100%;
+  animation: skeletonShimmer 1.35s ease-in-out infinite;
+}
+
+.skeleton-line:nth-child(2) { animation-delay: 0.12s; }
+.skeleton-line:nth-child(3) { animation-delay: 0.24s; }
+
+@keyframes skeletonShimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+/* Utility: reusable shimmer block (streaming / placeholders) */
+.skeleton-block,
+.msg-skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #1c1c1c;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  min-height: 56px;
+}
+
+.skeleton-block::after,
+.msg-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 35%,
+    rgba(255, 255, 255, 0.07) 50%,
+    transparent 65%
+  );
+  background-size: 200% 100%;
+  animation: skeletonShimmer 1.35s ease-in-out infinite;
+}
+
+.msg-skeleton-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+}
+
+body.is-busy .status-strip {
+  position: relative;
+  overflow: hidden;
+}
+
+body.is-busy .status-strip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    105deg,
+    transparent 40%,
+    rgba(255, 255, 255, 0.05) 50%,
+    transparent 60%
+  );
+  background-size: 200% 100%;
+  animation: skeletonShimmer 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ========== Toast / scroll / topbar polish ========== */
+.toast {
+  animation: toastIn var(--motion-base) var(--motion-spring);
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(16px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+
+.scroll-bottom:not(.hidden) {
+  animation: fadeUp var(--motion-base) var(--motion-spring);
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+.topbar {
+  transition: background var(--motion-base) ease, border-color var(--motion-base) ease, box-shadow var(--motion-base) ease;
+}
+
+.home-hero-head:not([hidden]) {
+  animation: heroIn 0.45s var(--motion-spring) both;
+}
+
+@keyframes heroIn {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ========== Login page helpers (if auth links this file) ========== */
+.login-card {
+  animation: modalPanelIn 0.4s var(--motion-spring) both;
+}
+
+/* ========== prefers-reduced-motion: kill fancy parts ========== */
+@media (prefers-reduced-motion: reduce) {
+  .messages-wrap::before {
+    animation: none !important;
+    opacity: 0.7;
+    transform: none !important;
+  }
+
+  .sidebar,
+  .app,
+  .quick-row-more,
+  .btn,
+  .composer-box,
+  .session-item,
+  .home-hero-chip,
+  .empty-chip,
+  .home-cap-card,
+  .home-welcome,
+  .sidebar-scrim {
+    transition: none !important;
+    animation: none !important;
+  }
+
+  body.sidebar-collapsed .sidebar {
+    transform: none !important;
+  }
+
+  .msg,
+  .msg.msg-enter,
+  .typing-msg,
+  .status-strip,
+  .tool-activity,
+  .modal-backdrop:not(.hidden),
+  .modal-backdrop:not(.hidden) .modal,
+  .modal-backdrop.is-leaving,
+  .modal-backdrop.is-leaving .modal,
+  .composer-plus-menu:not(.hidden),
+  .toast,
+  .scroll-bottom:not(.hidden),
+  .home-hero-head:not([hidden]),
+  .login-card {
+    animation: none !important;
+    filter: none !important;
+    transform: none !important;
+    opacity: 1 !important;
+  }
+
+  .card.skeleton::after,
+  .skeleton-line,
+  .skeleton-block::after,
+  .msg-skeleton::after,
+  body.is-busy .status-strip::after,
+  .stream-cursor {
+    animation: none !important;
+  }
+
+  .btn:hover:not(:disabled),
+  .btn:active:not(:disabled),
+  .btn.icon-btn:hover:not(:disabled),
+  .btn.icon-btn:active:not(:disabled),
+  .btn.primary.btn-send:active:not(:disabled),
+  .session-item:hover,
+  .home-hero-chip:hover,
+  .empty-chip:hover,
+  .home-cap-card:hover {
+    transform: none !important;
+  }
+
+  .sidebar {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: #141414 !important;
+  }
+
+  .sidebar-scrim {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+
+/* ========== Live status motion (trimmed — no stacked pulses) ========== */
+.status-strip.is-live {
+  animation: none;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  box-shadow: none;
+}
+.status-strip.is-live::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: #fafafa;
+  vertical-align: middle;
+  animation: statusDot 1.6s ease-in-out infinite;
+}
+@keyframes statusDot {
+  0%, 100% { opacity: 0.35; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+.tool-activity.is-live {
+  animation: toolPanelIn 0.35s var(--motion-spring) both;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  box-shadow: none !important;
+}
+
+@keyframes toolPanelIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+.tool-activity-step {
+  animation: stepIn 280ms var(--motion-spring) both;
+}
+
+@keyframes stepIn {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.tool-activity-step.is-running,
+.tool-activity-step.is-current.is-running {
+  animation: stepIn 280ms var(--motion-spring) both;
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tool-activity-step.is-running::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: rgba(250, 250, 250, 0.55);
+  animation: stepBar 1.4s ease-in-out infinite;
+}
+
+@keyframes stepBar {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+.typing i {
+  animation: typingDot 1s ease-in-out infinite !important;
+}
+
+@keyframes typingDot {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0) scale(0.85); }
+  40% { opacity: 1; transform: translateY(-4px) scale(1.05); }
+}
+
+.tool-activity-now {
+  animation: nowFade 0.25s ease both;
+}
+
+@keyframes nowFade {
+  from { opacity: 0.5; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-strip.is-live::before,
+  .tool-activity.is-live,
+  .tool-activity-step,
+  .tool-activity-step.is-running,
+  .tool-activity-step.is-current.is-running,
+  .tool-activity-step.is-running::before,
+  .typing i,
+  .tool-activity-now {
+    animation: none !important;
+  }
+}
+
+
+/* ========== Compact run-status motion ========== */
+.tool-activity.is-live.is-collapsed {
+  animation: none;
+  box-shadow: none !important;
+  border-color: rgba(255,255,255,0.12) !important;
+}
+.tool-activity.is-live:not(.is-collapsed) {
+  animation: toolPanelIn 0.35s var(--motion-spring) both;
+  box-shadow: none !important;
+}
+.tool-activity.is-collapsed .tool-activity-status {
+  animation: nowFade 0.25s ease both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-activity.is-live .tool-activity-pulse,
+  .tool-activity.is-collapsed .tool-activity-status {
+    animation: none !important;
+  }
+}

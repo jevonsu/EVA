@@ -31,11 +31,9 @@ def _path() -> Path:
 
 
 def _pepper() -> str:
-    settings = get_settings()
-    return (
-        (getattr(settings, "auth_pepper", None) or "")
-        or "eva-offline-default"
-    )
+    from app.auth.pepper import get_auth_pepper
+
+    return get_auth_pepper()
 
 
 def _token_key(token: str) -> str:

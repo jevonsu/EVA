@@ -2,7 +2,7 @@
 
 Bound to this copy's data/ directory only — restarting the same project
 on another port keeps the login. A copied folder has a different data
-dir (and CardServer fingerprint) and must card-login again.
+dir and must log in again.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import threading
@@ -20,7 +21,9 @@ from typing import Any
 
 from app.config import get_settings
 
+logger = logging.getLogger("app.auth.local_session")
 _lock = threading.RLock()
+_AUTH_MODE = "password"
 
 
 def _paths():
@@ -40,7 +43,6 @@ def _norm_data_dir(raw: Any) -> str:
 
 
 def _instance_stamp() -> dict[str, Any]:
-    """Bind a session to this copy's data dir (not the listen port)."""
     settings = get_settings()
     return {"data_dir": _norm_data_dir(getattr(settings, "data_dir", None))}
 
@@ -60,47 +62,43 @@ def _load_or_create_key() -> bytes:
     return raw
 
 
+def require_cryptography() -> None:
+    """Fail closed when auth is enabled but cryptography is missing."""
+    try:
+        from cryptography.fernet import Fernet  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "AUTH_ENABLED requires the 'cryptography' package. "
+            "Install with: pip install cryptography"
+        ) from exc
+
+
 def _encrypt(plain: bytes) -> bytes:
     key = _load_or_create_key()
-    try:
-        from cryptography.fernet import Fernet
+    from cryptography.fernet import Fernet
 
-        f = Fernet(base64.urlsafe_b64encode(hashlib.sha256(key).digest()))
-        return f.encrypt(plain)
-    except Exception:
-        nonce = secrets.token_bytes(16)
-        stream_key = hashlib.sha256(key + nonce).digest()
-        stream = (stream_key * ((len(plain) // len(stream_key)) + 1))[: len(plain)]
-        cipher = bytes(a ^ b for a, b in zip(plain, stream))
-        tag = hmac.new(stream_key, cipher, hashlib.sha256).digest()[:16]
-        return nonce + tag + cipher
+    f = Fernet(base64.urlsafe_b64encode(hashlib.sha256(key).digest()))
+    return f.encrypt(plain)
 
 
 def _decrypt(blob: bytes) -> bytes:
     key = _load_or_create_key()
-    try:
-        from cryptography.fernet import Fernet
+    from cryptography.fernet import Fernet
 
-        f = Fernet(base64.urlsafe_b64encode(hashlib.sha256(key).digest()))
-        return f.decrypt(blob)
-    except Exception:
-        if len(blob) < 33:
-            raise ValueError("corrupt session")
-        nonce, tag, cipher = blob[:16], blob[16:32], blob[32:]
-        stream_key = hashlib.sha256(key + nonce).digest()
-        expect = hmac.new(stream_key, cipher, hashlib.sha256).digest()[:16]
-        if not hmac.compare_digest(tag, expect):
-            raise ValueError("session tampered")
-        stream = (stream_key * ((len(cipher) // len(stream_key)) + 1))[: len(cipher)]
-        return bytes(a ^ b for a, b in zip(cipher, stream))
+    f = Fernet(base64.urlsafe_b64encode(hashlib.sha256(key).digest()))
+    return f.decrypt(blob)
 
 
 def save_local_session(
     *,
     session_token: str,
-    device_id: str,
-    control_key: str,
+    device_id: str = "",
+    control_key: str = "",
     expires_at: float,
+    user_id: str = "",
+    username: str = "",
+    role: str = "user",
+    auth_mode: str = _AUTH_MODE,
 ) -> None:
     token = (session_token or "").strip()
     if not token:
@@ -113,7 +111,11 @@ def save_local_session(
     except Exception:
         inst_id = ""
     body = {
+        "auth_mode": (auth_mode or _AUTH_MODE),
         "session_token": token,
+        "user_id": (user_id or "")[:64],
+        "username": (username or "")[:64],
+        "role": (role or "user")[:32],
         "device_id": (device_id or "")[:128],
         "control_key": (control_key or "")[:200],
         "expires_at": float(expires_at or 0),
@@ -143,6 +145,11 @@ def load_local_session() -> dict[str, Any] | None:
             return None
     if not isinstance(data, dict):
         return None
+    # Drop legacy card sessions (no password auth_mode)
+    mode = str(data.get("auth_mode") or "").strip()
+    if mode != _AUTH_MODE:
+        clear_local_session()
+        return None
     token = str(data.get("session_token") or "").strip()
     if not token:
         return None
@@ -167,7 +174,11 @@ def load_local_session() -> dict[str, Any] | None:
             clear_local_session()
             return None
     return {
+        "auth_mode": _AUTH_MODE,
         "session_token": token,
+        "user_id": str(data.get("user_id") or "").strip(),
+        "username": str(data.get("username") or "").strip(),
+        "role": str(data.get("role") or "user").strip() or "user",
         "device_id": str(data.get("device_id") or "").strip(),
         "control_key": str(data.get("control_key") or "").strip(),
         "expires_at": exp,

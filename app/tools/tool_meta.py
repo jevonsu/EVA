@@ -50,6 +50,7 @@ TOOL_META: dict[str, dict[str, str]] = {
     "ask_user": {"role": "primary", "tag": "问用户", "group": "dev"},
     "calculator": {"role": "primary", "tag": "计算", "group": "dev"},
     "system_info": {"role": "primary", "tag": "系统信息", "group": "dev"},
+    "update_persona": {"role": "primary", "tag": "人设", "group": "dev"},
     "create_tool": {"role": "primary", "tag": "创建工具", "group": "dev"},
     "capability_groups": {"role": "primary", "tag": "技能分类", "group": "dev"},
     "integrations": {"role": "primary", "tag": "集成配置", "group": "infra"},
@@ -210,6 +211,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "get_current_time": "当前时间",
     "calculator": "计算器",
     "system_info": "系统信息",
+    "update_persona": "修改人设",
     "create_tool": "创建工具",
     "capability_groups": "技能分类",
     "integrations": "集成配置",
@@ -683,11 +685,17 @@ def routing_instruction_core() -> str:
         "- Local files: dirs/rename/txt/code/images → `workspace`; "
         ".docx .xlsx .pptx .pdf → `document`; "
         ".md either (short note→workspace, structured edit→document). "
+        "WRITE PATHS: only uploads/docs/exports/scratch/images/videos/skills. "
+        "New drafts → scratch/; deliverables → exports/; office drafts → docs/. "
+        "NEVER create files at workspace root. "
+        "Overwrite existing file → ask_user first, then overwrite=true. "
+        "Bare/unknown paths are rewritten under scratch/. "
         "Paths relative to workspace/, no workspace/ prefix.\n"
         "- Do not create_tool for a one-off if an existing tool can do it.\n"
         "- Missing capability → spec card then create_tool; "
         "don't invent 'no permission'."
     )
+
 
 
 def routing_instruction_skilldev() -> str:

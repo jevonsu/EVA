@@ -1,13 +1,15 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="robots" content="noindex,nofollow" />
+  <meta name="theme-color" content="#171717" />
   <meta name="referrer" content="no-referrer" />
   <title>Eva · 登录</title>
   <link rel="icon" type="image/png" href="/static/logo.png" />
   <link rel="stylesheet" href="/static/auth/auth.css" />
+  <link rel="stylesheet" href="/static/css/motion.css" />
 </head>
 <body class="login-body">
   <div class="login-bg" aria-hidden="true">
@@ -22,48 +24,55 @@
         <div class="logo logo-img" aria-hidden="true"><img src="/static/logo.png" alt="" /></div>
         <div class="brand-text">
           <h1>Eva</h1>
-          <p>卡密登录</p>
+          <p id="brandSub">账号密码登录</p>
         </div>
       </div>
 
-      <form id="loginForm" class="login-form" autocomplete="off" novalidate>
-        <div id="presetRow" class="field hidden">
-          <div class="field-head">
-            <label>网络</label>
-          </div>
-          <div id="presetChips" class="preset-chips"></div>
-        </div>
-
+      <form id="loginForm" class="login-form" autocomplete="on" novalidate>
         <div id="setupBanner" class="msg err hidden" role="status"></div>
 
         <div class="field">
           <div class="field-head">
-            <label for="card">卡密</label>
+            <label for="username">用户名</label>
           </div>
           <div class="input-row">
             <input
-              id="card"
-              name="card"
-              type="password"
-              inputmode="text"
-              autocomplete="off"
-              placeholder="EVA-XXXX-XXXX-XXXX-XXXX"
+              id="username"
+              name="username"
+              type="text"
+              autocomplete="username"
+              placeholder="admin"
               maxlength="64"
+              required
+              spellcheck="false"
+            />
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-head">
+            <label for="password">密码</label>
+          </div>
+          <div class="input-row">
+            <input
+              id="password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              placeholder="至少 8 位"
+              maxlength="200"
               required
               spellcheck="false"
             />
             <button
               type="button"
               class="btn ghost btn-inline"
-              id="btnToggleCard"
-              title="显示或隐藏卡密"
+              id="btnTogglePwd"
+              title="显示或隐藏密码"
               aria-pressed="false"
             >显示</button>
           </div>
         </div>
-
-        <input id="controlUrl" type="hidden" value="" />
-        <input id="controlKey" type="hidden" value="" />
 
         <div class="hp" aria-hidden="true">
           <label>website</label>
@@ -71,7 +80,7 @@
         </div>
 
         <button class="btn primary btn-login" id="btnLogin" type="submit">
-          <span class="btn-login-label">登录</span>
+          <span class="btn-login-label" id="btnLoginLabel">登录</span>
         </button>
         <div class="msg" id="msg" role="status"></div>
       </form>
@@ -86,11 +95,11 @@
         </div>
       </div>
 
-      <p class="login-hint">
-        使用发卡方提供的卡密登录。成功后本机记住，接入办公室用连接码，不必把卡密给 Hub。
+      <p class="login-hint" id="loginHint">
+        使用本机账号与密码登录。首次使用请创建管理员账号。
       </p>
     </div>
   </div>
-  <script src="/static/auth/login.js" defer></script>
+  <script src="/static/auth/login.js?v=ux4" defer></script>
 </body>
 </html>

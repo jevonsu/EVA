@@ -9,3 +9,7 @@
 **不要用：** 查看或增删本机「设定→LLM」里已保存的对话模型（用 builtin `llms`）。已保存供应商也可以 `llms action=models`。
 
 可选参数：`api_url`、`api_key`（缺省用设定→LLM 的默认凭证）。受保护，不能卸载或 `create_tool` 覆盖。
+
+## 记忆 / 知识门禁
+
+本技能不写 memory/知识库；若调用方写入，进暂存而非金叶。

@@ -36,7 +36,37 @@ class TaskScheduler:
                 self._schedule(task)
         self._scheduler.start()
         self._started = True
+        try:
+            self._ensure_lifecycle_job()
+        except Exception:
+            logger.exception("Failed to register lifecycle cleanup job (boot continues)")
         logger.info("Task scheduler started with %d tasks", len(self._tasks))
+
+    def _ensure_lifecycle_job(self) -> None:
+        """Hourly memory/kb lifecycle cleanup; also run once shortly after boot."""
+        job_id = "eva-lifecycle-cleanup"
+
+        async def _job() -> None:
+            try:
+                from app.storage.lifecycle import run_lifecycle_cleanup
+
+                counts = await run_lifecycle_cleanup()
+                logger.debug("Lifecycle cleanup job done: %s", counts)
+            except Exception:
+                logger.exception("Lifecycle cleanup job failed")
+
+        if self._scheduler.get_job(job_id):
+            self._scheduler.remove_job(job_id)
+        self._scheduler.add_job(
+            _job,
+            trigger=IntervalTrigger(hours=1),
+            id=job_id,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            next_run_time=_now(),
+        )
+        logger.info("Lifecycle cleanup job registered (hourly + immediate)")
 
     async def shutdown(self) -> None:
         if self._started:
@@ -177,6 +207,7 @@ class TaskScheduler:
             use_tools=True,
             use_memory=True,
             allow_deputy=True,
+            route_origin="chat.scheduler",
         )
         task["status"] = TaskStatus.completed.value
         task["last_result"] = result.reply[:4000]

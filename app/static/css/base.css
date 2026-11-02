@@ -1,52 +1,54 @@
 /* ============================================
- Lily — Midnight 主题（深色工程风）
- v2.4 · 青绿强调 · 无粉紫
+ EVA — llama 纯净深色（中性灰底 · 白主按钮）
+ token 源；组件细化见 llama-theme.css
  ============================================ */
 
 :root {
- --theme-id: "midnight";
- --theme-name: "Midnight";
+ /* llama 纯净深色 — 全局 token 源 */
+ --theme-id: "llama";
+ --theme-name: "llama.cpp";
 
- --glass-bg: rgba(22, 27, 34, 0.85);
- --glass-bg-hover: rgba(33, 38, 45, 0.95);
- --glass-bg-strong: rgba(28, 33, 40, 0.98);
- --glass-border: rgba(148, 163, 184, 0.12);
- --glass-border-strong: rgba(148, 163, 184, 0.22);
- --glass-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
- --glass-shadow-lg: 0 20px 56px rgba(0, 0, 0, 0.5);
- --glass-blur: blur(16px);
- --glass-blur-heavy: blur(24px);
+ --glass-bg: rgba(28, 28, 28, 0.72);
+ --glass-bg-hover: rgba(42, 42, 42, 0.82);
+ --glass-bg-strong: rgba(36, 36, 36, 0.88);
+ --glass-border: rgba(255, 255, 255, 0.14);
+ --glass-border-strong: rgba(255, 255, 255, 0.22);
+ --glass-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+ --glass-shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.10);
+ --glass-blur: blur(28px) saturate(1.35);
+ --glass-blur-heavy: blur(40px) saturate(1.45);
+ --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.12);
 
- --text: #e6edf3;
- --text-muted: #8b949e;
- --accent: #3fb950;
- --accent-soft: #56d364;
- --accent-warm: #39c5cf;
- --bg-gradient-1: #0d1117;
- --bg-gradient-2: #161b22;
- --bg-gradient-3: #010409;
- --danger: #f85149;
- --success: #3fb950;
+ --text: #fafafa;
+ --text-muted: #a3a3a3;
+ --accent: #e5e5e5;
+ --accent-soft: #d4d4d4;
+ --accent-warm: #fafafa;
+ --bg-gradient-1: #171717;
+ --bg-gradient-2: #1c1c1c;
+ --bg-gradient-3: #0a0a0a;
+ --danger: #f87171;
+ --success: #4ade80;
 
- --user-bg: rgba(63, 185, 80, 0.12);
- --user-border: rgba(63, 185, 80, 0.28);
- --user-text: #aff5b4;
- --assistant-bg: rgba(22, 27, 34, 0.95);
- --assistant-border: rgba(48, 54, 61, 1);
- --assistant-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+ --user-bg: #262626;
+ --user-border: rgba(255, 255, 255, 0.1);
+ --user-text: #fafafa;
+ --assistant-bg: transparent;
+ --assistant-border: transparent;
+ --assistant-shadow: none;
 
  --radius: 10px;
- --radius-sm: 6px;
- --radius-bubble: 16px;
- --sidebar-w: 288px;
+ --radius-sm: 8px;
+ --radius-bubble: 18px;
+ --sidebar-w: 272px;
 
- --sidebar-bg: #0d1117;
- --btn-primary-bg: #238636;
- --btn-primary-text: #ffffff;
- --brand-gradient: linear-gradient(135deg, #3fb950, #39c5cf);
- --surface: #161b22;
- --surface-2: #21262d;
- --surface-3: #30363d;
+ --sidebar-bg: #141414;
+ --btn-primary-bg: #fafafa;
+ --btn-primary-text: #171717;
+ --brand-gradient: none;
+ --surface: #1c1c1c;
+ --surface-2: #262626;
+ --surface-3: #333333;
 
  --font-main: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Hiragino Sans", system-ui, sans-serif;
  --font-emoji: "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
@@ -88,7 +90,7 @@
 .logo.logo-ipk .ipk {
  width: 28px;
  height: 28px;
- color: var(--accent, #3fb950);
+ color: var(--accent, #e5e5e5);
 }
 .logo.logo-img {
  padding: 0;
@@ -128,27 +130,9 @@ body {
  color-scheme: dark;
 }
 
-body::before {
- content: '';
- position: fixed;
- inset: 0;
- background:
- radial-gradient(ellipse 700px 500px at 5% 15%, rgba(63, 185, 80, 0.06) 0%, transparent 70%),
- radial-gradient(ellipse 500px 600px at 92% 25%, rgba(57, 197, 207, 0.05) 0%, transparent 70%),
- radial-gradient(ellipse 400px 400px at 40% 85%, rgba(48, 54, 61, 0.25) 0%, transparent 70%);
- pointer-events: none;
- z-index: 0;
-}
-
+body::before,
 body::after {
- content: '';
- position: fixed;
- inset: 0;
- background:
- radial-gradient(300px 300px at 15% 60%, rgba(63, 185, 80, 0.04) 0%, transparent 100%),
- radial-gradient(250px 250px at 85% 10%, rgba(57, 197, 207, 0.04) 0%, transparent 100%);
- pointer-events: none;
- z-index: 0;
+ display: none;
 }
 
 /* —— Toast 通知 —— */
@@ -166,12 +150,13 @@ body::after {
 }
 
 .toast {
- background: rgba(22, 27, 34, 0.96);
- backdrop-filter: blur(12px);
+ background: var(--glass-bg-strong);
+ backdrop-filter: var(--glass-blur);
+ -webkit-backdrop-filter: var(--glass-blur);
  border: 1px solid var(--glass-border);
- border-radius: 10px;
+ border-radius: var(--radius, 10px);
  padding: 12px 16px;
- box-shadow: var(--glass-shadow-lg);
+ box-shadow: var(--glass-shadow-lg), var(--glass-highlight);
  pointer-events: auto;
  animation: slideIn 0.25s ease;
  display: flex;
@@ -182,7 +167,8 @@ body::after {
 }
 
 .toast.error { border-left: 4px solid var(--danger); }
-.toast.success { border-left: 4px solid var(--success); }
+.toast.success,
+.toast.ok { border-left: 4px solid var(--success); }
 .toast.info { border-left: 4px solid var(--accent); }
 .toast.warn { border-left: 4px solid #d29922; }
 
@@ -201,9 +187,9 @@ body.modal-open {
 }
 
 .toast-action {
- background: rgba(63, 185, 80, 0.12);
- border: 1px solid rgba(63, 185, 80, 0.28);
- color: var(--accent, #3fb950);
+ background: rgba(255, 255, 255, 0.12);
+ border: 1px solid rgba(255, 255, 255, 0.28);
+ color: var(--accent, #e5e5e5);
  font: inherit;
  font-size: 12px;
  font-weight: 600;
@@ -214,7 +200,7 @@ body.modal-open {
 }
 
 .toast-action:hover {
- background: rgba(63, 185, 80, 0.2);
+ background: rgba(255, 255, 255, 0.2);
 }
 
 @keyframes slideIn {
@@ -245,11 +231,13 @@ body.modal-open {
  }
 
  body.sidebar-collapsed .app {
-  grid-template-columns: 1fr;
+  grid-template-columns: var(--sidebar-rail-w, 68px) 1fr;
  }
 
  body.sidebar-collapsed .sidebar {
-  display: none;
+  /* icon-rail; details in chat-c.css */
+  display: flex;
+  overflow: hidden;
  }
 }
 

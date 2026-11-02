@@ -32,7 +32,92 @@ def get_workspace_root() -> Path:
     except Exception:
         root = (project_root() / "workspace").resolve()
     root.mkdir(parents=True, exist_ok=True)
+    # Best-effort: keep canonical buckets present (P1). Avoid recursion via mkdir only.
+    for name in (
+        "uploads",
+        "docs",
+        "exports",
+        "scratch",
+        "images",
+        "videos",
+        "skills",
+    ):
+        try:
+            (root / name).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
     return root
+
+
+
+# Agent may create/write only under these top-level buckets (P1).
+WRITE_BUCKETS: frozenset[str] = frozenset(
+    {
+        "uploads",
+        "docs",
+        "exports",
+        "scratch",
+        "images",
+        "videos",
+        "skills",
+    }
+)
+
+# Preferred defaults for new agent-created files (P0 routing).
+DEFAULT_WRITE_BUCKET = "scratch"
+DEFAULT_EXPORT_BUCKET = "exports"
+
+
+def ensure_workspace_buckets(root: Path | None = None) -> Path:
+    """Create canonical write buckets under the workspace root."""
+    base = (root or get_workspace_root()).resolve()
+    for name in sorted(WRITE_BUCKETS):
+        (base / name).mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def enforce_write_relpath(
+    user_path: str | None,
+    *,
+    rewrite: bool = True,
+) -> tuple[str | None, str | None, bool]:
+    """Normalize + enforce write whitelist.
+
+    Returns ``(relpath, error, rewritten)``.
+    - Bare root files (``notes.md``) → ``scratch/notes.md`` when rewrite=True.
+    - Unknown first segment (``reports/a.docx``) → ``scratch/reports/a.docx``.
+    - ``.`` / empty / directory-only → error.
+    """
+    rel = normalize_workspace_relpath(user_path)
+    if not rel or rel in (".", "./"):
+        return None, "write 需要具体文件 path（禁止写工作区根目录）", False
+    parts = [p for p in rel.split("/") if p and p != "."]
+    if not parts or any(p == ".." for p in parts):
+        return None, f"非法路径: {rel}", False
+    rewritten = False
+    if len(parts) == 1:
+        if rewrite:
+            rel = f"{DEFAULT_WRITE_BUCKET}/{parts[0]}"
+            rewritten = True
+        else:
+            buckets = "/".join(sorted(WRITE_BUCKETS))
+            return None, (
+                f"禁止在工作区根目录创建文件：{rel}。"
+                f"请写到 {buckets}/ 下，默认 scratch/ 或 exports/。"
+            ), False
+    else:
+        top = parts[0].lower()
+        if top not in WRITE_BUCKETS:
+            if rewrite:
+                rel = f"{DEFAULT_WRITE_BUCKET}/{'/'.join(parts)}"
+                rewritten = True
+            else:
+                return None, (
+                    f"路径一级目录「{parts[0]}」不在白名单 "
+                    f"{sorted(WRITE_BUCKETS)} 内。请改用 scratch/ 或 exports/，"
+                    f"或 docs/images/videos/uploads/skills。"
+                ), False
+    return rel, None, rewritten
 
 
 def normalize_workspace_relpath(user_path: str | None) -> str:

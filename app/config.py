@@ -62,11 +62,11 @@ class Settings(BaseSettings):
     llm_fallback_model: str = ""
 
     # Server
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8080
     # Default off for delivery. True = verbose terminal logs + HTTP access log.
     debug: bool = False
-    cors_origins: str = "*"
+    cors_origins: str = "http://127.0.0.1:8080,http://localhost:8080"
 
     # Agent
     agent_name: str = "PythonAIAgent"
@@ -84,22 +84,31 @@ class Settings(BaseSettings):
     # MCP: JSON array string of server configs
     mcp_servers: str = ""
 
-    # ---- Card login（鉴权服务由管理员侧提供，本机只做登录门禁）----
+    # ---- Local username/password auth ----
     auth_enabled: bool = True
-    # 可选：默认鉴权网关预填（用户登录页可改）
+    # Optional seed admin (only used when data/auth/users.json is empty)
+    eva_admin_user: str = ""
+    eva_admin_password: str = ""
+    # Optional install pepper override (else data/auth/pepper.txt is generated)
+    auth_pepper: str = ""
+    # Deprecated CardServer remote validate (default OFF)
+    auth_card_remote: bool = False
     auth_control_url: str = ""
-    # 多环境网关预设（公司内网 / 外出公网等），逗号分隔：
-    # 标签=URL 或 纯 URL。例：
-    # 公司内网=http://10.11.11.41:8090,外出公网=http://cardserver.hn.takin.cc
     auth_control_urls: str = ""
-    # 控制面共享密钥：仅写在本机 .env，不在登录页展示；请求网关时带 X-Control-Key
     auth_control_key: str = ""
-    # 本节点标识（写入鉴权会话，便于审计）
     auth_node_id: str = "eva"
     auth_session_days: int = 7
     auth_cookie_secure: bool = False
     # Only honor X-Forwarded-For when sitting behind a trusted reverse proxy
     auth_trust_proxy: bool = False
+
+    # Human gate: UI blank creates stay staging; promote only via review queue
+    human_edit_certified_only: bool = True
+
+    # F02: LLM create_tool / promote / delete hot-load (default OFF for release)
+    allow_create_tool: bool = False
+    # F01: Webhook endpoints may set use_tools=true only when this is on
+    webhook_allow_tools: bool = False
 
     @field_validator("data_dir", mode="before")
     @classmethod
@@ -115,9 +124,16 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        if self.cors_origins.strip() == "*":
-            return ["*"]
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        raw = self.cors_origins.strip()
+        if not raw or raw == "*":
+            # F03: never pair Access-Control-Allow-Origin: * with credentials
+            port = int(self.port or 8080)
+            return [
+                f"http://127.0.0.1:{port}",
+                f"http://localhost:{port}",
+                f"http://[::1]:{port}",
+            ]
+        return [o.strip() for o in raw.split(",") if o.strip()]
 
     def parse_mcp_servers(self) -> list[dict[str, Any]]:
         raw = self.mcp_servers.strip()

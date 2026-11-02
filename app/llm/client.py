@@ -279,6 +279,18 @@ class LLMClient:
     def _supports_temperature(model: str) -> bool:
         return not bool(_NO_TEMPERATURE.search(model or ""))
 
+
+    @staticmethod
+    def _recover_text_tool_calls(result: dict[str, Any]) -> dict[str, Any]:
+        """DeepSeek DSML (and similar) may land in content; map to tool_calls."""
+        try:
+            from app.llm.tool_text import merge_dsml_into_completion
+
+            return merge_dsml_into_completion(result)
+        except Exception:
+            logger.debug("DSML tool-call recovery failed", exc_info=True)
+            return result
+
     @staticmethod
     def _coerce_json(raw: Any) -> Any:
         if not isinstance(raw, str):
@@ -448,15 +460,17 @@ class LLMClient:
         from app.llm.cli_media import import_cli_media
 
         text, media_paths = import_cli_media(text, cwd=self.cli_cwd)
-        return {
-            "role": "assistant",
-            "content": text,
-            "tool_calls": None,
-            "finish_reason": "stop",
-            "model": self.model or "cli",
-            "usage": {},
-            "media_paths": media_paths,
-        }
+        return self._recover_text_tool_calls(
+            {
+                "role": "assistant",
+                "content": text,
+                "tool_calls": None,
+                "finish_reason": "stop",
+                "model": self.model or "cli",
+                "usage": {},
+                "media_paths": media_paths,
+            }
+        )
 
     async def chat(
         self,
@@ -494,7 +508,7 @@ class LLMClient:
         except Exception as extra:
             raise _explain_llm_http_error(extra) from extra
         try:
-            return self._completion_to_dict(resp)
+            return self._recover_text_tool_calls(self._completion_to_dict(resp))
         except AttributeError as exc:
             raise RuntimeError(
                 f"LLM 返回格式异常（{type(resp).__name__}），无法读取 choices。"

@@ -91,7 +91,7 @@
  }
  // retry once if first paint raced the inject
  try {
-  const r = await fetch("/static/html/config-modal.html", {
+  const r = await fetch("/static/html/config-modal.html?v=ux9", {
    credentials: "same-origin",
   });
   if (r.ok) {
@@ -113,6 +113,8 @@
  return;
  }
  els.configModal = modal;
+ window.clearTimeout(modal.__leaveTimer);
+ modal.classList.remove("is-leaving");
  modal.classList.remove("hidden");
  document.body.classList.add("modal-open");
  if (typeof L.hydrateIconPark === "function") L.hydrateIconPark(modal);
@@ -146,9 +148,29 @@
  document.body.classList.remove("cfg-nested-open");
  document.body.classList.remove("ws-file-modal-open");
  const modal = getConfigModal();
- if (modal) modal.classList.add("hidden");
- document.body.classList.remove("modal-open");
- loadHealth();
+ if (!modal || modal.classList.contains("hidden")) {
+  document.body.classList.remove("modal-open");
+  loadHealth();
+  return;
+ }
+ const reduceMotion =
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+ if (reduceMotion || modal.classList.contains("is-leaving")) {
+  modal.classList.remove("is-leaving");
+  modal.classList.add("hidden");
+  document.body.classList.remove("modal-open");
+  loadHealth();
+  return;
+ }
+ modal.classList.add("is-leaving");
+ window.clearTimeout(modal.__leaveTimer);
+ modal.__leaveTimer = window.setTimeout(() => {
+  modal.classList.remove("is-leaving");
+  modal.classList.add("hidden");
+  document.body.classList.remove("modal-open");
+  loadHealth();
+ }, 220);
  }
 
  const CFG_TAB_GROUP = {
@@ -160,6 +182,8 @@
   tasks: "capability",
   memory: "capability",
   kb: "capability",
+  graph: "capability",
+  review: "capability",
   workspace: "capability",
   workflows: "capability",
   mcp: "system",
@@ -223,6 +247,8 @@
  if (tab === "tasks") loadTasks({ soft });
  if (tab === "memory") loadMemory($("memSearch")?.value || "", { soft });
  if (tab === "kb") typeof L.loadKb === "function" && L.loadKb($("kbSearch")?.value || "", { soft });
+ if (tab === "graph") loadGraphOverview({ soft });
+ if (tab === "review") loadReviewQueue({ soft });
  if (tab === "workflows")
   typeof L.loadWorkflows === "function" && L.loadWorkflows({ soft });
  if (tab === "workspace")
@@ -240,6 +266,7 @@
  if (tab === "tools") loadToolsPanel({ soft });
  if (tab === "skills") loadSkills({ soft });
  if (tab === "mcp") loadMcp({ soft });
+ if (tab === "routing") { try { window.loadModelRouting && window.loadModelRouting(); } catch (_) {} }
  if (tab === "integrations") loadIntegrations({ soft });
  if (tab === "office") loadOfficePairing({ soft });
  const activeTab = root.querySelector(
@@ -285,6 +312,7 @@
   document.querySelector("#configTabs .tab.active")?.dataset.tab || "agent";
  const softOpt = { soft };
  if (active === "llm") await loadLlms(softOpt);
+    if (active === "routing") { try { window.loadModelRouting && window.loadModelRouting(); } catch (_) {} }
  else if (active === "tools") await loadToolsPanel(softOpt);
  else if (active === "skills") await loadSkills(softOpt);
  else if (active === "mcp") await loadMcp(softOpt);
@@ -643,14 +671,14 @@
   const baseHint = $("agentBaseHint");
   if (baseHint) {
    baseHint.textContent = on
-    ? "名称 · 语言 · 角色背景 + 扮演人设"
+    ? "名称 · 语言 · 背景（扮演中不注入）"
     : "名称 · 语言 · 角色背景";
   }
   const rbHint = $("agentRoleBgHint");
   if (rbHint) {
    rbHint.textContent = on
-    ? "始终注入 · 与扮演互补"
-    : "是谁 · 经历立场 · 世界观";
+    ? "关扮演才用；开扮演用下方扮演背景"
+    : "仅关扮演时注入";
   }
  }
 
@@ -686,6 +714,7 @@
   syncPersonaStateFromCfg(cfg);
 
   $("cfgAgentName").value = a.name || "";
+  if (typeof L.syncAvatarField === "function") L.syncAvatarField(a);
   // no default language — empty stays empty after wipe
   fillSelect("cfgLanguage", presets.language || merged.language, a.language, "");
 
@@ -717,6 +746,7 @@
     ? inten
     : "medium";
   }
+  _setText("cfgRoleplayBackground", a.roleplay_background || "");
   _setText("cfgRelationship", a.relationship || "");
   _setText("cfgPersonality", a.personality || "");
   _setText("cfgSpeechPatterns", a.speech_patterns || "");
@@ -890,6 +920,7 @@
   });
   return {
    name: $("cfgAgentName")?.value || "",
+   avatar: $("cfgAgentAvatar") ? $("cfgAgentAvatar").value || "" : undefined,
    // 旧版「角色 / 语言风格」多选已废弃；统一写入 background 为「角色背景」
    role: [],
    language: $("cfgLanguage")?.value || "跟随用户",
@@ -897,6 +928,7 @@
    background: ($("cfgRoleBackground")?.value || "").trim(),
    roleplay_enabled: !!$("cfgRoleplayEnabled")?.checked,
    roleplay_intensity: $("cfgRoleplayIntensity")?.value || "medium",
+   roleplay_background: $("cfgRoleplayBackground")?.value || "",
    relationship: $("cfgRelationship")?.value || "",
    personality: $("cfgPersonality")?.value || "",
    speech_patterns: $("cfgSpeechPatterns")?.value || "",
@@ -925,6 +957,7 @@
  }
  try {
  let llms = await api("/api/config/llms");
+ try { window.loadModelRouting && window.loadModelRouting(); } catch (_) {}
  if (!Array.isArray(llms)) llms = llms.items || [];
  // 默认模型置顶，更醒目
  llms = llms.slice().sort((a, b) => {
@@ -2987,16 +3020,14 @@
  }
  }
 
- function settingsExportFilename() {
+ function settingsExportFilename(includeSecrets) {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
-  return (
-   "eva-settings-" +
-   d.getFullYear() +
-   pad(d.getMonth() + 1) +
-   pad(d.getDate()) +
-   ".json"
-  );
+  const stamp =
+   d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate());
+  return includeSecrets
+   ? "eva-settings-secrets-" + stamp + ".json"
+   : "eva-settings-" + stamp + ".json";
  }
 
  function selectedSkillExportIds() {
@@ -3128,21 +3159,39 @@
  }
 
  async function exportSettings() {
+  const go = window.confirm(
+   "将导出人设、LLM、集成、工具、MCP 等到 JSON。\n\n" +
+    "默认不含明文密钥（脱敏）。\n" +
+    "不会导出：知识库、工作流、对话、本机账号密码。\n\n" +
+    "确定继续？"
+  );
+  if (!go) return;
+  const includeSecrets = window.confirm(
+   "是否包含明文 API Key / 集成密钥？\n\n" +
+    "选「确定」= 含明文（仅本机备份，勿分享；需管理员）\n" +
+    "选「取消」= 仅脱敏导出（推荐）"
+  );
   try {
-   setMsg("msgAgent", "导出中…");
-   const data = await api("/api/config/export");
+   setMsg(
+    "msgAgent",
+    includeSecrets ? "导出中（含明文密钥）…" : "导出中（脱敏）…"
+   );
+   const q = includeSecrets ? "?include_secrets=true" : "";
+   const data = await api("/api/config/export" + q);
    const blob = new Blob([JSON.stringify(data, null, 2)], {
     type: "application/json;charset=utf-8",
    });
    const a = document.createElement("a");
    a.href = URL.createObjectURL(blob);
-   a.download = settingsExportFilename();
+   a.download = settingsExportFilename(includeSecrets);
    document.body.appendChild(a);
    a.click();
    a.remove();
    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-   setMsg("msgAgent", "已导出设定", "ok");
-   showToast("设定已导出", "success");
+   const mode =
+    data && data.secrets === "included" ? "含明文密钥" : "已脱敏";
+   setMsg("msgAgent", "已导出设定（" + mode + "）", "ok");
+   showToast("设定已导出（" + mode + "）", "success");
   } catch (e) {
    setMsg("msgAgent", e.message || String(e), "error");
    showToast("导出失败", "error");
@@ -3159,8 +3208,16 @@
    showToast("导入失败：文件格式不对", "error");
    return;
   }
+  const secretsHint =
+   parsed && parsed.secrets === "included"
+    ? "该文件含明文密钥，导入后会写入本机。\n"
+    : parsed && parsed.secrets === "masked"
+      ? "该文件为脱敏导出：掩码字段会保留本机已有密钥。\n"
+      : "若文件里的密钥是掩码/空，会保留本机已有密钥。\n";
   const ok = window.confirm(
-   "导入将覆盖当前设定（人设、LLM、集成、工具、MCP）。\n知识库、工作流、对话记录不会改动。\n确定导入？"
+   "导入将覆盖当前设定（人设、LLM、集成、工具、MCP）。\n" +
+    secretsHint +
+    "不会改动：知识库、工作流、对话、本机账号密码。\n\n确定导入？"
   );
   if (!ok) return;
   try {
@@ -3184,6 +3241,548 @@
   } catch (e) {
    setMsg("msgAgent", e.message || String(e), "error");
    showToast("导入失败", "error");
+  }
+ }
+
+
+ function escapeGraphText(s) {
+  return String(s == null ? "" : s)
+   .replace(/&/g, "&amp;")
+   .replace(/</g, "&lt;")
+   .replace(/>/g, "&gt;")
+   .replace(/"/g, "&quot;");
+ }
+
+ function renderGraphBranch(nodes, emptyLabel) {
+  if (!nodes || !nodes.length) {
+   return `<div class="graph-empty">${escapeGraphText(emptyLabel)}</div>`;
+  }
+  return nodes
+   .map((n) => {
+    const kids = n.children || [];
+    const meta = n.kind
+     ? `<span class="graph-node-meta">${escapeGraphText(n.kind)}${n.status ? " · " + escapeGraphText(n.status) : ""}</span>`
+     : n.enabled === false
+       ? `<span class="graph-node-meta">已关闭</span>`
+       : "";
+    const title = escapeGraphText(n.name || n.summary || n.id || "?");
+    const idBit = n.id
+     ? `<span class="graph-node-meta">(${escapeGraphText(n.id)})</span>`
+     : "";
+    const childHtml = kids.length
+     ? `<div class="graph-children">${kids
+         .map((c) => {
+          const label = escapeGraphText(c.type || "?");
+          const cid = escapeGraphText(c.id || "");
+          const edge = escapeGraphText(c.edge_type || "references");
+          const st = c.status ? ` · ${escapeGraphText(c.status)}` : "";
+          return `<div class="graph-child"><span>${label}</span><code>${cid}</code><span class="graph-node-meta">${edge}${st}</span></div>`;
+         })
+         .join("")}</div>`
+     : `<div class="graph-children"><div class="graph-empty">暂无出边</div></div>`;
+    return `<div class="graph-node"><div class="graph-node-title">${title} ${idBit} ${meta}</div>${childHtml}</div>`;
+   })
+   .join("");
+ }
+
+ async function loadReviewQueue(opts = {}) {
+ const soft = !!(opts && opts.soft);
+ const sumEl = $("reviewSummary");
+ const memEl = $("reviewMemList");
+ const kbEl = $("reviewKbList");
+ const confEl = $("reviewConflictList");
+ const histEl = $("reviewHistoryList");
+ if (!memEl || !kbEl) return;
+ if (!soft) {
+  setMsg("msgReview", "载入中…");
+ }
+ const esc = typeof escapeGraphText === "function" ? escapeGraphText : (s) => String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+ const STATUS_TXT = { staging: "待批准", review_required: "需复核", conflicted: "有冲突", active: "已生效", archived: "已归档" };
+ const KIND_TXT = { fact: "事实", note: "笔记", preference: "偏好", constraint: "约束", rule: "规则", goal: "目标", strategy: "策略", habit: "习惯", evidence: "证据", inferred: "推断", observation: "观察" };
+ const statusPill = (st) => `<span class="rv-status rv-st-${esc(st || "")}">${esc(STATUS_TXT[st] || st || "")}</span>`;
+ const fmtTime = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return esc(iso);
+  return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+ };
+ const expiry = (vt) => (vt ? `<span class="rv-meta-item">若不处理，${fmtTime(vt)} 自动过期</span>` : "");
+ function confVal(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? String(n) : "0.8";
+ }
+ try {
+  const [data, hist, refConflicts] = await Promise.all([
+   api("/api/review/queue?limit=80"),
+   api("/api/review/history?limit=15").catch(() => ({ items: [] })),
+   api("/api/refs/conflicts?limit=20").catch(() => ({ count: 0, conflicts: [] })),
+  ]);
+  const counts = data.counts || {};
+  const total = (counts.memories || 0) + (counts.kb || 0) + (counts.conflicts || 0);
+  window.__reviewQueueCache = { memories: {}, kb: {}, conflicts: {} };
+  (data.memories || []).forEach((m) => { if (m && m.id) window.__reviewQueueCache.memories[m.id] = m; });
+  (data.kb || []).forEach((k) => { if (k && k.id) window.__reviewQueueCache.kb[k.id] = k; });
+  if (sumEl) {
+   sumEl.innerHTML = total
+    ? `<div class="rv-summary is-pending"><strong>有 ${total} 项等你处理</strong><span>记忆 ${counts.memories || 0} · 知识页 ${counts.kb || 0} · 冲突 ${counts.conflicts || 0}</span></div>`
+    : `<div class="rv-summary is-clear"><strong>没有待处理项</strong><span>EVA 写入的内容都已生效或已被你处理过。下方「最近处理」可查看历史。</span></div>`;
+  }
+  const actions = (type, id) => `<div class="rv-actions">
+     <button type="button" class="btn is-primary btn-review-approve" data-type="${type}" data-id="${id}" title="转为正式条目，长期生效">通过</button>
+     <button type="button" class="btn btn-review-modify" data-type="${type}" data-id="${id}" title="先改内容再决定">修改</button>
+     <button type="button" class="btn btn-review-downgrade" data-type="${type}" data-id="${id}" title="保留为临时内容（7 天后过期）">暂留 7 天</button>
+     <button type="button" class="btn danger btn-review-reject" data-type="${type}" data-id="${id}" title="不采纳，归档">拒绝</button>
+   </div>`;
+  const editor = (type, id, conf) => `<div class="review-edit hidden" data-review-edit="${type}" data-id="${id}">
+     ${type === "kb" ? '<label class="mem-field"><span>标题</span><input type="text" class="review-edit-title" /></label>' : ""}
+     <label class="mem-field"><span>正文</span><textarea class="review-edit-content" rows="${type === "kb" ? 8 : 5}" placeholder="载入中…"></textarea></label>
+     <div class="review-edit-row">
+       ${type === "kb" ? '<label class="mem-field"><span>分类</span><input type="text" class="review-edit-collection" /></label>' : '<label class="mem-field"><span>类型</span><input type="text" class="review-edit-kind" /></label>'}
+       <label class="mem-field"><span>置信度</span><input type="number" class="review-edit-confidence" min="0" max="1" step="0.01" value="${esc(conf)}" /></label>
+     </div>
+     <label class="mem-field"><span>备注 <span class="mem-optional">可选</span></span><input type="text" class="review-edit-note" placeholder="写给自己的评审备注" /></label>
+     <div class="review-edit-actions">
+       <button type="button" class="btn is-primary btn-review-save-approve" data-type="${type}" data-id="${id}">保存并通过</button>
+       <button type="button" class="btn btn-review-save-only" data-type="${type}" data-id="${id}">仅保存</button>
+       <button type="button" class="btn btn-review-edit-cancel" data-type="${type}" data-id="${id}">取消</button>
+     </div>
+   </div>`;
+  function renderMem(items) {
+   if (!items || !items.length) return '<div class="rv-empty">没有等待批准的记忆。<br><small>偏好、约束这类「规矩」写入后直接生效，不经评审；只有无期限的事实/笔记才会排到这里。</small></div>';
+   return items.map((m) => {
+    const id = esc(m.id || "");
+    const kind = KIND_TXT[m.kind] || m.kind || "";
+    const hard = m.hard_constraint ? '<span class="rv-tag is-warn">硬约束</span>' : "";
+    return `<div class="card rv-card" data-review-type="memory" data-id="${id}">
+      <div class="rv-head">${statusPill(m.status)}<span class="rv-what">EVA 想记住一条${esc(kind)}</span>${hard}</div>
+      <div class="rv-body">${esc((m.content || "").slice(0, 400))}</div>
+      <div class="rv-meta"><span class="rv-meta-item">写入于 ${fmtTime(m.created_at)}</span>${expiry(m.valid_to)}</div>
+      ${editor("memory", id, confVal(m.confidence))}
+      ${actions("memory", id)}
+    </div>`;
+   }).join("");
+  }
+  function renderKb(items) {
+   if (!items || !items.length) return '<div class="rv-empty">没有等待批准的知识页。<br><small>EVA 新建的知识页默认先放这里；你通过后才算正式资料。</small></div>';
+   return items.map((k) => {
+    const id = esc(k.id || "");
+    return `<div class="card rv-card" data-review-type="kb" data-id="${id}">
+      <div class="rv-head">${statusPill(k.status)}<span class="rv-what">EVA 新建/修改了知识页</span></div>
+      <div class="rv-title">${esc(k.title || id)}</div>
+      <div class="rv-body is-preview">${esc((k.preview || "").slice(0, 200))}</div>
+      <div class="rv-meta"><span class="rv-meta-item">分类：${esc(k.collection || "default")}</span><span class="rv-meta-item">更新于 ${fmtTime(k.updated_at || k.created_at)}</span>${expiry(k.valid_to)}</div>
+      ${editor("kb", id, confVal(k.confidence))}
+      ${actions("kb", id)}
+    </div>`;
+   }).join("");
+  }
+  function renderConflicts(items, histConflicts) {
+   const open = items || [];
+   const histItems = (histConflicts || []).filter((c) => {
+     const st = String((c && c.status) || "").toLowerCase();
+     return st && !["review_required", "blocked", "logged"].includes(st);
+   });
+   let html = "";
+   if (!open.length) {
+     html += '<div class="rv-empty">没有待处理冲突。<br><small>新写入与已有规则矛盾、需要你拍板时会出现在这里。系统已自动决议（如保护硬约束）或你已处理完的，不会进本队列。</small></div>';
+   } else {
+     html += open.map((c) => {
+      const id = esc(c.id || "");
+      return `<div class="card rv-card" data-conflict-id="${id}">
+      <div class="rv-head"><span class="rv-status rv-st-conflicted">有冲突</span><span class="rv-what">新内容与已有规则矛盾</span></div>
+      <div class="rv-body">${esc(c.summary || "")}</div>
+      <div class="rv-meta"><span class="rv-meta-item">${fmtTime(c.created_at)}</span></div>
+      <div class="rv-actions">
+        <button type="button" class="btn is-primary btn-conflict-keep" data-id="${id}">保留现有规则</button>
+        <button type="button" class="btn btn-conflict-dismiss" data-id="${id}">忽略此冲突</button>
+      </div>
+    </div>`;
+     }).join("");
+   }
+   if (histItems.length) {
+     const RES_TXT = { "resolved:keep_existing": "已保留现有规则", "resolved:approve_incoming": "已采纳新内容", "resolved:merge": "已合并", "resolved:dismiss": "已忽略", dismiss: "已忽略" };
+     html += `<div class="rv-empty" style="margin-top:8px"><small>另有 ${histItems.length} 条已处理冲突日志（不算待办）：</small></div>`;
+     html += histItems.slice(0, 5).map((c) => {
+       const st = String(c.status || "");
+       const label = RES_TXT[st] || (st.startsWith("resolved") ? "已决议" : st);
+       return `<div class="card rv-card is-muted" data-conflict-hist="${esc(c.id || "")}">
+      <div class="rv-head"><span class="rv-status">${esc(label)}</span><span class="rv-what">历史冲突日志</span></div>
+      <div class="rv-body">${esc(c.summary || "")}</div>
+      <div class="rv-meta"><span class="rv-meta-item">${fmtTime(c.created_at)}</span><span class="rv-meta-item">${esc(st)}</span></div>
+    </div>`;
+     }).join("");
+   }
+   return html;
+  }
+  function renderHistory(items) {
+   if (!items || !items.length) return '<div class="rv-empty">还没有处理记录。</div>';
+   return '<ul class="rv-history">' + items.map((h) => {
+    const who = h.actor === "review" ? "你在评审页" : h.actor === "ui" ? "你在面板" : "系统";
+    return `<li><span class="rv-h-time">${fmtTime(h.at)}</span><span class="rv-h-label">${esc(h.label || h.action)}</span><span class="rv-h-title" title="${esc(h.title)}">${esc(h.title)}</span><span class="rv-h-who">${who}</span></li>`;
+   }).join("") + "</ul>";
+  }
+  memEl.innerHTML = renderMem(data.memories || []);
+  kbEl.innerHTML = renderKb(data.kb || []);
+  if (confEl) confEl.innerHTML = renderConflicts(data.conflicts || [], (refConflicts && refConflicts.conflicts) || []);
+  if (histEl) histEl.innerHTML = renderHistory((hist && hist.items) || []);
+  const setCount = (id, n) => { const el = $(id); if (el) el.textContent = n ? String(n) : ""; };
+  setCount("reviewMemCount", counts.memories || 0);
+  setCount("reviewKbCount", counts.kb || 0);
+  setCount("reviewConflictCount", counts.conflicts || 0);
+  setMsg("msgReview", "", "");
+ } catch (e) {
+  setMsg("msgReview", "载入失败：" + (e.message || e), "err");
+ }
+}
+
+async function reviewAction(type, id, action) {
+ if (!type || !id || !action) return;
+ const path = `/api/review/${type}/${encodeURIComponent(id)}/${action}`;
+ try {
+  setMsg("msgReview", action + "…");
+  await api(path, { method: "POST", body: JSON.stringify({}) });
+  setMsg("msgReview", "已" + action, "ok");
+  await loadReviewQueue({ soft: false });
+ } catch (e) {
+  setMsg("msgReview", (e.message || e), "err");
+ }
+}
+
+function cssEscapeId(id) {
+ if (typeof CSS !== "undefined" && typeof CSS.escape === "function") return CSS.escape(id);
+ return String(id || "").replace(/[^a-zA-Z0-9_-]/g, "\$&");
+}
+
+function reviewCardEl(type, id) {
+ const root = type === "kb" ? $("reviewKbList") : $("reviewMemList");
+ if (!root) return null;
+ return root.querySelector(`.card[data-review-type="${type}"][data-id="${cssEscapeId(id)}"]`);
+}
+
+function closeAllReviewEditors(except) {
+ document.querySelectorAll(".review-edit:not(.hidden)").forEach((el) => {
+  if (except && el === except) return;
+  el.classList.add("hidden");
+ });
+}
+
+async function openReviewEditor(type, id) {
+ const card = reviewCardEl(type, id);
+ if (!card) return;
+ const edit = card.querySelector(".review-edit");
+ if (!edit) return;
+ closeAllReviewEditors(edit);
+ if (!edit.classList.contains("hidden")) {
+  edit.classList.add("hidden");
+  return;
+ }
+ edit.classList.remove("hidden");
+ const cache = (window.__reviewQueueCache && window.__reviewQueueCache[type === "kb" ? "kb" : "memories"]) || {};
+ const item = cache[id] || {};
+ const contentEl = edit.querySelector(".review-edit-content");
+ const confEl = edit.querySelector(".review-edit-confidence");
+ const noteEl = edit.querySelector(".review-edit-note");
+ if (confEl && item.confidence != null) confEl.value = String(item.confidence);
+ if (noteEl) noteEl.value = "";
+ if (type === "memory") {
+  const kindEl = edit.querySelector(".review-edit-kind");
+  if (kindEl) kindEl.value = item.kind || "";
+  if (contentEl) contentEl.value = item.content || "";
+  contentEl && contentEl.focus();
+  return;
+ }
+ const titleEl = edit.querySelector(".review-edit-title");
+ const collEl = edit.querySelector(".review-edit-collection");
+ if (titleEl) titleEl.value = item.title || "";
+ if (collEl) collEl.value = item.collection || "";
+ if (contentEl) {
+  contentEl.value = "";
+  contentEl.placeholder = "载入正文…";
+ }
+ try {
+  const page = await api(`/api/kb/pages/${encodeURIComponent(id)}`);
+  if (titleEl && page.title != null) titleEl.value = page.title;
+  if (collEl && page.collection != null) collEl.value = page.collection;
+  if (confEl && page.confidence != null) confEl.value = String(page.confidence);
+  if (contentEl) {
+   contentEl.value = page.content || "";
+   contentEl.placeholder = "";
+   contentEl.focus();
+  }
+  if (window.__reviewQueueCache && window.__reviewQueueCache.kb) {
+   window.__reviewQueueCache.kb[id] = Object.assign({}, item, page);
+  }
+ } catch (e) {
+  if (contentEl) contentEl.placeholder = "载入失败：" + (e.message || e);
+  setMsg("msgReview", e.message || String(e), "err");
+ }
+}
+
+function readReviewEditorPayload(type, id) {
+ const card = reviewCardEl(type, id);
+ if (!card) return null;
+ const edit = card.querySelector(".review-edit");
+ if (!edit) return null;
+ const content = (edit.querySelector(".review-edit-content") || {}).value;
+ const note = ((edit.querySelector(".review-edit-note") || {}).value || "").trim();
+ const confRaw = (edit.querySelector(".review-edit-confidence") || {}).value;
+ let confidence = null;
+ if (confRaw !== undefined && confRaw !== "") {
+  const n = Number(confRaw);
+  if (Number.isFinite(n)) confidence = Math.max(0, Math.min(1, n));
+ }
+ if (type === "memory") {
+  const kind = ((edit.querySelector(".review-edit-kind") || {}).value || "").trim();
+  const body = { content: content != null ? String(content) : "", note };
+  if (kind) body.kind = kind;
+  if (confidence != null) body.confidence = confidence;
+  return body;
+ }
+ const title = ((edit.querySelector(".review-edit-title") || {}).value || "").trim();
+ const collection = ((edit.querySelector(".review-edit-collection") || {}).value || "").trim();
+ const body = {
+  title: title || undefined,
+  content: content != null ? String(content) : "",
+  note,
+ };
+ if (collection) body.collection = collection;
+ if (confidence != null) body.confidence = confidence;
+ return body;
+}
+
+async function reviewModify(type, id, approveAfter) {
+ const body = readReviewEditorPayload(type, id);
+ if (!body) return;
+ body.approve_after = !!approveAfter;
+ body.clear_ttl = true;
+ const path = `/api/review/${type}/${encodeURIComponent(id)}/modify`;
+ try {
+  setMsg("msgReview", approveAfter ? "修改并批准…" : "保存修改…");
+  await api(path, { method: "POST", body: JSON.stringify(body) });
+  setMsg("msgReview", approveAfter ? "已修改并批准" : "已保存修改", "ok");
+  if (typeof showToast === "function") {
+   showToast(approveAfter ? "已修改并批准" : "已保存修改（仍待审）", "success");
+  }
+  await loadReviewQueue({ soft: false });
+ } catch (e) {
+  setMsg("msgReview", e.message || String(e), "err");
+ }
+}
+
+async function resolveConflictUi(id, resolution) {
+ try {
+  await api(`/api/review/conflicts/${encodeURIComponent(id)}/resolve`, {
+   method: "POST",
+   body: JSON.stringify({ resolution, note: "" }),
+  });
+  await loadReviewQueue({ soft: false });
+ } catch (e) {
+  setMsg("msgReview", e.message || String(e), "err");
+ }
+}
+
+function bindReviewDelegatedUi() {
+ if (bindReviewDelegatedUi._done) return;
+ bindReviewDelegatedUi._done = true;
+ document.addEventListener("click", (e) => {
+  const t = e.target;
+  if (!(t instanceof Element)) return;
+  const modify = t.closest(".btn-review-modify");
+  if (modify) {
+   e.preventDefault();
+   openReviewEditor(modify.dataset.type, modify.dataset.id);
+   return;
+  }
+  const saveApprove = t.closest(".btn-review-save-approve");
+  if (saveApprove) {
+   e.preventDefault();
+   reviewModify(saveApprove.dataset.type, saveApprove.dataset.id, true);
+   return;
+  }
+  const saveOnly = t.closest(".btn-review-save-only");
+  if (saveOnly) {
+   e.preventDefault();
+   reviewModify(saveOnly.dataset.type, saveOnly.dataset.id, false);
+   return;
+  }
+  const cancel = t.closest(".btn-review-edit-cancel");
+  if (cancel) {
+   e.preventDefault();
+   const card = reviewCardEl(cancel.dataset.type, cancel.dataset.id);
+   const edit = card && card.querySelector(".review-edit");
+   if (edit) edit.classList.add("hidden");
+   return;
+  }
+  const approve = t.closest(".btn-review-approve");
+  if (approve) {
+   e.preventDefault();
+   reviewAction(approve.dataset.type, approve.dataset.id, "approve");
+   return;
+  }
+  const reject = t.closest(".btn-review-reject");
+  if (reject) {
+   e.preventDefault();
+   if (!confirm("驳回并归档该项？")) return;
+   reviewAction(reject.dataset.type, reject.dataset.id, "reject");
+   return;
+  }
+  const down = t.closest(".btn-review-downgrade");
+  if (down) {
+   e.preventDefault();
+   reviewAction(down.dataset.type, down.dataset.id, "downgrade");
+   return;
+  }
+  const dismiss = t.closest(".btn-conflict-dismiss");
+  if (dismiss) {
+   e.preventDefault();
+   resolveConflictUi(dismiss.dataset.id, "dismiss");
+   return;
+  }
+  const keep = t.closest(".btn-conflict-keep");
+  if (keep) {
+   e.preventDefault();
+   resolveConflictUi(keep.dataset.id, "keep_existing");
+  }
+ });
+}
+bindReviewDelegatedUi();
+
+async function loadGraphOverview(opts = {}) {
+  const soft = !!opts.soft;
+  const sumEl = $("graphSummary");
+  const skillsEl = $("graphSkillsTree");
+  const ctrlEl = $("graphControlTree");
+  const rawEl = $("graphRawJson");
+  if (!skillsEl || !ctrlEl) return;
+  const esc = escapeGraphText;
+  const KIND_TXT = { preference: "偏好", constraint: "约束", rule: "规则", goal: "目标", strategy: "策略", habit: "习惯", fact: "事实", note: "笔记" };
+  const TYPE_TXT = { kb: "知识页", memory: "记忆", skill: "技能", file: "文件", url: "网页" };
+  const EDGE_TXT = { controls: "以此为细则", references: "参考", reference: "参考", depends_on: "依赖", derived_from: "来源于", supports: "支撑", contradicts: "相矛盾", supersedes: "替代", related: "相关", applies_to: "适用于" };
+  const ST_TXT = { active: "已生效", declared_only: "仅声明，未读取", staging: "待批准", archived: "已归档", expired: "已过期", missing: "目标缺失", broken: "已失效", conflicted: "有冲突", review_required: "需复核" };
+  const lineCls = (st) => (!st || st === "active" ? "is-ok" : st === "declared_only" || st === "staging" ? "is-pending" : "is-bad");
+  try {
+   if (!soft || !skillsEl.dataset.loaded) setMsg("msgGraph", "载入中…");
+   const data = await api("/api/refs/tree");
+   const tree = (data && data.tree) || {};
+   const summary = (data && data.summary) || {};
+   const skills = tree.skills || [];
+   const mems = tree.control_memories || [];
+   const nodes = {};
+   skills.forEach((n, i) => { nodes["s" + i] = Object.assign({ _t: "skill" }, n); });
+   mems.forEach((n, i) => { nodes["m" + i] = Object.assign({ _t: "memory" }, n); });
+   window.__graphNodes = nodes;
+   const pend = [...skills, ...mems].reduce((k, n) => k + (n.children || []).filter((c) => lineCls(c.status) !== "is-ok").length, 0);
+   const total = (summary.skill_edges || 0) + (summary.control_edges || 0);
+   if (sumEl) {
+    sumEl.innerHTML = !skills.length && !mems.length
+     ? `<div class="rv-summary"><b>图谱还是空的</b><span>目前没有技能声明参考知识，也没有偏好/约束类规矩，所以没有可画的东西。下面写了它什么时候会有内容。</span></div>`
+     : `<div class="rv-summary ${pend ? "is-pending" : "is-clear"}"><b>${skills.length} 个技能、${mems.length} 条规矩，共 ${total} 条连线</b><span>${pend ? `其中 ${pend} 条还没生效（仅声明或目标缺失），卡片里用橙/红色标出。` : "所有连线都已生效。"}</span></div>`;
+   }
+   $("graphSkillCount") && ($("graphSkillCount").textContent = skills.length || "");
+   $("graphControlCount") && ($("graphControlCount").textContent = mems.length || "");
+   const chip = (c) => {
+    const cached = c.type === "kb" && c.id && window.__kbTitleCache ? window.__kbTitleCache[c.id] : null;
+    const label = cached ? ("《" + cached + "》") : (c.type === "kb" ? "读取标题…" : String(c.id || "").slice(0, 10));
+    return `<span class="gr-chip ${lineCls(c.status)}"${c.type === "kb" ? ` data-gr-kb="${esc(c.id)}"` : ""}><i class="gr-dot gr-t-${esc(c.type || "kb")}"></i>${esc(TYPE_TXT[c.type] || c.type || "资料")}：<span class="gr-chip-t">${esc(label)}</span></span>`;
+   };
+   const uniq = (kids) => { const m = new Map(); kids.forEach((c) => { const k = (c.type || "") + ":" + c.id; if (!m.has(k) || lineCls(c.status) === "is-ok") m.set(k, c); }); return [...m.values()]; };
+   const card = (key, n) => {
+    const kids = n.children || [];
+    const isSkill = n._t === "skill";
+    const title = isSkill ? n.name || n.id : n.summary || n.id;
+    const tag = isSkill ? (n.enabled === false ? `<span class="rv-status">已关闭</span>` : `<span class="rv-status rv-st-active">启用中</span>`) : `<span class="rv-status">${esc(KIND_TXT[n.kind] || n.kind || "规矩")}</span>`;
+    return `<div class="card gr-card" data-gr-node="${key}" tabindex="0" role="button"><div class="rv-head"><i class="gr-dot gr-t-${n._t}"></i><span class="rv-title gr-ellipsis">${esc(title)}</span>${tag}</div>` +
+     `<div class="gr-chips">${kids.length ? kids.slice(0, 6).map(chip).join("") + (kids.length > 6 ? `<span class="gr-more">+${kids.length - 6}</span>` : "") : `<span class="gr-more">还没有连到任何资料</span>`}</div></div>`;
+   };
+   skillsEl.innerHTML = skills.length ? Object.keys(nodes).filter((k) => k[0] === "s").map((k) => card(k, nodes[k])).join("")
+    : `<div class="rv-empty">还没有技能声明「参考哪些知识页」。<br><small>技能作者在技能包的 <code>manifest.json</code>（knowledge_refs）或 <code>knowledge_refs.json</code> 里写上知识页后，点上方「从技能包读取引用」，这里就会出现。</small></div>`;
+   ctrlEl.innerHTML = mems.length ? Object.keys(nodes).filter((k) => k[0] === "m").map((k) => card(k, nodes[k])).join("")
+    : `<div class="rv-empty">还没有偏好/约束这类规矩。<br><small>在对话里告诉 EVA「以后都要…」「不要…」，它写下的偏好、约束会出现在这里（事实、笔记类记忆不在本图）。</small></div>`;
+   skillsEl.dataset.loaded = "1";
+   window.__kbTitleCache = window.__kbTitleCache || {};
+   const kbIds = [...new Set([...skills, ...mems].flatMap((n) => (n.children || []).filter((c) => c.type === "kb" && c.id).map((c) => c.id)))];
+   Promise.all(kbIds.map(async (id) => {
+    if (!(id in window.__kbTitleCache)) {
+     try { const p = await api("/api/kb/pages/" + encodeURIComponent(id)); window.__kbTitleCache[id] = (p && p.title) || id; }
+     catch (_) { window.__kbTitleCache[id] = null; }
+    }
+    document.querySelectorAll(`[data-gr-kb="${id}"]`).forEach((el) => {
+     const t = window.__kbTitleCache[id];
+     const s = el.querySelector(".gr-chip-t");
+     if (s) s.textContent = t ? "《" + t + "》" : "找不到此页";
+     if (!t) { el.classList.remove("is-ok"); el.classList.add("is-bad"); }
+    });
+   }));
+   if (rawEl) rawEl.textContent = JSON.stringify(data, null, 2);
+   const layout = skillsEl.closest(".gr-layout");
+   if (layout && !layout.dataset.bound) {
+    layout.dataset.bound = "1";
+    const pick = (el) => {
+     const cardEl = el.closest("[data-gr-node]");
+     if (!cardEl) return;
+     layout.querySelectorAll(".gr-card.is-sel").forEach((x) => x.classList.remove("is-sel"));
+     cardEl.classList.add("is-sel");
+     showGraphDetail(window.__graphNodes[cardEl.dataset.grNode], { KIND_TXT, TYPE_TXT, EDGE_TXT, ST_TXT, lineCls });
+    };
+    layout.addEventListener("click", (ev) => {
+     const open = ev.target.closest("[data-gr-open]");
+     if (open) { switchTab(open.dataset.grOpen, { soft: false }); return; }
+     pick(ev.target);
+    });
+    layout.addEventListener("keydown", (ev) => {
+     if (ev.key !== "Enter" && ev.key !== " ") return;
+     if (!ev.target.closest("[data-gr-node]")) return;
+     ev.preventDefault();
+     pick(ev.target);
+    });
+   }
+   const det = $("graphDetail");
+   if (det && !skills.length && !mems.length) det.innerHTML = `<div class="rv-empty">图谱为空时没有可查看的节点。</div>`;
+   setMsg("msgGraph", "", "");
+  } catch (e) {
+   setMsg("msgGraph", "载入失败：" + (e.message || e), "err");
+   if (sumEl) sumEl.innerHTML = `<div class="rv-summary is-pending"><b>图谱读取失败</b><span>${escapeGraphText(e.message || e)}。如果刚更新过 EVA，请重启后再刷新。</span></div>`;
+  }
+ }
+
+ async function showGraphDetail(n, T) {
+  const det = $("graphDetail");
+  if (!det || !n) return;
+  const esc = escapeGraphText;
+  const isSkill = n._t === "skill";
+  const kids = n.children || [];
+  const row = (c, title) => `<li class="gr-edge ${T.lineCls(c.status)}"><div class="rv-head"><i class="gr-dot gr-t-${esc(c.type || "kb")}"></i><span class="rv-title gr-ellipsis">${esc(title || c.id)}</span><span class="rv-status">${esc(T.ST_TXT[c.status] || c.status || "已生效")}</span></div>` +
+   `<div class="rv-meta"><span>${esc(T.EDGE_TXT[c.edge_type] || c.edge_type || "参考")}这条${esc(T.TYPE_TXT[c.type] || "资料")}</span><span>编号 ${esc(c.id)}</span>${c.reason ? `<span>原因：${esc(c.reason)}</span>` : ""}</div></li>`;
+  const head = isSkill
+   ? `<div class="rv-what">技能 · ${n.enabled === false ? "已关闭" : "启用中"}</div><div class="rv-title">${esc(n.name || n.id)}</div><div class="rv-body">这是 EVA 的一项技能。它在执行时会参考下面 ${kids.length} 份资料。</div><div class="rv-meta"><span>来源：技能包 <code>${esc(n.id)}</code></span></div>`
+   : `<div class="rv-what">规矩 · ${esc(T.KIND_TXT[n.kind] || n.kind || "")}</div><div class="rv-body">${esc(n.summary || "")}</div><div class="rv-meta"><span>来源：你和 EVA 的对话中写入的记忆</span><span>编号 ${esc(n.id)}</span></div>`;
+  const openBtn = isSkill ? `<button type="button" class="btn small" data-gr-open="skills">去「技能」页</button>` : `<button type="button" class="btn small" data-gr-open="memory">去「记忆」页</button>`;
+  const render = (titles) => {
+   det.innerHTML = `<div class="card rv-card">${head}<div class="rv-actions">${openBtn}${kids.some((c) => c.type === "kb") ? `<button type="button" class="btn small" data-gr-open="kb">去「知识库」</button>` : ""}</div></div>` +
+    `<h3 class="panel-title" style="margin-top:12px">它连着 ${kids.length} 份资料</h3>` +
+    (kids.length ? `<ul class="gr-edges">${kids.map((c, i) => row(c, titles[i])).join("")}</ul>` : `<div class="rv-empty">还没有连线。${isSkill ? "在技能包里声明 knowledge_refs 后点「从技能包读取引用」。" : "EVA 引用资料时会自动连上。"}</div>`);
+  };
+  render([]);
+  const titles = await Promise.all(kids.map(async (c) => {
+   if (c.type !== "kb" || !c.id) return "";
+   const cc = (window.__kbTitleCache || {})[c.id]; if (cc) return "《" + cc + "》";
+   try { const p = await api("/api/kb/pages/" + encodeURIComponent(c.id)); return (p && p.title) || ""; }
+   catch (_) { return "⚠ 找不到这份知识页（可能已删除或尚未创建）"; }
+  }));
+  if (det.contains(det.firstChild)) render(titles);
+ }
+
+ async function syncSkillRefsFromUi() {
+  try {
+   setMsg("msgGraph", "同步中…");
+   const res = await api("/api/refs/skill-sync", { method: "POST", body: {} });
+   const n = (res && res.skills) || 0;
+   const linked = (res && res.linked_total) || 0;
+   setMsg("msgGraph", `已读取 ${n} 个技能包，共 ${linked} 条连线（只建连线，不会批准知识页）`, "ok");
+   showToast("已读取技能包里的引用", "success");
+   await loadGraphOverview({ soft: false });
+  } catch (e) {
+   setMsg("msgGraph", "同步失败：" + (e.message || e), "err");
   }
  }
 
@@ -3263,6 +3862,15 @@
    case "btnReloadMcp":
     reloadMcpServers();
     break;
+   case "btnGraphRefresh":
+    loadGraphOverview({ soft: false });
+    break;
+   case "btnGraphSyncSkills":
+    syncSkillRefsFromUi();
+    break;
+   case "btnReviewRefresh":
+    loadReviewQueue({ soft: false });
+    break;
    case "btnRefreshEvolution":
     loadEvolutionPanel();
     break;
@@ -3315,6 +3923,86 @@
 
  // 立即注册委托（不依赖 DOM 是否已注入）
  bindConfigDelegatedUi();
+
+ async function doLogoutAndRedirect() {
+  try {
+   await api("/api/auth/logout", { method: "POST" });
+  } catch (_) {}
+  window.location.href = "/login";
+ }
+
+ function closeTopAuthMenu() {
+  const menu = document.getElementById("topAuthMenu");
+  const btn = document.getElementById("btnTopAuth");
+  if (menu) menu.hidden = true;
+  if (btn) btn.setAttribute("aria-expanded", "false");
+ }
+
+ async function promptUpdateDisplayName(current) {
+  const cur = String(current || "").trim();
+  const next = window.prompt("EVA 怎么称呼你？", cur);
+  if (next == null) return null;
+  const name = String(next).trim();
+  if (!name) {
+   showToast("称呼不能为空", "error");
+   return null;
+  }
+  if (name === cur) return cur;
+  try {
+   const res = await api("/api/auth/profile", {
+    method: "PATCH",
+    body: JSON.stringify({ display_name: name }),
+   });
+   const dn = (res && res.display_name) || name;
+   showToast("称呼已更新为「" + dn + "」", "success");
+   return dn;
+  } catch (e) {
+   showToast(e.message || "更新称呼失败", "error");
+   return null;
+  }
+ }
+
+ function bindTopAuthMenuOnce() {
+  if (bindTopAuthMenuOnce.done) return;
+  bindTopAuthMenuOnce.done = true;
+  document.addEventListener("click", async (e) => {
+   const t = e.target;
+   if (!(t instanceof Element)) return;
+   const wrap = document.getElementById("topAuthWrap");
+   const btn = document.getElementById("btnTopAuth");
+   const menu = document.getElementById("topAuthMenu");
+   if (t.closest("#btnTopAuth")) {
+    if (!menu || !btn) return;
+    const open = !!menu.hidden;
+    menu.hidden = !open;
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    return;
+   }
+   if (t.closest("#btnTopAuthRename")) {
+    closeTopAuthMenu();
+    const label = document.getElementById("topAuthLabel");
+    const cur = (label && label.textContent) || "";
+    const dn = await promptUpdateDisplayName(cur);
+    if (dn && label) label.textContent = dn;
+    if (dn && typeof L.refreshAuthChrome === "function") {
+     try { await L.refreshAuthChrome(); } catch (_) {}
+    }
+    return;
+   }
+   if (t.closest("#btnTopAuthLogout")) {
+    closeTopAuthMenu();
+    await doLogoutAndRedirect();
+    return;
+   }
+   if (wrap && !t.closest("#topAuthWrap")) {
+    closeTopAuthMenu();
+   }
+  });
+  document.addEventListener("keydown", (e) => {
+   if (e.key === "Escape") closeTopAuthMenu();
+  });
+ }
+ bindTopAuthMenuOnce();
 
  // Export
  async function loadOfficePairing() {
@@ -3385,6 +4073,7 @@
  L.switchTab = switchTab;
  L.switchConfigGroup = switchConfigGroup;
  L.loadOfficePairing = loadOfficePairing;
+ L.doLogoutAndRedirect = doLogoutAndRedirect;
  L.openConfig = openConfig;
  L.bindConfigDelegatedUi = bindConfigDelegatedUi;
  L.openNestedEditor = openNestedEditor;
@@ -5288,6 +5977,8 @@
  L.loadMcp = loadMcp;
  L.loadIntegrations = loadIntegrations;
  L.loadStorage = loadStorage;
+ L.loadGraphOverview = loadGraphOverview;
+ L.loadReviewQueue = loadReviewQueue;
  L.openIntegrationEditor = openIntegrationEditor;
  L.openLlmEditor = openLlmEditor;
  L.openCustomToolEditor = openCustomToolEditor;

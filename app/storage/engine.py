@@ -90,6 +90,22 @@ def create_tables(engine: Engine | None = None) -> None:
         with eng.begin() as conn:
             conn.execute(text("PRAGMA journal_mode=WAL"))
             conn.execute(text("PRAGMA synchronous=NORMAL"))
+    # Phase 1: add lifecycle columns on existing DBs (idempotent ALTER)
+    try:
+        from app.storage.lifecycle import migrate_lifecycle_schema
+
+        with eng.begin() as conn:
+            migrate_lifecycle_schema(conn)
+    except Exception:
+        logger.exception("Lifecycle schema migrate failed")
+    # Phase 3: verify refs/anchors/conflict tables (create_all above creates them)
+    try:
+        from app.knowledge.refs import migrate_refs_schema
+
+        with eng.begin() as conn:
+            migrate_refs_schema(conn)
+    except Exception:
+        logger.exception("Refs schema migrate failed")
 
 
 @contextmanager

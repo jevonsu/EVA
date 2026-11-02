@@ -564,6 +564,15 @@ class ToolRegistry:
         except Exception:
             pass
 
+        # F02: default deny create/delete/promote unlock unless ALLOW_CREATE_TOOL
+        try:
+            from app.tools.protection import allow_create_tool
+
+            if not allow_create_tool():
+                allowed -= {"create_tool", "delete_tool", "promote_skill", "validate_skill"}
+        except Exception:
+            allowed -= {"create_tool", "delete_tool", "promote_skill", "validate_skill"}
+
         return self._expand_meta_bundle(allowed)
 
     def _iter_visible_tools(
@@ -579,8 +588,17 @@ class ToolRegistry:
                 n for n in force_tools if n in self._META_TOOLS_CONDITIONAL
             }
             allowed_meta = self._expand_meta_bundle(allowed_meta)
+        blocked = frozenset()
+        try:
+            from app.tools.protection import get_blocked_tools
+
+            blocked = get_blocked_tools()
+        except Exception:
+            blocked = frozenset()
         out: list[ToolSpec] = []
         for spec in self._tools.values():
+            if spec.name in blocked:
+                continue
             if (
                 spec.name in self._META_TOOLS_CONDITIONAL
                 and spec.name not in allowed_meta
@@ -877,6 +895,16 @@ class ToolRegistry:
 
 
     async def execute(self, name: str, arguments: dict[str, Any] | str) -> str:
+        try:
+            from app.tools.protection import is_tool_blocked
+
+            if is_tool_blocked(name):
+                return json.dumps(
+                    {"ok": False, "error": f"Tool [{name}] blocked on this path"},
+                    ensure_ascii=False,
+                )
+        except Exception:
+            pass
         spec = self._tools.get(name)
         if not spec:
             return json.dumps({"error": f"Unknown tool: {name}"}, ensure_ascii=False)

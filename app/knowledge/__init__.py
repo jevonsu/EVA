@@ -1,4 +1,4 @@
-"""Wiki-style knowledge base (pages + keyword search)."""
+"""Wiki-style knowledge base (pages + keyword search) + Phase-3 refs."""
 
 from app.knowledge.store import KnowledgeStore, get_knowledge_store
 

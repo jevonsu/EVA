@@ -5,26 +5,22 @@
   const form = $("loginForm");
   const msg = $("msg");
   const btn = $("btnLogin");
-  const card = $("card");
-  const controlUrl = $("controlUrl");
-  const controlKey = $("controlKey");
-  const btnToggleCard = $("btnToggleCard");
+  const username = $("username");
+  const password = $("password");
+  const btnTogglePwd = $("btnTogglePwd");
   const setupBanner = $("setupBanner");
-  const presetRow = $("presetRow");
-  const presetChips = $("presetChips");
+  const brandSub = $("brandSub");
+  const loginHint = $("loginHint");
+  const btnLoginLabel = $("btnLoginLabel");
 
   const DEVICE_KEY = "eva_device_id";
-  const CONTROL_URL_LS = "eva_control_url";
-  const HAS_SAVED_LS = "eva_login_has_saved";
   try {
     localStorage.removeItem("eva_card_code");
     localStorage.removeItem("eva_control_key");
   } catch (_) {}
 
   let sharedDeviceId = "";
-  let envHasDefault = false;
-  let vendorReady = false;
-  let hasSavedCard = false;
+  let needsSetup = false;
 
   function setMsg(text, kind) {
     if (!msg) return;
@@ -45,37 +41,6 @@
       if (v == null || v === "") localStorage.removeItem(k);
       else localStorage.setItem(k, v);
     } catch (_) {}
-  }
-
-  function normalizeUrl(u) {
-    let s = (u || "").trim().replace(/\/+$/, "");
-    if (!s) return "";
-    if (!/^https?:\/\//i.test(s)) s = "http://" + s;
-    return s.replace(/\/+$/, "");
-  }
-
-  function applyPrefs(prefs) {
-    if (!prefs) return;
-    if (prefs.device_id && String(prefs.device_id).length >= 8) {
-      sharedDeviceId = String(prefs.device_id);
-      lsSet(DEVICE_KEY, sharedDeviceId);
-    }
-    if (!prefs.has_saved) {
-      if (card) card.value = "";
-      return;
-    }
-    hasSavedCard = !!(prefs.card_saved || prefs.card_code);
-    if (card) {
-      if (prefs.card_code) card.value = prefs.card_code;
-      else if (hasSavedCard) {
-        card.value = "";
-        card.placeholder = prefs.card_hint
-          ? "已保存 " + prefs.card_hint + " · 留空沿用"
-          : "已保存卡密 · 留空沿用";
-      }
-    }
-    lsSet(HAS_SAVED_LS, "1");
-    if (prefs.control_url) lsSet(CONTROL_URL_LS, prefs.control_url);
   }
 
   function getDeviceId() {
@@ -110,29 +75,27 @@
     }
   }
 
-  function renderPresets(presets, selected) {
-    if (!presetRow || !presetChips) return;
-    const list = Array.isArray(presets) ? presets : [];
-    if (list.length < 2) {
-      presetRow.classList.add("hidden");
-      return;
+  function applySetupMode(setup) {
+    needsSetup = !!setup;
+    if (brandSub) brandSub.textContent = setup ? "创建管理员" : "账号密码登录";
+    if (btnLoginLabel) btnLoginLabel.textContent = setup ? "创建并登录" : "登录";
+    if (loginHint) {
+      loginHint.textContent = setup
+        ? "首次使用：设置管理员用户名与密码（至少 8 位）。也可在 .env 写 EVA_ADMIN_USER / EVA_ADMIN_PASSWORD。"
+        : "使用本机账号与密码登录。会话保存在本机 data/auth，同一目录重启无需重登。";
     }
-    presetRow.classList.remove("hidden");
-    const cur = normalizeUrl(selected || (controlUrl && controlUrl.value) || "");
-    presetChips.innerHTML = "";
-    list.forEach((p) => {
-      const url = normalizeUrl(p.url || "");
-      if (!url) return;
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = p.label || url;
-      if (url === cur) b.classList.add("is-on");
-      b.addEventListener("click", () => {
-        if (controlUrl) controlUrl.value = url;
-        renderPresets(list, url);
-      });
-      presetChips.appendChild(b);
-    });
+    if (setupBanner) {
+      if (setup) {
+        setupBanner.classList.remove("hidden");
+        setupBanner.textContent = "尚未创建用户。请设置管理员账号与密码。";
+      } else {
+        setupBanner.classList.add("hidden");
+        setupBanner.textContent = "";
+      }
+    }
+    if (password) {
+      password.autocomplete = setup ? "new-password" : "current-password";
+    }
   }
 
   const params = new URLSearchParams(location.search);
@@ -143,6 +106,8 @@
       if (d && d.authenticated) {
         const n = params.get("next") || "/";
         location.replace(n.startsWith("/") ? n : "/");
+      } else if (d && d.needs_setup) {
+        applySetupMode(true);
       }
     })
     .catch(() => {});
@@ -151,31 +116,11 @@
     .then((r) => r.json())
     .then((d) => {
       if (!d || !d.ok) return;
-      if (d.login_prefs) applyPrefs(d.login_prefs);
-      else if (lsGet(HAS_SAVED_LS) === "1") {
-        applyPrefs({
-          has_saved: true,
-          control_url: lsGet(CONTROL_URL_LS),
-          device_id: lsGet(DEVICE_KEY),
-        });
-      } else applyPrefs({ has_saved: false });
-
-      envHasDefault = !!d.env_has_default;
-      const keySet = !!d.env_control_key_set;
-      vendorReady = envHasDefault && keySet;
-      const url = normalizeUrl(d.default_control_url || d.suggested_control_url || "");
-      if (controlUrl) controlUrl.value = url;
-      if (setupBanner) {
-        if (vendorReady) {
-          setupBanner.classList.add("hidden");
-          setupBanner.textContent = "";
-        } else {
-          setupBanner.classList.remove("hidden");
-          setupBanner.textContent =
-            "发卡服务未配置。请发卡方在本机 .env 预填 AUTH_CONTROL_URL 与 AUTH_CONTROL_KEY 后再发给客户。";
-        }
+      if (d.login_prefs && d.login_prefs.device_id) {
+        sharedDeviceId = String(d.login_prefs.device_id);
+        lsSet(DEVICE_KEY, sharedDeviceId);
       }
-      renderPresets(d.presets || [], url);
+      applySetupMode(!!d.needs_setup);
     })
     .catch(() => {
       if (setupBanner) {
@@ -185,18 +130,18 @@
     });
 
   setTimeout(() => {
-    if (card && !(card.value || "").trim()) card.focus();
+    if (username && !(username.value || "").trim()) username.focus();
     else if (btn) btn.focus();
   }, 80);
 
-  if (btnToggleCard && card) {
-    btnToggleCard.addEventListener("click", () => {
-      const show = card.type === "password";
-      card.type = show ? "text" : "password";
-      btnToggleCard.textContent = show ? "隐藏" : "显示";
-      btnToggleCard.setAttribute("aria-pressed", show ? "true" : "false");
+  if (btnTogglePwd && password) {
+    btnTogglePwd.addEventListener("click", () => {
+      const show = password.type === "password";
+      password.type = show ? "text" : "password";
+      btnTogglePwd.textContent = show ? "隐藏" : "显示";
+      btnTogglePwd.setAttribute("aria-pressed", show ? "true" : "false");
       try {
-        card.focus();
+        password.focus();
       } catch (_) {}
     });
   }
@@ -204,24 +149,26 @@
   if (form) {
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const code = (card && card.value ? card.value : "").trim();
-      const url = normalizeUrl(controlUrl && controlUrl.value);
-      if ((!code || code.length < 8) && !hasSavedCard) {
-        setMsg("请输入有效卡密", "err");
-        card && card.focus();
+      const user = (username && username.value ? username.value : "").trim();
+      const pwd = password && password.value ? password.value : "";
+      if (!user || user.length < 3) {
+        setMsg("请输入有效用户名（至少 3 位）", "err");
+        username && username.focus();
         return;
       }
-      if (!url && !envHasDefault) {
-        setMsg("发卡服务未配置，请联系供应商", "err");
+      if (!pwd || pwd.length < 8) {
+        setMsg("密码至少 8 位", "err");
+        password && password.focus();
         return;
       }
 
       const deviceId = getDeviceId();
       if (btn) btn.disabled = true;
-      setMsg("正在登录…");
+      setMsg(needsSetup ? "正在创建账号…" : "正在登录…");
 
+      const endpoint = needsSetup ? "/api/auth/setup" : "/api/auth/login";
       try {
-        const res = await fetch("/api/auth/login", {
+        const res = await fetch(endpoint, {
           method: "POST",
           credentials: "same-origin",
           headers: {
@@ -229,10 +176,8 @@
             Accept: "application/json",
           },
           body: JSON.stringify({
-            card_code: code,
-            control_url: url,
-            control_key: "",
-            auto_failover: true,
+            username: user,
+            password: pwd,
             website: ($("website") && $("website").value) || "",
             device_id: deviceId,
             device_label: deviceLabel(),
@@ -248,24 +193,7 @@
           return;
         }
 
-        const usedUrl = normalizeUrl(data.control_url || url) || url;
-        lsSet(HAS_SAVED_LS, "1");
-        lsSet(CONTROL_URL_LS, usedUrl);
         lsSet(DEVICE_KEY, deviceId);
-        try {
-          await fetch("/api/auth/login-prefs", {
-            method: "PUT",
-            credentials: "same-origin",
-            headers: {
-              "Content-Type": "application/json",
-              Accept: "application/json",
-            },
-            body: JSON.stringify({
-              control_url: usedUrl,
-              device_id: deviceId,
-            }),
-          });
-        } catch (_) {}
 
         const next =
           new URLSearchParams(location.search).get("next") ||

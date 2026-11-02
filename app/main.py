@@ -20,9 +20,10 @@ from app.api import knowledge as knowledge_api
 from app.api import smb_media
 from app.api import storage as storage_api
 from app.api import webhook as webhook_api
+from app.api import refs as refs_api
+from app.api import review as review_api
 from app.api import workflows as workflows_api
 from app.auth.gate import AuthGateASGI
-from app.auth.remote import control_configured
 from app.auth.routes import router as auth_router
 from app.config import RESOURCE_ROOT, configure_logging, get_settings
 from app.config_store import get_config_store
@@ -103,22 +104,20 @@ async def lifespan(app: FastAPI):
 
     if getattr(settings, "auth_enabled", True):
         try:
-            from app.auth.remote import parse_control_presets
+            from app.auth.local_session import require_cryptography
+            from app.auth.users import ensure_seed_admin_from_env, needs_setup
 
-            presets = parse_control_presets()
-            if presets:
+            require_cryptography()
+            ensure_seed_admin_from_env()
+            if needs_setup():
                 logger.info(
-                    "AUTH: %d control gateway preset(s): %s",
-                    len(presets),
-                    ", ".join(f"{p['label']}={p['url']}" for p in presets),
+                    "AUTH_ENABLED: no local users yet — open /login to create admin "
+                    "or set EVA_ADMIN_USER / EVA_ADMIN_PASSWORD in .env"
                 )
-            elif not control_configured():
-                logger.info(
-                    "AUTH_ENABLED: login requires gateway URL + card code "
-                    "(.env AUTH_CONTROL_URL / AUTH_CONTROL_URLS optional defaults)"
-                )
+            else:
+                logger.info("AUTH_ENABLED: local username/password login")
         except Exception:
-            logger.debug("AUTH preset log skipped", exc_info=True)
+            logger.exception("AUTH bootstrap failed")
 
     # Core runtime first (tools + LLM). MCP may spawn slow subprocesses —
     # connect in the background so the HTTP server becomes ready quickly.
@@ -145,6 +144,19 @@ async def lifespan(app: FastAPI):
         await get_workflow_store().ensure_seed()
     except Exception:
         logger.exception("KB/workflow seed failed")
+
+    try:
+        from app.knowledge.skill_refs import sync_all_skill_knowledge_refs
+
+        refs_summary = await sync_all_skill_knowledge_refs()
+        if refs_summary.get("skills"):
+            logger.info(
+                "Skill knowledge_refs synced: skills=%s linked=%s",
+                refs_summary.get("skills"),
+                refs_summary.get("linked_total"),
+            )
+    except Exception:
+        logger.exception("Skill knowledge_refs sync failed (non-fatal)")
 
     scheduler = get_scheduler()
     await scheduler.start()
@@ -322,10 +334,13 @@ def create_app() -> FastAPI:
         ),
         lifespan=lifespan,
     )
+    origins = settings.cors_origin_list
+    # Never combine allow_origins=["*"] with credentials (browser rejects / unsafe)
+    allow_creds = origins != ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origin_list,
-        allow_credentials=True,
+        allow_origins=origins,
+        allow_credentials=allow_creds,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -336,6 +351,8 @@ def create_app() -> FastAPI:
     app.include_router(sessions.router)
     app.include_router(memory.router)
     app.include_router(knowledge_api.router)
+    app.include_router(refs_api.router)
+    app.include_router(review_api.router)
     app.include_router(workflows_api.router)
     app.include_router(tasks.router)
     app.include_router(tools.router)

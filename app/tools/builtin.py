@@ -13,6 +13,21 @@ from app.tools.registry import ToolRegistry
 from app.tools.workspace_ops import register_workspace_tools
 
 
+
+def _review_hint(status, valid_to=None, kind="item"):
+    """Ground-truth review state for the agent: never claim review unless queued."""
+    st = str(status or "active").strip().lower()
+    if st in ("staging", "review_required", "conflicted"):
+        return {"pending_review": True, "status": st,
+                "say": f"该{kind}在待评审队列：用户可在「设定 → 评审」中批准/驳回。"}
+    if st == "active" and valid_to:
+        return {"pending_review": False, "status": st,
+                "say": f"该{kind}是临时生效（至 {valid_to}），不在评审队列；不要叫用户去评审。"}
+    if st == "active":
+        return {"pending_review": False, "status": st,
+                "say": f"该{kind}已正式生效（已通过评审或无需评审），评审页不会有它；不要再说需要评审/批准。"}
+    return {"pending_review": False, "status": st, "say": f"该{kind}状态为 {st}，不在评审队列。"}
+
 def register_builtin_tools(registry: ToolRegistry) -> None:
     settings = get_settings()
     # Workspace multi-action tool (project/workspace)
@@ -42,6 +57,106 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         except Exception as exc:
             return json.dumps({"error": str(exc)})
 
+
+    _PERSONA_IDENTITY = ("name", "language", "background")
+    _PERSONA_ROLEPLAY = (
+        "roleplay_enabled", "roleplay_intensity", "roleplay_background",
+        "relationship", "personality", "speech_patterns",
+        "example_dialogue", "ooc_rules",
+    )
+    _PERSONA_EDITABLE = _PERSONA_IDENTITY + _PERSONA_ROLEPLAY
+
+    async def update_persona(action: str = "get", **fields) -> str:
+        """Read / update the agent's own persona (same path as 设定→人设 save)."""
+        from app.config_store import get_config_store
+        from app.agent.persona import persona_public_view
+
+        store = get_config_store()
+        act = (action or "get").strip().lower()
+        if act == "get":
+            cur = persona_public_view(store.get_agent())
+            return json.dumps({"ok": True, "persona": {k: cur.get(k) for k in _PERSONA_EDITABLE}}, ensure_ascii=False)
+        if act != "update":
+            return json.dumps({"ok": False, "error": "action 只能是 get|update"}, ensure_ascii=False)
+
+        scope = str(fields.pop("scope", None) or fields.pop("update_scope", None) or "auto").strip().lower()
+        if scope not in ("auto", "identity", "roleplay", "all"):
+            return json.dumps({"ok": False, "error": "scope 只能是 auto|identity|roleplay|all"}, ensure_ascii=False)
+
+        rejected = [k for k in fields if k not in _PERSONA_EDITABLE]
+        payload = {k: v for k, v in fields.items() if k in _PERSONA_EDITABLE and v is not None}
+        # blank strings never clear identity by accident
+        for k in list(payload):
+            if k in _PERSONA_IDENTITY and isinstance(payload[k], str) and not payload[k].strip():
+                payload.pop(k)
+
+        has_rp = any(k in payload for k in _PERSONA_ROLEPLAY)
+        has_id = any(k in payload for k in _PERSONA_IDENTITY)
+        stripped_identity: list[str] = []
+        # auto: 只要带了角色扮演字段，就丢掉同一次调用里的 name/language/background
+        # （模型常会顺手重写背景；真要一起改须 scope=all）
+        if scope == "roleplay" or (scope == "auto" and has_rp):
+            for k in _PERSONA_IDENTITY:
+                if k in payload:
+                    payload.pop(k)
+                    stripped_identity.append(k)
+        elif scope == "identity":
+            for k in _PERSONA_ROLEPLAY:
+                payload.pop(k, None)
+
+        if not payload:
+            return json.dumps({
+                "ok": False,
+                "error": "没有可改字段",
+                "allowed": list(_PERSONA_EDITABLE),
+                "rejected": rejected,
+                "stripped_identity": stripped_identity,
+                "hint": "只改角色扮演时不要传 background；若名字和扮演一起改请 scope=all",
+            }, ensure_ascii=False)
+
+        if "roleplay_enabled" in payload and not isinstance(payload["roleplay_enabled"], bool):
+            payload["roleplay_enabled"] = str(payload["roleplay_enabled"]).strip().lower() in ("1", "true", "yes", "on", "开", "开启")
+        if "roleplay_intensity" in payload and payload["roleplay_intensity"] not in ("light", "medium", "deep"):
+            return json.dumps({"ok": False, "error": "roleplay_intensity 只能是 light|medium|deep"}, ensure_ascii=False)
+        for k, v in list(payload.items()):
+            if k != "roleplay_enabled":
+                payload[k] = str(v)[:8000]
+        try:
+            from app.api.config import AgentUpdate
+            payload = AgentUpdate(**payload).model_dump(exclude_unset=True)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": f"字段校验失败: {exc}"}, ensure_ascii=False)
+        # defense: never write keys we stripped
+        for k in stripped_identity:
+            payload.pop(k, None)
+        # strip pasted 名字/语言/【角色背景】 wrappers from free-text backgrounds
+        try:
+            from app.agent.persona import sanitize_background_body
+            for _bk in ("background", "roleplay_background"):
+                if _bk in payload and isinstance(payload.get(_bk), str):
+                    payload[_bk] = sanitize_background_body(payload[_bk])
+        except Exception:
+            pass
+        store.update_section("agent", payload)
+        try:
+            from app.services.runtime import rebuild_runtime
+            await rebuild_runtime(reconnect_mcp=False)
+        except Exception as exc:
+            return json.dumps({
+                "ok": True,
+                "updated": sorted(payload),
+                "scope": scope,
+                "stripped_identity": stripped_identity,
+                "warning": f"已保存，运行时重建失败（下轮或重启生效）: {exc}",
+            }, ensure_ascii=False)
+        return json.dumps({
+            "ok": True,
+            "updated": sorted(payload),
+            "rejected": rejected,
+            "scope": scope,
+            "stripped_identity": stripped_identity,
+            "note": "已写入设定→人设，下一轮起生效；未列出的字段保持原值",
+        }, ensure_ascii=False)
 
     async def system_info() -> str:
         try:
@@ -81,12 +196,40 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         limit: int = 10,
         id: str = "",
         memory_id: str = "",
+        confidence: float = 0.8,
+        valid_to: str = "",
+        ttl_days: float = 0,
+        supersedes_id: str = "",
+        include_archived: bool = False,
+        status: str = "",
+        from_type: str = "memory",
+        from_id: str = "",
+        to_type: str = "kb",
+        to_id: str = "",
+        edge_type: str = "references",
+        reason: str = "",
+        ref_id: str = "",
+        soft: bool = True,
+        reference_type: str = "user_explicit",
+        resolution: str = "",
+        scope: str = "",
+        node_type: str = "",
+        node_id: str = "",
     ) -> str:
-        """Long-term memory: remember / recall / list / delete.
+        """Long-term memory: remember / recall / list / delete / refs.
 
         Persists to SQL (eva_memories) and appears in the UI Memory panel.
+        Phase 2: control kinds (preference/constraint/goal/strategy) → standing;
+        evidence/inferred → staging + TTL; long facts prefer kb + memory summary.
+        Phase 3: link_ref / unlink_ref / list_refs / add_anchor for knowledge edges. Phase 4: skill_graph / sync_skill_refs for skill→kb declarations.
+        Default recall/list hide expired/archived/superseded/conflicted/staging.
         """
         from app.memory.store import get_memory_store
+        from app.memory.control_plane import (
+            classify_memory_write,
+            should_prefer_kb,
+            short_summary,
+        )
 
         store = get_memory_store()
         act = (action or "").strip().lower()
@@ -94,34 +237,166 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         item_id = (memory_id or id or "").strip()
 
         if act in ("remember", "save", "add", "store"):
-            text = (content or "").strip()
-            if not text:
+            text_body = (content or "").strip()
+            if not text_body:
                 return json.dumps(
                     {"ok": False, "error": "content is required for action=remember"},
                     ensure_ascii=False,
                 )
             k = (kind or "preference").strip() or "preference"
-            item = await store.add(content=text, kind=k, tags=tag_list)
-            return json.dumps(
-                {
-                    "ok": True,
-                    "action": "remember",
-                    "id": item.id,
-                    "content": item.content,
-                    "kind": item.kind,
-                    "tags": item.tags,
-                    "message": "已写入长期记忆，记忆面板可查看",
-                },
-                ensure_ascii=False,
+            st_raw = (status or "").strip()
+            ttl = float(ttl_days) if ttl_days else None
+            meta = classify_memory_write(
+                kind=k,
+                tags=tag_list,
+                content=text_body,
+                status=st_raw or None,
+                ttl_days=ttl,
+                valid_to=(valid_to or "").strip() or None,
+                confidence=float(confidence) if confidence is not None else None,
+                explicit_status=bool(st_raw),
             )
+            kb_page = None
+            mem_content = text_body
+            # Long factual/evidence → kb staging page + short memory pointer
+            if meta.get("prefer_kb") and should_prefer_kb(meta["kind"], text_body):
+                try:
+                    from app.knowledge.store import get_knowledge_store
+
+                    kb = get_knowledge_store()
+                    await kb.ensure_seed()
+                    title = short_summary(text_body, max_chars=60) or "候选知识"
+                    page = await kb.create(
+                        title=f"[staging] {title}",
+                        content=text_body,
+                        tags=list(meta["tags"]) + ["from_memory"],
+                        collection="staging",
+                        confidence=float(meta["confidence"]),
+                        ttl_days=meta.get("ttl_days") or 7,
+                        status="staging",
+                        source="agent",
+                    )
+                    kb_page = {"id": page.get("id"), "title": page.get("title")}
+                    mem_content = (
+                        f"{short_summary(text_body)} "
+                        f"【知识库 staging:{page.get('id')}】"
+                    )
+                    if "needs_kb" not in {t.lower() for t in meta["tags"]}:
+                        meta["tags"] = list(meta["tags"]) + ["needs_kb"]
+                    if "kb_ref" not in {t.lower() for t in meta["tags"]}:
+                        meta["tags"] = list(meta["tags"]) + [f"kb_ref={page.get('id')}"]
+                except Exception as exc:
+                    # Fall back to summary-only memory; do not fail remember
+                    mem_content = (
+                        f"{short_summary(text_body)} 【长文宜入知识库；kb写入失败:{exc}】"
+                    )
+
+            sid = (supersedes_id or "").strip() or None
+            if not sid and meta.get("plane") == "control":
+                try:
+                    from app.memory.control_plane import find_supersede_id
+
+                    existing = await store.list_all(limit=200, include_archived=False)
+                    rows = [
+                        {
+                            "id": i.id,
+                            "content": i.content,
+                            "kind": i.kind,
+                            "tags": i.tags,
+                            "status": i.status,
+                        }
+                        for i in existing
+                    ]
+                    sid = find_supersede_id(
+                        rows,
+                        kind=meta["kind"],
+                        content=text_body,
+                        tags=list(meta["tags"]),
+                    )
+                except Exception:
+                    sid = None
+            try:
+                item = await store.add(
+                    content=mem_content,
+                    kind=meta["kind"],
+                    tags=list(meta["tags"]),
+                    confidence=float(meta["confidence"]),
+                    valid_to=(valid_to or "").strip() or None,
+                    ttl_days=meta.get("ttl_days"),
+                    supersedes_id=sid,
+                    status=meta["status"],
+                    explicit_status=True,
+                    apply_control_plane=False,  # already classified above
+                    auto_supersede=False,
+                    source="agent",
+                )
+            except ValueError as exc:
+                msg = str(exc)
+                if "blocked_hard_constraint" in msg:
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "action": "remember",
+                            "error": "blocked_hard_constraint",
+                            "message": msg,
+                        },
+                        ensure_ascii=False,
+                    )
+                raise
+            out = {
+                "ok": True,
+                "action": "remember",
+                "id": item.id,
+                "content": item.content,
+                "kind": item.kind,
+                "tags": item.tags,
+                "status": item.status,
+                "confidence": item.confidence,
+                "valid_to": item.valid_to,
+                "plane": meta.get("plane"),
+                "review": _review_hint(item.status, item.valid_to, "记忆"),
+                "supersedes_id": item.supersedes_id,
+                "message": (
+                    "已写入长期记忆（控制面可 standing；事实/无TTL 进暂存，正式认定需人工评审）"
+                    if item.status in ("staging", "review_required")
+                    else "已写入长期记忆并直接生效（无需评审），记忆面板可查看"
+                ),
+            }
+            if kb_page:
+                out["kb_page"] = kb_page
+                out["message"] = "长文已进知识库 staging，记忆保留摘要引用"
+                # Ensure references edge even if tag parse missed
+                try:
+                    from app.knowledge.refs import attach_kb_ref_for_memory, attach_controls_edge
+                    from app.memory.control_plane import is_control_kind
+
+                    attach_kb_ref_for_memory(
+                        memory_id=item.id, kb_id=str(kb_page["id"])
+                    )
+                    if is_control_kind(meta["kind"]):
+                        attach_controls_edge(
+                            memory_id=item.id,
+                            target_type="kb",
+                            target_id=str(kb_page["id"]),
+                            reason="control→kb staging",
+                        )
+                except Exception:
+                    pass
+            if meta.get("notes"):
+                out["notes"] = meta["notes"]
+            return json.dumps(out, ensure_ascii=False)
 
         if act in ("recall", "search", "get"):
             q = (query or content or "").strip()
             lim = max(1, min(int(limit or 10), 50))
             if q:
-                items = await store.search(q, limit=lim)
+                items = await store.search(
+                    q, limit=lim, include_archived=bool(include_archived)
+                )
             else:
-                items = await store.list_all(limit=lim)
+                items = await store.list_all(
+                    limit=lim, include_archived=bool(include_archived)
+                )
             return json.dumps(
                 {
                     "ok": True,
@@ -135,6 +410,9 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                             "kind": i.kind,
                             "tags": i.tags,
                             "score": i.score,
+                            "status": i.status,
+                            "confidence": i.confidence,
+                            "valid_to": i.valid_to,
                             "created_at": i.created_at.isoformat(),
                         }
                         for i in items
@@ -146,7 +424,9 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
 
         if act in ("list", "all"):
             lim = max(1, min(int(limit or 20), 100))
-            items = await store.list_all(limit=lim)
+            items = await store.list_all(
+                limit=lim, include_archived=bool(include_archived)
+            )
             return json.dumps(
                 {
                     "ok": True,
@@ -158,6 +438,9 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                             "content": i.content,
                             "kind": i.kind,
                             "tags": i.tags,
+                            "status": i.status,
+                            "confidence": i.confidence,
+                            "valid_to": i.valid_to,
                             "created_at": i.created_at.isoformat(),
                         }
                         for i in items
@@ -179,10 +462,177 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                 ensure_ascii=False,
             )
 
+        if act in ("link_ref", "link", "attach_ref"):
+            from app.knowledge.refs import get_ref_store
+
+            ft = (from_type or "memory").strip() or "memory"
+            fid = (from_id or item_id or "").strip()
+            tt = (to_type or "kb").strip() or "kb"
+            tid = (to_id or "").strip()
+            if not fid or not tid:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error": "from_id and to_id required for link_ref "
+                        "(memory/skill/kb ids)",
+                    },
+                    ensure_ascii=False,
+                )
+            try:
+                edge = await get_ref_store().link(
+                    from_type=ft,
+                    from_id=fid,
+                    to_type=tt,
+                    to_id=tid,
+                    edge_type=(edge_type or "references").strip() or "references",
+                    reason=(reason or "").strip() or None,
+                    created_by="tool:memory",
+                )
+            except ValueError as exc:
+                return json.dumps(
+                    {"ok": False, "error": str(exc)}, ensure_ascii=False
+                )
+            return json.dumps(
+                {"ok": True, "action": "link_ref", "ref": edge},
+                ensure_ascii=False,
+                default=str,
+            )
+
+        if act in ("unlink_ref", "unlink"):
+            from app.knowledge.refs import get_ref_store
+
+            try:
+                result = await get_ref_store().unlink(
+                    ref_id=(ref_id or "").strip() or None,
+                    from_type=(from_type or "").strip() or None,
+                    from_id=(from_id or item_id or "").strip() or None,
+                    to_type=(to_type or "").strip() or None,
+                    to_id=(to_id or "").strip() or None,
+                    edge_type=(edge_type or "").strip() or None,
+                    soft=bool(soft),
+                )
+            except ValueError as exc:
+                return json.dumps(
+                    {"ok": False, "error": str(exc)}, ensure_ascii=False
+                )
+            return json.dumps(
+                {"ok": True, "action": "unlink_ref", **result},
+                ensure_ascii=False,
+                default=str,
+            )
+
+        if act in ("list_refs", "refs"):
+            from app.knowledge.refs import get_ref_store
+
+            nt = (node_type or from_type or "memory").strip() or "memory"
+            nid = (node_id or from_id or item_id or "").strip()
+            lim = max(1, min(int(limit or 50), 200))
+            rows = await get_ref_store().list_refs(
+                node_type=nt if nid else None,
+                node_id=nid or None,
+                edge_type=(edge_type or "").strip() or None,
+                include_expired=bool(include_archived),
+                limit=lim,
+            )
+            return json.dumps(
+                {
+                    "ok": True,
+                    "action": "list_refs",
+                    "node_type": nt if nid else None,
+                    "node_id": nid or None,
+                    "count": len(rows),
+                    "refs": rows,
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+
+        if act in ("add_anchor", "anchor"):
+            from app.knowledge.refs import get_ref_store
+
+            res = (resolution or content or "").strip()
+            if not res:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error": "resolution/content required for add_anchor",
+                    },
+                    ensure_ascii=False,
+                )
+            try:
+                row = await get_ref_store().add_anchor(
+                    reference_type=(reference_type or "user_explicit").strip(),
+                    resolution=res,
+                    scope=(scope or query or "").strip() or None,
+                    confidence=float(confidence) if confidence is not None else 0.9,
+                    source="tool:memory",
+                    subject_type=(from_type or "").strip() or None,
+                    subject_id=(from_id or item_id or "").strip() or None,
+                    ttl_days=float(ttl_days) if ttl_days else None,
+                )
+            except ValueError as exc:
+                return json.dumps(
+                    {"ok": False, "error": str(exc)}, ensure_ascii=False
+                )
+            return json.dumps(
+                {"ok": True, "action": "add_anchor", "anchor": row},
+                ensure_ascii=False,
+                default=str,
+            )
+
+        if act in ("list_conflicts", "conflicts"):
+            from app.knowledge.refs import get_ref_store
+
+            lim = max(1, min(int(limit or 20), 100))
+            rows = await get_ref_store().list_conflicts(limit=lim)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "action": "list_conflicts",
+                    "count": len(rows),
+                    "conflicts": rows,
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+
+        if act in ("skill_graph", "list_skill_graph", "skill_refs"):
+            from app.knowledge.skill_refs import list_skill_kb_graph
+
+            sid = (from_id or node_id or query or "").strip() or None
+            lim = max(1, min(int(limit or 100), 500))
+            graph = await list_skill_kb_graph(skill_id=sid, limit=lim)
+            return json.dumps(
+                {"ok": True, "action": "skill_graph", **graph},
+                ensure_ascii=False,
+                default=str,
+            )
+
+        if act in ("sync_skill_refs", "sync_skill_knowledge_refs"):
+            from app.knowledge.skill_refs import (
+                sync_all_skill_knowledge_refs,
+                sync_skill_knowledge_refs,
+            )
+
+            sid = (from_id or node_id or query or "").strip()
+            if sid:
+                result = await sync_skill_knowledge_refs(sid)
+            else:
+                result = await sync_all_skill_knowledge_refs()
+            return json.dumps(
+                {"ok": True, "action": "sync_skill_refs", **result},
+                ensure_ascii=False,
+                default=str,
+            )
+
         return json.dumps(
             {
                 "ok": False,
-                "error": f"Unknown action: {action}. Use remember|recall|list|delete",
+                "error": (
+                    f"Unknown action: {action}. Use remember|recall|list|delete|"
+                    "link_ref|unlink_ref|list_refs|add_anchor|list_conflicts|"
+                    "skill_graph|sync_skill_refs"
+                ),
             },
             ensure_ascii=False,
         )
@@ -303,6 +753,18 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     async def promote_skill_tool(name: str) -> str:
         """Promote workspace/skills/<id> draft → skills/<id> live and hot-reload."""
         import json as _json
+
+        from app.tools.protection import (
+            allow_create_tool as _allow_ct,
+            create_tool_disabled_payload,
+            is_tool_blocked,
+        )
+
+        if is_tool_blocked("promote_skill") or not _allow_ct():
+            return _json.dumps(
+                create_tool_disabled_payload("promote_skill"),
+                ensure_ascii=False,
+            )
 
         from app.services.skill_lifecycle import promote_skill_async
 
@@ -617,6 +1079,10 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         if not hp.is_file():
             return None  # HTTP-only skill
         try:
+            # F02: only load handlers under skills / workspace/skills
+            from app.services.skill_lifecycle import _assert_handler_under_skills
+
+            _assert_handler_under_skills(hp)
             mod_name = f"_preflight_{safe_name}_{id(hp)}"
             spec = importlib.util.spec_from_file_location(mod_name, hp)
             if spec is None or spec.loader is None:
@@ -674,6 +1140,18 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         import tempfile
         from datetime import datetime, timezone
         from pathlib import Path as _Path
+
+        from app.tools.protection import (
+            allow_create_tool as _allow_ct,
+            create_tool_disabled_payload,
+            is_tool_blocked,
+        )
+
+        if is_tool_blocked("create_tool") or not _allow_ct():
+            return _json.dumps(
+                create_tool_disabled_payload("create_tool"),
+                ensure_ascii=False,
+            )
 
         from app.services.skill_lifecycle import (
             draft_skill_dir,
@@ -1336,6 +1814,12 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     },
                     ensure_ascii=False,
                 )
+            if isinstance(promote_result, dict):
+                promote_result.setdefault("knowledge_certified", False)
+                promote_result.setdefault(
+                    "hint_gate",
+                    "promote 不同步认定知识；knowledge_refs 仅为引用边",
+                )
             is_draft = False
             skill_dir = live_dir
             meta_entry = upsert_dynamic_meta(
@@ -1924,6 +2408,18 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         import json as _json
         import shutil
 
+        from app.tools.protection import (
+            allow_create_tool as _allow_ct,
+            create_tool_disabled_payload,
+            is_tool_blocked,
+        )
+
+        if is_tool_blocked("delete_tool") or not _allow_ct():
+            return _json.dumps(
+                create_tool_disabled_payload("delete_tool"),
+                ensure_ascii=False,
+            )
+
         from app.services.skill_lifecycle import draft_skill_dir, live_skill_dir
         from app.services.skill_spec import is_vague_confirmation
         from app.tools.protection import can_llm_delete, protection_reason
@@ -2060,6 +2556,11 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         pinned: bool = False,
         limit: int = 10,
         changelog: str = "",
+        confidence: float = 0.8,
+        valid_to: str = "",
+        ttl_days: float = 0,
+        supersedes_id: str = "",
+        include_archived: bool = False,
     ) -> str:
         """Wiki knowledge base: search / get / list / create_page / update_page / append / delete."""
         from app.knowledge.store import get_knowledge_store
@@ -2072,7 +2573,11 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
 
         try:
             if act in ("list", "list_pages"):
-                rows = await store.list_pages(collection=coll, limit=max(1, min(limit, 100)))
+                rows = await store.list_pages(
+                    collection=coll,
+                    include_archived=bool(include_archived),
+                    limit=max(1, min(limit, 100)),
+                )
                 return json.dumps({"ok": True, "action": "list", "count": len(rows), "pages": rows}, ensure_ascii=False)
             if act in ("list_collections", "collections"):
                 cols = await store.list_collections()
@@ -2081,7 +2586,12 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                 q = (query or title or content or "").strip()
                 if not q:
                     return json.dumps({"ok": False, "error": "query required for search"}, ensure_ascii=False)
-                hits = await store.search(q, collection=coll, limit=max(1, min(limit, 20)))
+                hits = await store.search(
+                    q,
+                    collection=coll,
+                    limit=max(1, min(limit, 20)),
+                    include_archived=bool(include_archived),
+                )
                 slim = [
                     {
                         "id": h.get("id"),
@@ -2103,18 +2613,32 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     return json.dumps({"ok": False, "error": f"page not found: {key}"}, ensure_ascii=False)
                 page = dict(page)
                 page.pop("versions", None)
-                return json.dumps({"ok": True, "action": "get", "page": page}, ensure_ascii=False, default=str)
+                return json.dumps({"ok": True, "action": "get", "page": page, "review": _review_hint((page or {}).get("status"), (page or {}).get("valid_to"), "知识页")}, ensure_ascii=False, default=str)
             if act in ("create_page", "create", "add"):
                 if not (title or "").strip():
                     return json.dumps({"ok": False, "error": "title required"}, ensure_ascii=False)
+                ttl = float(ttl_days) if ttl_days else None
+                coll_use = coll or "default"
+                st_use = "active"
+                # Staging / candidate collections → status=staging + default TTL
+                if coll_use.lower() in ("staging", "temp", "draft", "candidate", "daily"):
+                    st_use = "staging"
+                    if not (ttl and ttl > 0) and not (valid_to or "").strip():
+                        ttl = 7.0
                 page = await store.create(
                     title=title.strip(),
                     content=content or "",
                     tags=tag_list,
-                    collection=coll or "default",
+                    collection=coll_use,
                     pinned=bool(pinned),
+                    confidence=float(confidence) if confidence is not None else None,
+                    valid_to=(valid_to or "").strip() or None,
+                    ttl_days=ttl if ttl and ttl > 0 else None,
+                    supersedes_id=(supersedes_id or "").strip() or None,
+                    status=st_use,
+                    source="agent",
                 )
-                return json.dumps({"ok": True, "action": "create_page", "page": page}, ensure_ascii=False, default=str)
+                return json.dumps({"ok": True, "action": "create_page", "page": page, "review": _review_hint((page or {}).get("status"), (page or {}).get("valid_to"), "知识页")}, ensure_ascii=False, default=str)
             if act in ("update_page", "update"):
                 pid = (page_id or "").strip()
                 if not pid and title:
@@ -2129,10 +2653,11 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     tags=tag_list or None,
                     collection=coll,
                     changelog=changelog or "kb tool update",
+                    source="agent",
                 )
                 if not page:
                     return json.dumps({"ok": False, "error": "page not found"}, ensure_ascii=False)
-                return json.dumps({"ok": True, "action": "update_page", "page": page}, ensure_ascii=False, default=str)
+                return json.dumps({"ok": True, "action": "update_page", "page": page, "review": _review_hint((page or {}).get("status"), (page or {}).get("valid_to"), "知识页")}, ensure_ascii=False, default=str)
             if act in ("append",):
                 pid = (page_id or "").strip()
                 if not pid and title:
@@ -2141,10 +2666,12 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                 body = (text or content or "").strip()
                 if not pid or not body:
                     return json.dumps({"ok": False, "error": "page_id and text/content required"}, ensure_ascii=False)
-                page = await store.append(pid, body, heading=heading, changelog=changelog or "append")
+                page = await store.append(
+                    pid, body, heading=heading, changelog=changelog or "append", source="agent"
+                )
                 if not page:
                     return json.dumps({"ok": False, "error": "page not found"}, ensure_ascii=False)
-                return json.dumps({"ok": True, "action": "append", "page": page}, ensure_ascii=False, default=str)
+                return json.dumps({"ok": True, "action": "append", "page": page, "review": _review_hint((page or {}).get("status"), (page or {}).get("valid_to"), "知识页")}, ensure_ascii=False, default=str)
             if act in ("delete", "remove"):
                 pid = (page_id or "").strip()
                 if not pid:
@@ -2842,6 +3369,35 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             },
         ),
         (
+            "update_persona",
+            "读/改助手【自己的】人设（等价设定→人设保存）。"
+            "基础背景(background)只在扮演关闭时生效；扮演背景(roleplay_background)只在扮演开启时生效，二者独立。"
+            "【重要】改扮演背景用 roleplay_background，改基础背景用 background；只改角色扮演时不要传 background/name/language；"
+            "scope 默认 auto：一旦带角色扮演字段，会自动忽略同次调用里的背景/名字/语言，防止误改。"
+            "只改名字/语言/背景用 scope=identity；两边一起改才用 scope=all。"
+            "「你叫我Y」→ memory。不能改模型/密钥/端口。",
+            update_persona,
+            {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["get", "update"], "description": "get 读取；update 写入"},
+                    "scope": {"type": "string", "enum": ["auto", "identity", "roleplay", "all"], "description": "auto默认：有角色扮演字段则忽略 name/language/background；identity只改身份；roleplay只改扮演；all允许同次改两边"},
+                    "name": {"type": "string", "description": "显示名称"},
+                    "language": {"type": "string", "description": "回复语言，如 中文 / English"},
+                    "background": {"type": "string", "description": "基础角色背景（仅扮演关闭时注入）；改扮演背景请用 roleplay_background"},
+                    "roleplay_background": {"type": "string", "description": "扮演用角色背景（仅扮演开启时注入，替代基础背景）"},
+                    "roleplay_enabled": {"type": "boolean", "description": "是否开启角色扮演"},
+                    "roleplay_intensity": {"type": "string", "enum": ["light", "medium", "deep"], "description": "扮演强度"},
+                    "relationship": {"type": "string", "description": "与用户的关系"},
+                    "personality": {"type": "string", "description": "性格"},
+                    "speech_patterns": {"type": "string", "description": "说话方式/口癖"},
+                    "example_dialogue": {"type": "string", "description": "示例对话"},
+                    "ooc_rules": {"type": "string", "description": "出戏规则"},
+                },
+                "required": ["action"],
+            },
+        ),
+        (
             "system_info",
             "Return agent and runtime system information.",
             system_info,
@@ -2850,19 +3406,34 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         (
             "memory",
             "长期记忆（跨会话；面板可见）。"
-            "注入是「匹配检索」而非全量：相关条目才会进 prompt，条目再多也不会整库塞 token。"
-            "记住时 action=remember，content 写完整自然语言（场景+偏好），kind=preference|template|habit|rule|fact，可加 tags；"
-            "始终生效的规则用 kind=rule 或 tags=always/全局。"
-            "回忆用 action=recall（query=关键词）；list；delete。"
-            "用户说记住/记一下时必须调用 remember，禁止只口头答应。",
+            "注入是「匹配检索」而非全量：相关条目才会进 prompt。"
+            "控制面 kind=preference|constraint|goal|strategy|habit|rule → standing，自动 supersede 同主题旧条；"
+            "证据/推断 kind=evidence|inferred|observation|staging → status=staging，默认 TTL 7 天，不进 standing 注入；"
+            "无 TTL 的 fact/note → staging（不可自称金叶/正式）；长事实写 kb staging + 记忆摘要；正式认定须人工评审。"
+            "是否待评审只看返回的 status / review.pending_review：仅 staging/review_required 会出现在「设定→评审」；active（含 preference/constraint 控制面）已直接生效，不要告诉用户去评审。"
+            "Phase3：link_ref/unlink_ref/list_refs；add_anchor；list_conflicts。Phase4：skill_graph 看技能→知识边；sync_skill_refs 只同步引用边、不自动认定知识。"
+            "标签 kb_ref=ID 或 controls=kb:ID 在 remember 时自动建边。"
+            "回忆用 action=recall；list；delete。用户说记住时必须调用 remember；但「你叫X/改助手名字或人设」用 update_persona，不要 memory（写暂存/绿叶，非自由金叶）。",
             memory_tool,
             {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["remember", "recall", "list", "delete"],
-                        "description": "remember=保存记忆; recall=检索; list=列出最近; delete=按id删除",
+                        "enum": [
+                            "remember",
+                            "recall",
+                            "list",
+                            "delete",
+                            "link_ref",
+                            "unlink_ref",
+                            "list_refs",
+                            "add_anchor",
+                            "list_conflicts",
+                            "skill_graph",
+                            "sync_skill_refs",
+                        ],
+                        "description": "remember/recall/list/delete；Phase3 refs；Phase4: skill_graph|sync_skill_refs",
                     },
                     "content": {
                         "type": "string",
@@ -2870,8 +3441,13 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     },
                     "kind": {
                         "type": "string",
-                        "description": "记忆类型：preference / fact / note / template 等，默认 preference",
+                        "description": "记忆类型：preference|constraint|goal|strategy|habit|rule（控制面）或 evidence|inferred|fact|note（证据/事实），默认 preference",
                         "default": "preference",
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "可选 active|staging；通常由 kind 自动决定。Agent 不可写 gold/certified；无TTL事实强制 staging，正式认定走评审。",
+                        "default": "",
                     },
                     "tags": {
                         "type": "string",
@@ -2894,6 +3470,86 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                         "type": "string",
                         "description": "删除用记忆 id，等同 id",
                     },
+                    "confidence": {
+                        "type": "number",
+                        "description": "置信度 0~1，默认 0.8（临时事实可更低）",
+                        "default": 0.8,
+                    },
+                    "valid_to": {
+                        "type": "string",
+                        "description": "可选到期时间 ISO8601；到期后默认 recall 不可见",
+                    },
+                    "ttl_days": {
+                        "type": "number",
+                        "description": "可选存活天数（绿叶临时事实）；与 valid_to 二选一",
+                        "default": 0,
+                    },
+                    "supersedes_id": {
+                        "type": "string",
+                        "description": "可选：取代的旧记忆 id（旧条目标为 superseded）",
+                    },
+                    "include_archived": {
+                        "type": "boolean",
+                        "description": "recall/list 是否包含过期/归档/被取代等非 active；list_refs 是否含 expired",
+                        "default": False,
+                    },
+                    "from_type": {
+                        "type": "string",
+                        "description": "link_ref 起点类型 memory|kb|skill|reference",
+                        "default": "memory",
+                    },
+                    "from_id": {
+                        "type": "string",
+                        "description": "link_ref / list_refs 起点 id（技能名或记忆/kb id）",
+                    },
+                    "to_type": {
+                        "type": "string",
+                        "description": "link_ref 终点类型",
+                        "default": "kb",
+                    },
+                    "to_id": {
+                        "type": "string",
+                        "description": "link_ref 终点 id",
+                    },
+                    "edge_type": {
+                        "type": "string",
+                        "description": "references|controls|supersedes|contradicts",
+                        "default": "references",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "建边原因（可选）",
+                    },
+                    "ref_id": {
+                        "type": "string",
+                        "description": "unlink_ref 时的边 id",
+                    },
+                    "soft": {
+                        "type": "boolean",
+                        "description": "unlink_ref 软删除（status=expired），默认 true",
+                        "default": True,
+                    },
+                    "node_type": {
+                        "type": "string",
+                        "description": "list_refs 节点类型（可替代 from_type）",
+                    },
+                    "node_id": {
+                        "type": "string",
+                        "description": "list_refs 节点 id（可替代 from_id）",
+                    },
+                    "reference_type": {
+                        "type": "string",
+                        "description": "add_anchor: user_explicit|authority|precedent|evidence|hierarchy",
+                        "default": "user_explicit",
+                    },
+                    "resolution": {
+                        "type": "string",
+                        "description": "add_anchor 仲裁结论文本",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "description": "add_anchor 作用域/主题关键词",
+                    },
                 },
                 "required": ["action"],
             },
@@ -2903,11 +3559,13 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             "【主推·知识库 Wiki】业务标准与长文档（与 memory 短偏好不同）。"
             "action=search|get|list|create_page|update_page|append|delete|list_collections。"
             "collection 分区：sop=流程标准、product=产品参数、"
-            "handbook=手册、reference=模板、daily=纪要、default=未分类。"
+            "handbook=手册、reference=模板、daily=纪要、staging=候选（默认 TTL）、default=未分类。"
+            "Agent create 默认进暂存/绿叶，不可直接写金叶；正式认定须人工评审批准。"
+            "是否待评审只以工具返回的 page.status / review.pending_review 为准：staging/review_required 才在「设定→评审」队列；status=active 表示已正式（可能用户已在评审页批准），禁止再说要评审/批准，也不要依据页面正文里自己写的『状态』说明。"
             "空库就说空，禁止编造不存在的 SOP 标题或阶段步骤。"
             "只有 kb list/search 真正命中的页面才能当流程依据。"
             "短偏好/「记住」仍用 memory。create_page 需 title+content；"
-            "update/append 需 page_id 或已有 title。",
+            "update/append 需 page_id 或已有 title。prefer link_ref；skill promote 不自动认定知识。",
             kb_tool,
             {
                 "type": "object",
@@ -2953,6 +3611,29 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     "pinned": {"type": "boolean", "description": "是否置顶"},
                     "limit": {"type": "integer", "default": 10},
                     "changelog": {"type": "string", "description": "更新说明"},
+                    "confidence": {
+                        "type": "number",
+                        "description": "置信度 0~1，默认 0.8",
+                        "default": 0.8,
+                    },
+                    "valid_to": {
+                        "type": "string",
+                        "description": "可选到期 ISO8601；到期后默认 search/list 不可见",
+                    },
+                    "ttl_days": {
+                        "type": "number",
+                        "description": "可选存活天数（临时页）；与 valid_to 二选一",
+                        "default": 0,
+                    },
+                    "supersedes_id": {
+                        "type": "string",
+                        "description": "可选：取代的旧页面 id",
+                    },
+                    "include_archived": {
+                        "type": "boolean",
+                        "description": "list/search 是否包含归档/过期/被取代等",
+                        "default": False,
+                    },
                 },
                 "required": ["action"],
             },
@@ -3103,6 +3784,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             "【主推·对话模型】设定→LLM：列出/新增/改默认/删本机已保存的对话模型。"
             "action=list|get|upsert|set_default|delete|models。"
             "创建/改技能前先 list，确认现有模型。"
+            "边界：本工具只管已保存供应商；未入库的站点/中转站要看 /models 用技能 list_api_models。"
             "用户给的 OpenAI/DeepSeek/xAI key、base_url、model 必须 upsert 到这里，禁止写入 integrations。"
             "技能里用 from app.services.credentials import llm_credentials。",
             manage_llms,
@@ -3406,7 +4088,9 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         ),
         (
             "promote_skill",
-            "将 workspace/skills/<id> 草稿发布到 skills/<id> 并热加载。先 validate 再 promote。",
+            "将 workspace/skills/<id> 草稿发布到 skills/<id> 并热加载。先 validate 再 promote。"
+            "仅发布技能包；knowledge_refs 同步为引用边，不会把目标知识自动认定为正式/金叶。"
+            "技能 handler 若写 memory/kb 仍走 agent 门禁（暂存），须人工评审批准。",
             promote_skill_tool,
             {
                 "type": "object",

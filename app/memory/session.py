@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.storage.engine import db_connect
 from app.storage.schema import sessions as sessions_t
 from app.storage.util import dumps, loads, run_db
+from app.services import session_events as _sess_bus
 
 
 def _now() -> datetime:
@@ -82,6 +83,22 @@ class SessionStore:
         return data
 
     def _upsert_sync(self, data: dict[str, Any]) -> None:
+        self._upsert_sync_raw(data)
+        try:
+            msgs = data.get("messages") or []
+            last = msgs[-1] if isinstance(msgs, list) and msgs and isinstance(msgs[-1], dict) else {}
+            _sess_bus.publish(
+                "session_updated",
+                str(data["session_id"]),
+                message_count=len(msgs) if isinstance(msgs, list) else 0,
+                updated_at=str(data.get("updated_at") or ""),
+                title=data.get("title"),
+                last_role=str(last.get("role") or ""),
+            )
+        except Exception:
+            pass
+
+    def _upsert_sync_raw(self, data: dict[str, Any]) -> None:
         sid = str(data["session_id"])
         msgs = data.get("messages") or []
         mc = len(msgs) if isinstance(msgs, list) else 0
@@ -184,7 +201,10 @@ class SessionStore:
     def _delete_sync(self, session_id: str) -> bool:
         with db_connect() as conn:
             res = conn.execute(delete(sessions_t).where(sessions_t.c.id == session_id))
-            return bool(res.rowcount)
+            ok = bool(res.rowcount)
+        if ok:
+            _sess_bus.publish("session_deleted", str(session_id))
+        return ok
 
     def _restore_sync(self, data: dict[str, Any]) -> dict[str, Any]:
         payload = dict(data or {})
@@ -248,9 +268,13 @@ class SessionStore:
             data = self._get_sync(session_id)
             if data is None:
                 raise KeyError(f"Session not found: {session_id}")
+            stamp = _now().isoformat()
             for m in messages:
                 if isinstance(m, dict) and not str(m.get("id") or "").strip():
                     m["id"] = uuid.uuid4().hex[:12]
+                # 每条消息带各自时间（UTC ISO）；调用方已给的（如用户发起时刻）保留
+                if isinstance(m, dict) and not (m.get("created_at") or m.get("timestamp")):
+                    m["created_at"] = stamp
             data["messages"].extend(messages)
             self._ensure_message_ids(data["messages"])
             cap = int(max_history if max_history is not None else self.max_history)

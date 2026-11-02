@@ -13,7 +13,7 @@ Stored at ``data/webhooks/endpoints.json`` (legacy: ``data/webhooks.json``)::
           "platform": "feishu",
           "session_mode": "fixed",   # fixed | map | new
           "session_id": "",
-          "use_tools": true,
+          "use_tools": false,
           "use_memory": true,
           "note": "",
           "created_at": "...",
@@ -62,6 +62,17 @@ def _new_id() -> str:
 
 
 _RESERVED_SLUGS = frozenset({"chat", "health", "sessions", "api", "webhook", "webhooks"})
+
+
+def _webhook_tools_allowed() -> bool:
+    """F01: tools on webhook endpoints require WEBHOOK_ALLOW_TOOLS."""
+    try:
+        from app.tools.protection import webhook_allow_tools
+
+        return bool(webhook_allow_tools())
+    except Exception:
+        return False
+
 
 
 def normalize_slug(raw: str | None, *, fallback: str = "") -> str:
@@ -159,7 +170,7 @@ class WebhookStore:
             if str(integ.get("default_session_id") or "").strip()
             else "map",
             "session_id": str(integ.get("default_session_id") or "").strip(),
-            "use_tools": str(integ.get("use_tools") or "true").strip().lower()
+            "use_tools": str(integ.get("use_tools") or "false").strip().lower()
             not in ("0", "false", "no", "off"),
             "use_memory": str(integ.get("use_memory") or "true").strip().lower()
             not in ("0", "false", "no", "off"),
@@ -196,12 +207,20 @@ class WebhookStore:
         return None
 
     def find_by_token(self, token: str) -> dict[str, Any] | None:
+        import hashlib
+        import hmac
+
         tok = (token or "").strip()
         if not tok:
             return None
+        got = hashlib.sha256(tok.encode("utf-8")).digest()
         with self._lock:
             for e in self._data.get("endpoints") or []:
-                if str(e.get("token") or "").strip() == tok:
+                expected = str(e.get("token") or "").strip()
+                if not expected:
+                    continue
+                exp = hashlib.sha256(expected.encode("utf-8")).digest()
+                if hmac.compare_digest(got, exp):
                     return deepcopy(e)
         return None
 
@@ -239,7 +258,7 @@ class WebhookStore:
                 or "custom",
                 "session_mode": mode,
                 "session_id": str(fields.get("session_id") or "").strip(),
-                "use_tools": bool(fields.get("use_tools", True)),
+                "use_tools": bool(fields.get("use_tools", False)) and _webhook_tools_allowed(),
                 "use_memory": bool(fields.get("use_memory", True)),
                 "note": str(fields.get("note") or "").strip()[:500],
                 "created_at": now,
@@ -281,7 +300,9 @@ class WebhookStore:
             if "session_id" in fields:
                 cur["session_id"] = str(fields.get("session_id") or "").strip()
             if "use_tools" in fields and fields["use_tools"] is not None:
-                cur["use_tools"] = bool(fields["use_tools"])
+                cur["use_tools"] = bool(fields["use_tools"]) and _webhook_tools_allowed()
+            elif not _webhook_tools_allowed():
+                cur["use_tools"] = False
             if "use_memory" in fields and fields["use_memory"] is not None:
                 cur["use_memory"] = bool(fields["use_memory"])
             if "note" in fields and fields["note"] is not None:

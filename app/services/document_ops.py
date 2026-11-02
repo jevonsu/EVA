@@ -300,6 +300,7 @@ def run(
     rows_json: str = "",
     slide: int = 0,
     append: bool = False,
+    overwrite: bool = False,
     max_chars: int = MAX_TEXT,
 ) -> dict[str, Any]:
     blocked = _hub_http_block()
@@ -321,17 +322,29 @@ def run(
             },
             batch_limit=MAX_BATCH,
             hint=(
-                "path 相对工作区，如 reports/a.docx。"
-                "批量：paths=['a.docx','b.xlsx']，或 path='reports/*.xlsx'。"
+                "写入 path 须在 uploads/docs/exports/scratch/images/videos/skills 下；"
+                "新建默认 docs/ 或 exports/ 或 scratch/；禁止根目录。"
+                "覆盖已有文件须 ask_user 后 overwrite=true。"
+                "批量：paths=['docs/a.docx','exports/b.xlsx']，或 path='docs/*.xlsx'。"
                 "旧版 .doc/.xls/.ppt 请另存为新格式。"
             ),
+            write_buckets=[
+                "uploads",
+                "docs",
+                "exports",
+                "scratch",
+                "images",
+                "videos",
+                "skills",
+            ],
         )
     if act in ("list", "ls"):
         return _list(kind=kind)
     targets = collect_targets(path, paths, paths_json)
     if not targets:
         return _err(
-            "需要 path 或 paths。单文件如 notes.md；批量如 paths 数组或 reports/*.xlsx"
+            "需要 path 或 paths。单文件如 docs/notes.md 或 exports/a.xlsx；"
+            "批量如 paths 数组或 docs/*.xlsx。禁止工作区根目录。"
         )
     if len(targets) == 1:
         return _run_one(
@@ -347,6 +360,7 @@ def run(
             rows_json=rows_json,
             slide=slide,
             append=append,
+            overwrite=overwrite,
             max_chars=max_chars,
         )
     per = max(800, min(int(max_chars or MAX_TEXT), MAX_TEXT // min(len(targets), 8)))
@@ -366,6 +380,7 @@ def run(
             rows_json=rows_json,
             slide=slide,
             append=append,
+            overwrite=overwrite,
             max_chars=per,
         )
         row.setdefault("path", rel)
@@ -402,6 +417,7 @@ def _run_one(
     rows_json: str,
     slide: int,
     append: bool,
+    overwrite: bool = False,
     max_chars: int,
 ) -> dict[str, Any]:
     if act in ("delete", "rm", "remove"):
@@ -432,6 +448,7 @@ def _run_one(
             content=content,
             rows_json=rows_json,
             append=False,
+            overwrite=bool(overwrite),
         )
     if act in ("edit", "update", "patch"):
         return _edit(
@@ -546,16 +563,47 @@ def _write(
     content: str,
     rows_json: str,
     append: bool,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
-    target, rel = _resolve(path)
+    from app.tools.safety import (
+        WRITE_BUCKETS,
+        enforce_write_relpath,
+        normalize_workspace_relpath,
+    )
+
+    rel_enforced, err, rewritten = enforce_write_relpath(path, rewrite=True)
+    if err or not rel_enforced:
+        return _err(
+            err or "非法写路径",
+            path=path,
+            allowed_buckets=sorted(WRITE_BUCKETS),
+            hint="新建默认 docs/ 或 exports/ 或 scratch/；禁止工作区根目录。",
+        )
+    target, rel = _resolve(rel_enforced)
     if target is None:
-        return _err("路径越出工作区", path=path)
+        return _err("路径越出工作区", path=rel_enforced)
+    if target.exists() and target.is_file() and not append and not overwrite:
+        extra = (
+            {"rewritten_from": normalize_workspace_relpath(path)} if rewritten else {}
+        )
+        return _err(
+            f"文件已存在：{rel}。覆盖前须 ask_user 确认，再带 overwrite=true 重试。",
+            path=rel,
+            action_required="confirm_overwrite",
+            hint=(
+                "调用 ask_user 让用户选「覆盖」或「换路径」；"
+                "确认覆盖后再 document write overwrite=true。"
+            ),
+            **extra,
+        )
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
         if kind == "markdown":
             if append and target.is_file():
                 old = target.read_text(encoding="utf-8", errors="replace")
-                target.write_text(old.rstrip() + "\n\n" + (content or ""), encoding="utf-8")
+                target.write_text(
+                    old.rstrip() + "\n\n" + (content or ""), encoding="utf-8"
+                )
             else:
                 target.write_text(content or "", encoding="utf-8")
         elif kind == "word":
@@ -568,11 +616,16 @@ def _write(
             _write_pdf(target, content or "", append=append and target.is_file())
         else:
             return _err("未知类型", kind=kind)
-    except Exception as extra:
+    except Exception as exc:
         logger.exception("document write failed")
-        return _err(f"写入失败：{extra}", path=rel, kind=kind)
+        return _err(f"写入失败：{exc}", path=rel, kind=kind)
     sz = target.stat().st_size if target.is_file() else 0
-    return _ok(action="write", path=rel, kind=kind, bytes=sz)
+    out_extra: dict[str, Any] = {}
+    if rewritten:
+        out_extra["rewritten_from"] = normalize_workspace_relpath(path)
+        out_extra["hint"] = "路径已自动归入白名单目录（默认 scratch/）。"
+    return _ok(action="write", path=rel, kind=kind, bytes=sz, **out_extra)
+
 
 
 def _edit(

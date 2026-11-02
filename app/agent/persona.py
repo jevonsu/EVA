@@ -20,11 +20,13 @@ Not editable (code-injected each turn — logic unchanged):
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Fields persisted under config.agent (and accepted by the form / PATCH)
 ACTIVE_AGENT_KEYS = (
     "name",
+    "avatar",  # 助手头像：data:image/... 或 http(s)/静态路径（仅 UI，不注入提示词）
     "role",
     "language",
     "language_style",
@@ -32,6 +34,7 @@ ACTIVE_AGENT_KEYS = (
     # Roleplay block (only injected when roleplay_enabled)
     "roleplay_enabled",
     "roleplay_intensity",
+    "roleplay_background",
     "relationship",
     "personality",
     "speech_patterns",
@@ -65,6 +68,7 @@ LAYER_TEXT_FIELDS: tuple[str, ...] = ()
 
 # Roleplay free-text fields (injected only when roleplay_enabled)
 ROLEPLAY_TEXT_FIELDS = (
+    "roleplay_background",
     "relationship",
     "personality",
     "speech_patterns",
@@ -261,6 +265,42 @@ SYSTEM_FIXED_RULES_SUMMARY = """\
 
 def _strip(v: Any) -> str:
     return str(v or "").strip()
+
+
+def sanitize_background_body(text: Any) -> str:
+    """Strip redundant 名字/语言/【角色背景】 wrappers from free-text background.
+
+    Those belong in dedicated fields; models often paste a full persona prompt
+    into background. Keep only the body after the last 【角色背景】 header when
+    present, else drop leading 名字/【语言】 lines.
+    """
+    t = _strip(text)
+    if not t:
+        return ""
+    # If a 【角色背景】 section exists, keep what follows the last one
+    m = list(re.finditer(r"^【角色背景】\s*$", t, flags=re.MULTILINE))
+    if m:
+        t = t[m[-1].end():].lstrip("\n\r")
+    else:
+        # drop leading identity lines commonly pasted from prompts
+        lines = t.splitlines()
+        out: list[str] = []
+        dropping = True
+        for line in lines:
+            s = line.strip()
+            if dropping and (
+                re.match(r"^名字[：:].+", s)
+                or re.match(r"^【语言】.+", s)
+                or s in ("【角色背景】", "角色背景")
+                or s == ""
+            ):
+                continue
+            dropping = False
+            out.append(line)
+        t = "\n".join(out).strip()
+    return t
+
+
 
 
 def _as_bool(v: Any, default: bool = False) -> bool:
@@ -560,7 +600,28 @@ def migrate_legacy_system_prompt(agent: dict[str, Any]) -> dict[str, Any]:
         if ekey not in out or out.get(ekey) is None:
             out[ekey] = edef
 
+        # Drop pasted prompt wrappers from free-text backgrounds
+    if "background" in out:
+        out["background"] = sanitize_background_body(out.get("background"))
+    if "roleplay_background" in out:
+        out["roleplay_background"] = sanitize_background_body(out.get("roleplay_background"))
+
+    out["avatar"] = _sanitize_avatar(out.get("avatar"))
     return compact_agent_config(out)
+
+
+AVATAR_MAX_CHARS = 280_000  # ~200KB base64
+
+
+def _sanitize_avatar(v: Any) -> str:
+    s = str(v or "").strip()
+    if not s:
+        return ""
+    if s.startswith("data:image/") and ";base64," in s[:64] and len(s) <= AVATAR_MAX_CHARS:
+        return s
+    if re.match(r"^(https?://|/static/|/files/|/api/)", s) and len(s) <= 2048:
+        return s
+    return ""
 
 
 def compact_agent_config(agent: dict[str, Any] | None) -> dict[str, Any]:
@@ -627,10 +688,12 @@ def build_persona_prompt(
     agent_cfg: dict[str, Any] | None,
     *,
     compact: bool = False,
+    user_display_name: str | None = None,
 ) -> str:
     cfg = migrate_legacy_system_prompt(dict(agent_cfg or {}))
+    owner = _strip(user_display_name) or _strip(cfg.get("user_display_name"))
     if compact:
-        return _build_compact_persona(cfg)
+        return _build_compact_persona(cfg, user_display_name=owner)
     parts: list[str] = []
     roleplay_on = _as_bool(cfg.get("roleplay_enabled"), False)
     intensity = _normalize_intensity(cfg.get("roleplay_intensity"))
@@ -638,6 +701,11 @@ def build_persona_prompt(
     name = _strip(cfg.get("name"))
     if name:
         parts.append(f"名字：{name}。")
+    if owner:
+        parts.append(
+            f"【用户】用户的名字/称呼是「{owner}」。"
+            "默认用这个称呼称呼用户（除非用户当轮另有要求）。"
+        )
 
     # Base identity: name / language / 角色背景(background).
     # 旧版 role / language_style 多选已从 UI 移除，不再注入。
@@ -648,14 +716,15 @@ def build_persona_prompt(
         else:
             parts.append(f"【语言】{lang}")
 
-    # 角色背景：优先 background；兼容旧数据仅有 role 标签时拼一行
-    bg = _strip(cfg.get("background"))
-    if not bg:
-        legacy_role = _field_text(cfg.get("role"))
-        if legacy_role:
-            bg = legacy_role
-    if bg:
-        parts.append(f"【角色背景】\n{_compact_multiline(bg)}")
+    # 角色背景：仅扮演关闭时注入基础 background；扮演开启时改用 roleplay_background
+    if not roleplay_on:
+        bg = sanitize_background_body(cfg.get("background"))
+        if not bg:
+            legacy_role = _field_text(cfg.get("role"))
+            if legacy_role:
+                bg = legacy_role
+        if bg:
+            parts.append(f"【角色背景】\n{_compact_multiline(bg)}")
 
     # Roleplay block — only when switch is on (fields may still be saved when off)
     if roleplay_on:
@@ -676,6 +745,10 @@ def build_persona_prompt(
             "【扮演模式 · 开启】按下方人设沉浸回复。"
         )
         parts.append(intensity_line)
+
+        rp_bg = sanitize_background_body(cfg.get("roleplay_background"))
+        if rp_bg:
+            parts.append(f"【角色背景】\n{_compact_multiline(rp_bg)}")
 
         relationship = _strip(cfg.get("relationship"))
         if relationship:
@@ -735,26 +808,40 @@ def build_persona_prompt(
     return "\n".join(parts)
 
 
-def _build_compact_persona(cfg: dict[str, Any]) -> str:
+def _build_compact_persona(
+    cfg: dict[str, Any],
+    *,
+    user_display_name: str | None = None,
+) -> str:
     """Task-turn persona: identity + short RP, no SOP / examples / greeting."""
     parts: list[str] = []
     name = _strip(cfg.get("name"))
     if name:
         parts.append(f"名字：{name}。")
+    owner = _strip(user_display_name) or _strip(cfg.get("user_display_name"))
+    if owner:
+        parts.append(
+            f"【用户】称呼用户为「{owner}」。"
+        )
     lang = _field_text(cfg.get("language"))
     if lang:
         if lang == "跟随用户":
             parts.append("【语言】跟随用户当前使用的语言。")
         else:
             parts.append(f"【语言】{lang}")
-    bg = _strip(cfg.get("background"))
-    if bg:
-        parts.append(f"【角色背景】\n{_shorten_field(bg, 160)}")
-    if _as_bool(cfg.get("roleplay_enabled"), False):
+    rp_on = _as_bool(cfg.get("roleplay_enabled"), False)
+    if not rp_on:
+        bg = sanitize_background_body(cfg.get("background"))
+        if bg:
+            parts.append(f"【角色背景】\n{_shorten_field(bg, 160)}")
+    if rp_on:
         parts.append(
             "【扮演模式 · 任务轮精简】保持角色口吻，但先把这件事做完；"
             "不要客服式 A/B 选择题，除非用户在选方案。"
         )
+        rp_bg = sanitize_background_body(cfg.get("roleplay_background"))
+        if rp_bg:
+            parts.append(f"【角色背景】\n{_shorten_field(rp_bg, 160)}")
         relationship = _strip(cfg.get("relationship"))
         if relationship:
             parts.append(f"【与用户关系】\n{_shorten_field(relationship, 220)}")
@@ -775,12 +862,14 @@ def persona_public_view(agent_cfg: dict[str, Any] | None) -> dict[str, Any]:
     return {
         # Do not substitute "Agent" / "跟随用户" — empty means user cleared or fresh
         "name": _strip(cfg.get("name")),
+        "avatar": _sanitize_avatar(cfg.get("avatar")),
         "role": _as_list(cfg.get("role")),
         "language": _as_single(cfg.get("language")),
         "language_style": _as_list(cfg.get("language_style")),
-        "background": _strip(cfg.get("background")),
+        "background": sanitize_background_body(cfg.get("background")),
         "roleplay_enabled": bool(cfg.get("roleplay_enabled")),
         "roleplay_intensity": _normalize_intensity(cfg.get("roleplay_intensity")),
+        "roleplay_background": sanitize_background_body(cfg.get("roleplay_background")),
         "relationship": _strip(cfg.get("relationship")),
         "personality": _strip(cfg.get("personality")),
         "speech_patterns": _strip(cfg.get("speech_patterns")),

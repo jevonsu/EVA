@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import (
     Boolean,
     Column,
+    Float,
     Integer,
     MetaData,
     String,
@@ -35,6 +36,12 @@ memories = Table(
     Column("tags_json", Text, nullable=False, default="[]"),
     Column("session_id", String(64), nullable=True),
     Column("created_at", String(40), nullable=False),
+    # Phase 1 lifecycle (control plane)
+    Column("status", String(40), nullable=False, default="active"),
+    Column("valid_from", String(40), nullable=True),
+    Column("valid_to", String(40), nullable=True),
+    Column("confidence", Float, nullable=False, default=1.0),
+    Column("supersedes_id", String(64), nullable=True),
 )
 
 kb_pages = Table(
@@ -53,6 +60,12 @@ kb_pages = Table(
     Column("created_at", String(40), nullable=False),
     Column("updated_at", String(40), nullable=False),
     Column("preview", String(200), nullable=False, default=""),
+    # Phase 1 lifecycle (data plane)
+    Column("status", String(40), nullable=False, default="active"),
+    Column("valid_from", String(40), nullable=True),
+    Column("valid_to", String(40), nullable=True),
+    Column("confidence", Float, nullable=False, default=1.0),
+    Column("supersedes_id", String(64), nullable=True),
 )
 
 kb_catalog = Table(
@@ -84,6 +97,63 @@ tasks = Table(
     Column("status", String(40), nullable=False, default="pending"),
     Column("created_at", String(40), nullable=False),
     Column("payload_json", Text, nullable=False),
+)
+
+
+# Phase 3: knowledge reference edges (memory/skill/kb graph links)
+knowledge_refs = Table(
+    "eva_knowledge_refs",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("from_type", String(40), nullable=False),  # memory|kb|skill|reference
+    Column("from_id", String(120), nullable=False),
+    Column("to_type", String(40), nullable=False),
+    Column("to_id", String(120), nullable=False),
+    Column("edge_type", String(40), nullable=False),  # references|controls|supersedes|contradicts
+    Column("status", String(40), nullable=False, default="active"),  # active|dormant|expired
+    Column("valid_from", String(40), nullable=True),
+    Column("valid_to", String(40), nullable=True),
+    Column("use_count", Integer, nullable=False, default=0),
+    Column("last_used_at", String(40), nullable=True),
+    Column("weight", Float, nullable=False, default=1.0),
+    Column("reason", Text, nullable=True),
+    Column("created_by", String(80), nullable=True),
+    Column("created_at", String(40), nullable=False),
+    Column("updated_at", String(40), nullable=False),
+    Column("meta_json", Text, nullable=False, default="{}"),
+)
+
+# Phase 3: arbitration anchors (参照库)
+reference_anchors = Table(
+    "eva_reference_anchors",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("reference_type", String(40), nullable=False),  # user_explicit|authority|precedent|evidence|hierarchy
+    Column("scope", String(200), nullable=True),
+    Column("condition", Text, nullable=True),
+    Column("resolution", Text, nullable=False, default=""),
+    Column("confidence", Float, nullable=False, default=0.8),
+    Column("status", String(40), nullable=False, default="active"),
+    Column("valid_from", String(40), nullable=True),
+    Column("valid_to", String(40), nullable=True),
+    Column("source", String(200), nullable=True),
+    Column("created_from", String(120), nullable=True),
+    Column("subject_type", String(40), nullable=True),
+    Column("subject_id", String(120), nullable=True),
+    Column("created_at", String(40), nullable=False),
+    Column("updated_at", String(40), nullable=False),
+)
+
+# Phase 3: conflict / review log (no full UI)
+conflict_logs = Table(
+    "eva_conflict_logs",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("created_at", String(40), nullable=False),
+    Column("level", String(20), nullable=False, default="L2"),
+    Column("status", String(40), nullable=False, default="logged"),
+    Column("summary", Text, nullable=False, default=""),
+    Column("payload_json", Text, nullable=False, default="{}"),
 )
 
 kv_meta = Table(

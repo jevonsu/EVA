@@ -1152,7 +1152,7 @@
  list.innerHTML = "";
  if (!items.length) {
  list.innerHTML =
- '<div class="card"><div class="card-body"><div class="card-sub">暂无记忆。点「新增记忆」用完整句子添加一条偏好或规则。</div></div></div>';
+ '<div class="card"><div class="card-body"><div class="card-sub">暂无正式记忆。点「暂存草稿」写入候选，或到「评审」处理待审项。</div></div></div>';
  setMsg("msgMemory", "0 条", "ok");
  return;
  }
@@ -1347,8 +1347,8 @@
  method: "POST",
  body: JSON.stringify({ content, kind, tags }),
  });
- setMsg("msgMemory", "已新增", "ok");
- showToast("记忆已新增", "success");
+ setMsg("msgMemory", "已写入暂存，请到「评审」批准", "ok");
+ showToast("已写入暂存（需评审批准）", "success");
  }
  resetMemoryForm();
  closeMemoryAddModal();

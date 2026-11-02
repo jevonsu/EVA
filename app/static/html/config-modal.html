@@ -17,7 +17,8 @@
  <div class="cfg-side-items" role="tablist" aria-label="日常">
  <button type="button" class="tab active icon-inline" data-tab="agent" data-group="daily"><span data-ipk="robot-one" data-ipk-class="ipk-xs"></span> 人设</button>
  <button type="button" class="tab icon-inline" data-tab="llm" data-group="daily"><span data-ipk="lightning" data-ipk-class="ipk-xs"></span> 模型</button>
- <button type="button" class="tab icon-inline" data-tab="integrations" data-group="daily"><span data-ipk="connection" data-ipk-class="ipk-xs"></span> 集成</button>
+ <button type="button" class="tab icon-inline" data-tab="routing" data-group="daily"><span data-ipk="category-management" data-ipk-class="ipk-xs"></span> 模型路由</button>
+<button type="button" class="tab icon-inline" data-tab="integrations" data-group="daily"><span data-ipk="connection" data-ipk-class="ipk-xs"></span> 集成</button>
  </div>
  </div>
  <div class="cfg-side-block" data-side-group="capability">
@@ -27,6 +28,8 @@
  <button type="button" class="tab icon-inline" data-tab="tasks" data-group="capability"><span data-ipk="alarm-clock" data-ipk-class="ipk-xs"></span> 任务</button>
  <button type="button" class="tab icon-inline" data-tab="memory" data-group="capability"><span data-ipk="brain" data-ipk-class="ipk-xs"></span> 记忆</button>
  <button type="button" class="tab icon-inline" data-tab="kb" data-group="capability"><span data-ipk="book-open" data-ipk-class="ipk-xs"></span> 知识库</button>
+ <button type="button" class="tab icon-inline" data-tab="graph" data-group="capability"><span data-ipk="network-tree" data-ipk-class="ipk-xs"></span> 图谱</button>
+ <button type="button" class="tab icon-inline" data-tab="review" data-group="capability"><span data-ipk="check-one" data-ipk-class="ipk-xs"></span> 评审</button>
  <button type="button" class="tab icon-inline" data-tab="workspace" data-group="capability"><span data-ipk="folder-open" data-ipk-class="ipk-xs"></span> 工作区</button>
  <button type="button" class="tab icon-inline" data-tab="workflows" data-group="capability"><span data-ipk="network-tree" data-ipk-class="ipk-xs"></span> 工作流</button>
  </div>
@@ -38,7 +41,7 @@
  <button type="button" class="tab icon-inline" data-tab="mcp" data-group="system"><span data-ipk="api" data-ipk-class="ipk-xs"></span> MCP</button>
  <button type="button" class="tab icon-inline" data-tab="webhooks" data-group="system"><span data-ipk="link" data-ipk-class="ipk-xs"></span> Webhook</button>
  <button type="button" class="tab icon-inline" data-tab="storage" data-group="system"><span data-ipk="folder-open" data-ipk-class="ipk-xs"></span> 数据库</button>
- <button type="button" class="tab icon-inline" data-tab="office" data-group="system"><span data-ipk="office-building" data-ipk-class="ipk-xs"></span> 办公室</button>
+ <button type="button" class="tab icon-inline" data-tab="office" data-group="system"><span data-ipk="office" data-ipk-class="ipk-xs"></span> 办公室</button>
  </div>
  </div>
  </div>
@@ -47,64 +50,68 @@
  <div class="modal-body">
  <!-- Agent -->
  <section class="tab-panel active" data-panel="agent">
- <div class="panel-banner agent-banner">
- <div>
- <strong class="icon-inline"><span data-ipk="robot-one" data-ipk-class="ipk-sm"></span> Agent 角色设定</strong>
- <p class="hint" style="margin:4px 0 0">
- <strong>① 身份与人设</strong>：名称、语言、角色背景；需要沉浸时打开「启用角色扮演」。
- <strong>② 演化人格</strong>：当前会话压缩后长什么样。可用「导出 / 导入」备份整份设定。
- </p>
- </div>
- </div>
- <input type="file" id="cfgImportInput" class="hidden" accept="application/json,.json" />
- <div class="cfg-toolbar" role="toolbar" aria-label="人设操作">
- <div class="cfg-tool-cluster">
- <button type="button" class="cfg-tool" id="btnExportSettings" title="导出人设、LLM、集成等设定">
- <span data-ipk="download" data-ipk-class="ipk-xs"></span><span>导出</span>
- </button>
- <button type="button" class="cfg-tool" id="btnImportSettings" title="从文件导入设定">
- <span data-ipk="upload" data-ipk-class="ipk-xs"></span><span>导入</span>
- </button>
- </div>
- </div>
+ <div class="agent-head">
+<div class="agent-head-title">
+<strong class="icon-inline"><span data-ipk="robot-one" data-ipk-class="ipk-sm"></span> Agent 角色设定</strong>
+<span class="agent-head-sub">基础身份 · 角色扮演 · 演化人格</span>
+</div>
+<input type="file" id="cfgImportInput" class="hidden" accept="application/json,.json" />
+<div class="cfg-tool-cluster" role="toolbar" aria-label="人设操作">
+<button type="button" class="cfg-tool" id="btnExportSettings" title="导出设定（默认脱敏；明文密钥需二次确认且仅管理员）">
+<span data-ipk="download" data-ipk-class="ipk-xs"></span><span>导出</span>
+</button>
+<button type="button" class="cfg-tool" id="btnImportSettings" title="从 JSON 导入设定（不改账号密码/知识库/对话）">
+<span data-ipk="upload" data-ipk-class="ipk-xs"></span><span>导入</span>
+</button>
+</div>
+</div>
 
- <div class="agent-form-compact">
+<div class="agent-form-compact">
  <!-- ① 身份与人设（基础身份 + 可选扮演，同一区块） -->
  <div class="agent-section agent-section-identity">
  <div class="agent-section-head">
- <span class="agent-section-title">① 身份与人设</span>
- <span class="agent-section-hint">谁 · 怎么说话 · 要不要沉浸扮演</span>
- </div>
-
- <p class="agent-subhead" id="agentBaseSubhead">基础身份 <em id="agentBaseHint">名称 · 语言 · 角色背景</em></p>
- <div id="agentBaseFields" class="agent-base-fields">
- <div class="agent-row agent-row-top">
- <label class="agent-field">名称
- <input id="cfgAgentName" type="text" placeholder="Eva" />
+<span class="agent-section-title" id="agentBaseSubhead">基础身份</span>
+<span class="agent-section-hint" id="agentBaseHint">名称 · 语言 · 角色背景</span>
+</div>
+<div id="agentBaseFields" class="agent-base-fields">
+<div class="agent-id-row">
+<div class="agent-avatar-col">
+<div class="agent-avatar-preview" id="cfgAvatarPreview" title="点击上传助手头像（也可 Ctrl+V 粘贴截图）" role="button" tabindex="0">E</div>
+<div class="agent-avatar-btns">
+<button type="button" class="btn btn-sm" id="btnAvatarPick">上传</button>
+<button type="button" class="btn btn-sm btn-ghost" id="btnAvatarClear" hidden>清除</button>
+</div>
+<input type="file" id="cfgAvatarFile" accept="image/*" hidden />
+<input type="hidden" id="cfgAgentAvatar" />
+</div>
+<div class="agent-id-fields">
+<label class="agent-field">名称
+<input id="cfgAgentName" type="text" placeholder="Eva" />
+</label>
+<label class="agent-field">语言
+<select id="cfgLanguage"></select>
+</label>
+</div>
+</div>
+<div class="agent-row">
+ <label class="agent-field">角色背景 <em class="agent-opt-hint" id="agentRoleBgHint">仅未启用扮演时使用</em>
+ <textarea id="cfgRoleBackground" class="agent-ta-sm" rows="3" placeholder="例：你是谁、职业/身份、经历与立场、世界观。&#10;仅未启用角色扮演时注入；启用扮演后改用下方「扮演角色背景」。"></textarea>
  </label>
- <label class="agent-field">语言
- <select id="cfgLanguage"></select>
- </label>
- </div>
- <div class="agent-row">
- <label class="agent-field">角色背景 <em class="agent-opt-hint" id="agentRoleBgHint">是谁 · 经历立场 · 世界观</em>
- <textarea id="cfgRoleBackground" class="agent-ta-sm" rows="4" placeholder="例：你是谁、职业/身份、经历与立场、世界观。&#10;助手与扮演模式都会注入；扮演时再配合下方关系/性格即可。"></textarea>
- </label>
  </div>
  </div>
+</div>
 
- <div class="agent-identity-divider" role="separator"></div>
-
- <details class="agent-fold-details agent-roleplay-details" id="roleplayDetails">
- <summary>
- 角色扮演（可选 · 展开填写人设）
+<div class="agent-section agent-section-roleplay">
+<details class="agent-fold-details agent-roleplay-details" id="roleplayDetails">
+<summary>
+<span class="agent-fold-title">角色扮演</span><span class="agent-fold-sub">可选 · 开启后替代基础背景</span>
  <span class="agent-fold-badge" id="roleplaySummaryBadge">未启用</span>
  </summary>
- <label class="agent-roleplay-toggle" for="cfgRoleplayEnabled" style="margin-top:8px">
+ <label class="agent-roleplay-toggle" for="cfgRoleplayEnabled">
  <input type="checkbox" id="cfgRoleplayEnabled" />
  <span class="agent-roleplay-toggle-text">
  <strong>启用角色扮演</strong>
- <em>关 = 普通助手；开 = 按下方关系/性格/示例沉浸回复（关闭时内容可预填但不注入）</em>
+ <em>关闭时可预填，但不注入</em>
  </span>
  </label>
  <div id="roleplayFields" class="roleplay-fields is-off" aria-hidden="true">
@@ -115,6 +122,11 @@
  <option value="medium" selected>中度 — 角色与任务并重</option>
  <option value="deep">深度 — 优先沉浸少出戏</option>
  </select>
+ </label>
+ </div>
+ <div class="agent-row">
+ <label class="agent-field">扮演角色背景 <em class="agent-opt-hint">替代基础背景</em>
+ <textarea id="cfgRoleplayBackground" class="agent-ta-sm" rows="3" placeholder="例：扮演中的身份、经历、世界观。&#10;仅启用角色扮演时注入；关闭扮演时使用上方基础「角色背景」。"></textarea>
  </label>
  </div>
  <div class="agent-row agent-row-2">
@@ -132,7 +144,7 @@
  </div>
  <div class="agent-row">
  <label class="agent-field">示例对话 <em>2～4 轮最佳</em>
- <textarea id="cfgExampleDialogue" class="agent-ta" rows="4" placeholder="例：&#10;用户：今天好累&#10;你：……辛苦了。先喝口水，再说要我帮你收拾哪一件。"></textarea>
+ <textarea id="cfgExampleDialogue" class="agent-ta" rows="3" placeholder="例：&#10;用户：今天好累&#10;你：……辛苦了。先喝口水，再说要我帮你收拾哪一件。"></textarea>
  </label>
  </div>
  <div class="agent-row">
@@ -142,8 +154,9 @@
  </div>
  </div>
  </details>
+</div>
 
- <details class="agent-fold-details agent-runtime-details">
+<details class="agent-fold-details agent-runtime-details">
  <summary>运行参数（工具轮次 · 历史上限 · 会话演化）</summary>
  <div class="agent-row agent-row-top" style="margin-top:8px">
  <label class="agent-field agent-field-sm">工具轮次
@@ -176,7 +189,6 @@
  </div>
  <p class="field-hint" style="margin:6px 0 0">会话演化：达到触发条数后把更早内容压成摘要并注入后续对话，避免长聊遗忘关键结论。</p>
  </details>
- </div>
 
  <!-- ② 演化人格（当前会话压缩结果，只读） -->
  <div class="agent-section" id="evoPersonaSection">
@@ -200,7 +212,7 @@
  <pre class="agent-fixed-pre" id="cfgSystemFixedRules"></pre>
  </details>
 
- <div class="agent-form-actions cfg-toolbar" style="margin-bottom:0">
+ <div class="agent-form-actions">
  <div class="cfg-tool-cluster">
  <button type="button" class="cfg-tool is-primary" id="btnSaveAgent">
  <span data-ipk="save" data-ipk-class="ipk-xs"></span><span>保存人设</span>
@@ -232,6 +244,18 @@
  </div>
  <span class="form-msg" id="msgLlm"></span>
  <div class="card-list" id="llmList"></div>
+ </section>
+
+ <!-- Model routing -->
+ <section class="tab-panel" data-panel="routing">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="category-management" data-ipk-class="ipk-sm"></span> 模型路由</strong>
+ <p class="hint" style="margin:4px 0 0">未匹配规则时用默认模型；自定义规则按功能点（可多选，含具体技能）指定模型，从上到下取第一条启用规则。保存即生效。</p>
+ </div>
+ </div>
+ <span class="form-msg" id="msgModelRouting"></span>
+ <div id="modelRoutingBox" class="mr-box"></div>
  </section>
 
  <!-- Tools -->
@@ -270,6 +294,7 @@
  <p class="hint" style="margin:4px 0 0">
  助手会的本事。开/关、下次怎么喊、缺配置去填。分类可新建、改名、把卡片移到别的组。
  系统内置叠在下面。勾选后可导出；系统能力不能卸载。
+ promote / 同步 knowledge_refs 只建立引用边，不会把目标知识自动认定为正式；技能写 memory/kb 仍进暂存，正式化走「评审」。
  </p>
  </div>
  </div>
@@ -393,7 +418,7 @@
  <div>
  <strong class="icon-inline"><span data-ipk="brain" data-ipk-class="ipk-sm"></span> 长期记忆</strong>
  <p class="hint" style="margin:4px 0 0">
- 对话时按关键词<strong>匹配几条</strong>注入（非整库）。顶栏「记忆」开关控制是否注入；密钥请写配置，勿写入记忆。
+ 正式条目以评审认定为主。空白「新增」默认进<strong>暂存</strong>，请到「评审」批准；日常优先编辑已有条目。对话按匹配注入；密钥写配置。
  </p>
  </div>
  </div>
@@ -410,7 +435,7 @@
  </div>
  <div class="cfg-tool-cluster cfg-tool-cluster-end">
  <button type="button" class="cfg-tool is-primary" id="btnOpenMemAdd">
- <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>新增记忆</span>
+ <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>暂存草稿</span>
  </button>
  </div>
  <span class="form-msg" id="msgMemory"></span>
@@ -425,7 +450,7 @@
  <div>
  <strong class="icon-inline"><span data-ipk="book-open" data-ipk-class="ipk-sm"></span> 知识库 Wiki</strong>
  <p class="hint" style="margin:4px 0 0">
- 业务标准库：SOP / 产品参数 / 手册 / 参考模板。短偏好用「记忆」。对话按匹配注入；Agent 可用 <code>kb</code> 工具读写。
+ 业务标准库。UI 新建默认进暂存，正式化走「评审」。短偏好用记忆；Agent 可用 <code>kb</code> 读写。
  </p>
  </div>
  </div>
@@ -501,6 +526,97 @@
  </section>
 
  <!-- Workspace files -->
+
+ <!-- Knowledge graph overview (readable v2) -->
+ <section class="tab-panel" data-panel="graph">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="network-tree" data-ipk-class="ipk-sm"></span> 图谱：EVA 的「能力」和「规矩」各连着哪些资料</strong>
+ <p class="hint" style="margin:4px 0 0">
+ 这张图回答两个问题：<b>① 每个技能干活时会参考哪些知识页</b>；<b>② 你给 EVA 定的偏好/约束等规矩，关联了哪些资料</b>。<br>
+ 每张卡片是一个<b>节点</b>（技能或规矩），卡片下方的小标签是它的<b>连线</b>（指向的知识页/记忆）。点任意卡片，右侧会显示它是什么、来自哪里、连到了什么，并可一键打开对应页面。本页只读，不会修改任何资料。
+ </p>
+ </div>
+ </div>
+ <div class="cfg-toolbar" role="toolbar" aria-label="图谱操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnGraphRefresh" title="重新读取图谱">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>刷新</span>
+ </button>
+ <button type="button" class="cfg-tool" id="btnGraphSyncSkills" title="读取各技能包里声明的参考知识，生成连线；不会新建或批准任何知识页">
+ <span data-ipk="download" data-ipk-class="ipk-xs"></span><span>从技能包读取引用</span>
+ </button>
+ </div>
+ <span class="form-msg" id="msgGraph"></span>
+ </div>
+ <div id="graphSummary"></div>
+ <div class="gr-legend" aria-label="图例">
+ <span class="gr-lg"><i class="gr-dot gr-t-skill"></i>技能（EVA 会做的事）</span>
+ <span class="gr-lg"><i class="gr-dot gr-t-memory"></i>规矩（偏好/约束等记忆）</span>
+ <span class="gr-lg"><i class="gr-dot gr-t-kb"></i>知识页</span>
+ <span class="gr-lg"><i class="gr-line is-ok"></i>已生效的连线</span>
+ <span class="gr-lg"><i class="gr-line is-pending"></i>仅声明、尚未读取</span>
+ <span class="gr-lg"><i class="gr-line is-bad"></i>目标缺失/已失效</span>
+ </div>
+ <div class="gr-layout">
+ <div class="gr-main">
+ <div class="rv-section">
+ <h3 class="panel-title">技能 → 参考的知识 <span class="rv-count" id="graphSkillCount"></span></h3>
+ <div id="graphSkillsTree" class="gr-list"></div>
+ </div>
+ <div class="rv-section">
+ <h3 class="panel-title">规矩 → 关联的资料 <span class="rv-count" id="graphControlCount"></span></h3>
+ <div id="graphControlTree" class="gr-list"></div>
+ </div>
+ </div>
+ <aside class="gr-side" id="graphDetail">
+ <div class="rv-empty">点左侧任意卡片，这里会用大白话告诉你它是什么、连着什么。</div>
+ </aside>
+ </div>
+ <details class="graph-raw">
+ <summary>开发者数据（原始 JSON）</summary>
+ <pre id="graphRawJson" class="graph-json"></pre>
+ </details>
+ </section>
+
+ <section class="tab-panel" data-panel="review">
+ <div class="panel-banner">
+ <div>
+ <strong class="icon-inline"><span data-ipk="check-one" data-ipk-class="ipk-sm"></span> 评审：EVA 想长期保存的内容，由你拍板</strong>
+ <p class="hint" style="margin:4px 0 0">
+ EVA 在对话里新建的<b>知识页</b>和无期限的<b>事实记忆</b>会先放在这里，等你「通过」才成为正式资料；不处理的话 7 天后自动过期。<br>
+ 偏好、约束这类「规矩」写入后<b>直接生效</b>，不会出现在这里。处理过的条目会移到底部「最近处理」。<br>
+ <b>冲突</b>区只列待你处理的项；系统已按硬约束自动决议、或你已处理完的冲突日志不会进队列（下方空状态会提示历史条数）。
+ </p>
+ </div>
+ </div>
+ <div class="cfg-toolbar" role="toolbar" aria-label="评审操作">
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool is-primary" id="btnReviewRefresh" title="刷新队列">
+ <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>刷新</span>
+ </button>
+ </div>
+ <span class="form-msg" id="msgReview"></span>
+ </div>
+ <div id="reviewSummary"></div>
+ <div class="rv-section">
+ <h3 class="panel-title">待批准的知识页 <span class="rv-count" id="reviewKbCount"></span></h3>
+ <div id="reviewKbList" class="card-list"></div>
+ </div>
+ <div class="rv-section">
+ <h3 class="panel-title">待批准的记忆 <span class="rv-count" id="reviewMemCount"></span></h3>
+ <div id="reviewMemList" class="card-list"></div>
+ </div>
+ <div class="rv-section">
+ <h3 class="panel-title">冲突 <span class="rv-count" id="reviewConflictCount"></span></h3>
+ <div id="reviewConflictList" class="card-list"></div>
+ </div>
+ <div class="rv-section">
+ <h3 class="panel-title">最近处理</h3>
+ <div id="reviewHistoryList"></div>
+ </div>
+ </section>
+
  <section class="tab-panel" data-panel="workspace">
  <div class="panel-banner ws-banner">
  <div class="ws-banner-copy">
@@ -651,10 +767,10 @@
  <section class="tab-panel" data-panel="office">
  <div class="panel-banner">
  <div>
- <strong class="icon-inline"><span data-ipk="office-building" data-ipk-class="ipk-sm"></span> 接入办公室</strong>
+ <strong class="icon-inline"><span data-ipk="office" data-ipk-class="ipk-sm"></span> 接入办公室</strong>
  <p class="hint" style="margin:4px 0 0">
- 卡密只在 Eva 登录。Hub 添加本机时填下面的<strong>连接码</strong>，不必再填卡密。
- 连接码 30 分钟内一次性有效；用过后或失效时点刷新即可，不必重新卡密登录。
+ Eva 使用本机<strong>账号密码</strong>登录。Hub 添加本机时填下面的<strong>连接码</strong>即可。
+ 连接码 30 分钟内一次性有效；用过后或失效时点刷新。
  </p>
  </div>
  </div>
@@ -672,6 +788,7 @@
  </div>
  <span class="form-msg" id="msgOffice"></span>
  </section>
+
 
  </div>
  </div>
@@ -878,7 +995,58 @@
  </div>
  </div>
 
- <!-- nested editor: customToolEditorModal -->
+ <!-- nested editor: modelRoutingEditorModal -->
+<div class="modal-backdrop kb-page-backdrop cfg-editor-backdrop hidden" id="modelRoutingEditorModal" role="dialog" aria-modal="true" aria-labelledby="mrEditorTitle">
+  <div class="modal cfg-editor-modal" style="width:min(720px,96vw);height:auto;max-height:min(88vh,760px)">
+    <header class="modal-header kb-page-modal-header">
+      <div class="kb-editor-head-main">
+        <h2 class="icon-inline" id="mrEditorTitle"><span data-ipk="category-management" data-ipk-class="ipk-sm"></span> 路由规则</h2>
+        <p class="hint kb-editor-lead">勾选适用功能并指定目标模型；保存后立即生效。</p>
+      </div>
+      <div class="kb-page-modal-header-right">
+        <button type="button" class="btn icon-btn" data-act="cancel-ed" title="关闭" aria-label="关闭"><span data-ipk="close" data-ipk-class="ipk-sm"></span></button>
+      </div>
+    </header>
+    <div class="modal-body kb-page-modal-body">
+      <div class="mr-ed-body">
+        <div class="mr-ed-row">
+          <label class="agent-field">规则名称
+            <input id="mrEdName" maxlength="60" placeholder="如：识图走多模态模型">
+          </label>
+          <label class="agent-field">目标模型
+            <select id="mrEdLlm"></select>
+          </label>
+          <label class="mr-ed-enable" for="mrEdEnabled">
+            <input type="checkbox" id="mrEdEnabled" checked>
+            <span>启用</span>
+          </label>
+        </div>
+        <label class="agent-field">
+          <span>适用功能（可多选）</span>
+          <div id="mrEdFeatures" class="mr-features"></div>
+        </label>
+        <span class="form-msg" id="mrEdMsg"></span>
+      </div>
+    </div>
+    <footer class="kb-form-footer kb-page-modal-footer">
+      <div class="cfg-tool-cluster">
+        <button type="button" class="cfg-tool" data-act="cancel-ed"><span data-ipk="close" data-ipk-class="ipk-xs"></span><span>取消</span></button>
+        <button type="button" class="cfg-tool is-primary" data-act="save-ed"><span data-ipk="save" data-ipk-class="ipk-xs"></span><span>保存规则</span></button>
+      </div>
+    </footer>
+  </div>
+</div>
+
+<footer class="kb-form-footer kb-page-modal-footer">
+      <div class="cfg-tool-cluster">
+        <button type="button" class="cfg-tool" data-act="cancel-ed"><span data-ipk="close" data-ipk-class="ipk-xs"></span><span>取消</span></button>
+        <button type="button" class="cfg-tool is-primary" data-act="save-ed"><span data-ipk="save" data-ipk-class="ipk-xs"></span><span>保存规则</span></button>
+      </div>
+    </footer>
+  </div>
+</div>
+
+<!-- nested editor: customToolEditorModal -->
  <div class="modal-backdrop kb-page-backdrop cfg-editor-backdrop hidden" id="customToolEditorModal" role="dialog" aria-modal="true" aria-labelledby="ctEditorTitle">
  <div class="modal cfg-editor-modal">
  <header class="modal-header kb-page-modal-header">

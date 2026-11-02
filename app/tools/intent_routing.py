@@ -101,6 +101,20 @@ _OP_UPDATE = re.compile(
 )
 
 
+
+# Assistant self-rename / persona edit — never fan-out to memory/kb as "记住"
+_ASSISTANT_PERSONA = re.compile(
+    r"(?:"
+    r"你叫(?!我)|你的名字|把你的?(名字|名称)|给自己(取|改)名|"
+    r"改(一?下)?你的?(名字|名称|人设)|(修改|更新|调整)(你的)?人设|"
+    r"(开启|打开|关闭|关掉)?角色扮演|角色扮演(开|关|开启|关闭|打开|强度)|"
+    r"你的(背景|人设|性格|口癖)|call yourself|your name (is|to)|rename yourself|"
+    r"update (your )?persona|change your (name|persona|background)"
+    r")",
+    re.I,
+)
+
+
 def classify_durable_persist(text: str) -> DurablePersistPlan | None:
     """Route 记住/保存类意图到 memory | kb | workflow.
 
@@ -110,6 +124,9 @@ def classify_durable_persist(text: str) -> DurablePersistPlan | None:
     if not t:
         return None
     free = user_free_text(t) or t
+    if _ASSISTANT_PERSONA.search(free) or _ASSISTANT_PERSONA.search(t):
+        # 「你叫xx / 改人设」走 update_persona，不要记成用户记忆
+        return None
     if not _PERSIST_MARKERS.search(free) and not _PERSIST_MARKERS.search(t):
         # Still allow pure "写入知识库/创建工作流" without 记住
         if not (
@@ -194,8 +211,12 @@ def classify_durable_persist(text: str) -> DurablePersistPlan | None:
         else:
             hint = (
                 "PERSIST→memory: call `memory` action=remember with COMPLETE natural-language "
-                "content (who/what/when/how), kind=preference|habit|rule|fact, useful tags. "
-                "Do not only reply 好的记住了."
+                "content (who/what/when/how). "
+                "Control prefs: kind=preference|constraint|goal|strategy|habit|rule (standing OK). "
+                "Facts/notes without TTL → staging (not gold); evidence/inferred → staging+TTL. "
+                "Long facts → kb staging + short memory pointer / link_ref; "
+                "human review approve required for certified/active gold. "
+                "Do not only reply 好的记住了; never invent certified knowledge."
             )
             tool_op = "remember"
         force = ["memory"]
@@ -216,8 +237,10 @@ def classify_durable_persist(text: str) -> DurablePersistPlan | None:
         else:
             hint = (
                 "PERSIST→kb CREATE: call `kb` action=create_page (or update_page if exists). "
+                "Agent writes land as staging (or review_required); do NOT claim certified/gold. "
                 "Use structured Markdown; pick collection "
-                "(product=库表/参数, sop=流程, handbook=红线, reference=模板). "
+                "(product=库表/参数, sop=流程, handbook=红线, reference=模板, staging=候选). "
+                "Prefer link_ref to existing pages; human review approve for 正式认定. "
                 "Long catalogs must NOT go only to memory."
             )
             tool_op = "create"
@@ -259,7 +282,8 @@ def classify_durable_persist(text: str) -> DurablePersistPlan | None:
         tool_op = "remember"
         hint = (
             "PERSIST→memory: call `memory` action=remember with COMPLETE natural-language "
-            "content. Do not only reply 好的记住了."
+            "content. Non-control facts → staging pending human review; "
+            "Do not only reply 好的记住了; never auto-certify as gold."
         )
 
     return DurablePersistPlan(
@@ -275,6 +299,29 @@ def classify_durable_persist(text: str) -> DurablePersistPlan | None:
 # Ordered: first match wins for require_tool; all matching intents merge force tools.
 # NOTE: generic 记住 is handled by classify_durable_persist (not force-memory-only).
 _INTENT_RULES: list[tuple[str, re.Pattern[str], list[str], bool]] = [
+    # assistant self persona (name / language / background / roleplay) — NOT memory
+    (
+        "update_persona",
+        re.compile(
+            r"(?:"
+            r"你叫(?!我)|"  # 你叫小爱 — 但排除「你叫我老板」
+            r"你的名字|"
+            r"把你的?(名字|名称)|"
+            r"给自己(取|改)名|"
+            r"改(一?下)?你的?(名字|名称|人设)|"
+            r"(修改|更新|调整)(你的)?人设|"
+            r"(开启|打开|关闭|关掉|关掉一下)?角色扮演|"
+            r"角色扮演(开|关|开启|关闭|打开|强度)|"
+            r"你的(背景|人设|性格|口癖)|"
+            r"(用|改成|改为).{0,12}(背景|人设)|"
+            r"call yourself|your name (is|to)|rename yourself|"
+            r"update (your )?persona|change your (name|persona|background)"
+            r")",
+            re.I,
+        ),
+        ["update_persona"],
+        True,
+    ),
     # memory recall (not write)
     (
         "memory_recall",

@@ -204,6 +204,11 @@ class ChatRunManager:
         }
         self._runs[run_id] = run
         self._session_run[session_id] = run_id
+        try:
+            from app.services import session_events as _sb
+            _sb.publish("run_started", session_id, run_id=run_id)
+        except Exception:
+            pass
         self._gc_finished()
 
         task = asyncio.create_task(
@@ -251,6 +256,25 @@ class ChatRunManager:
         chat_task: asyncio.Task | None = None
         try:
             agent = get_agent()
+            def _on_progress(evt: dict[str, Any]) -> None:
+                if run.get("status") != "running":
+                    return
+                if not isinstance(evt, dict):
+                    return
+                payload = dict(evt)
+                payload.setdefault("run_id", run_id)
+                self._push(run_id, payload)
+
+            self._push(
+                run_id,
+                {
+                    "type": "phase",
+                    "phase": "thinking",
+                    "label": "思考中",
+                    "run_id": run_id,
+                },
+            )
+
             chat_task = asyncio.create_task(
                 agent.chat(
                     message,
@@ -262,6 +286,7 @@ class ChatRunManager:
                     use_deputy=bool((metadata or {}).get("use_deputy")),
                     skip_deputy=bool((metadata or {}).get("skip_deputy")),
                     form_reply=(metadata or {}).get("form_reply"),
+                    on_progress=_on_progress,
                 )
             )
             while not chat_task.done():
@@ -344,6 +369,11 @@ class ChatRunManager:
             root.removeHandler(handler)
             await _drain_logs()
             run["_task"] = None
+            try:
+                from app.services import session_events as _sb
+                _sb.publish("run_finished", session_id, run_id=run_id, status=run.get("status"))
+            except Exception:
+                pass
 
     def _gc_finished(self) -> None:
         finished = [

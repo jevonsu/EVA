@@ -1,0 +1,453 @@
+/* chat-c.css — Direction C: floating composer island, light chat surface,
+   icon-rail sidebar, seamless messages↔composer. Load after motion.css.
+   Keeps A+B reading column (720px) + llama dark. */
+
+:root {
+  --chat-col: 720px;
+  --chat-surface: #1a1a1a;
+  --chat-surface-deep: #171717;
+  --sidebar-rail-w: 68px;
+  --composer-island-radius: 22px;
+  --composer-dock-pad: 18px;
+  --chrome-inset: 10px;
+  --chrome-radius: 18px;
+  --chrome-radius-sm: 14px;
+  /* chrome glass = shared glass tokens (one system) */
+  --chrome-glass-bg: var(--glass-bg);
+  --chrome-glass-bg-strong: var(--glass-bg-strong);
+  --chrome-glass-blur: var(--glass-blur-heavy);
+  --chrome-glass-border: var(--glass-border-strong);
+  --chrome-glass-border-hi: rgba(255, 255, 255, 0.28);
+  --chrome-glass-highlight: var(--glass-highlight);
+  --chrome-glass-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 10px 36px rgba(0, 0, 0, 0.4),
+    var(--chrome-glass-highlight);
+}
+
+/* ========== Shared light chat surface (continuous main) ========== */
+.main {
+  background: var(--chat-surface) !important;
+}
+
+/* Topbar: floating frosted glass (stronger on black — white tint + highlight) */
+.topbar {
+  margin: 10px 12px 0 !important;
+  padding-left: 14px !important;
+  padding-right: 14px !important;
+  border-radius: var(--chrome-radius-sm, 14px) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04)),
+    var(--chrome-glass-bg) !important;
+  backdrop-filter: var(--chrome-glass-blur) !important;
+  -webkit-backdrop-filter: var(--chrome-glass-blur) !important;
+  border: 1px solid var(--chrome-glass-border) !important;
+  border-bottom-color: rgba(255, 255, 255, 0.12) !important;
+  box-shadow: var(--chrome-glass-shadow) !important;
+}
+
+body.home-hero .topbar,
+.main.home-hero .topbar {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.035)),
+    rgba(255, 255, 255, 0.07) !important;
+  backdrop-filter: blur(36px) saturate(1.4) !important;
+  -webkit-backdrop-filter: blur(36px) saturate(1.4) !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.3),
+    0 8px 28px rgba(0, 0, 0, 0.36),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+}
+
+.messages-wrap {
+  background: transparent;
+}
+
+.messages {
+  padding-left: max(16px, calc((100% - var(--chat-col)) / 2));
+  padding-right: max(16px, calc((100% - var(--chat-col)) / 2));
+  padding-bottom: 28px;
+  gap: 16px;
+}
+
+/* Soft fade from scroll area into composer (same surface — no hard section break) */
+.messages-wrap::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 56px;
+  pointer-events: none;
+  z-index: 2;
+  background: linear-gradient(
+    180deg,
+    rgba(26, 26, 26, 0) 0%,
+    rgba(26, 26, 26, 0.55) 45%,
+    var(--chat-surface) 100%
+  );
+}
+
+body.home-hero .messages-wrap::after {
+  height: 40px;
+  opacity: 0.85;
+}
+
+.messages-wrap > .scroll-bottom {
+  z-index: 4;
+  bottom: 18px;
+  right: max(22px, calc((100% - var(--chat-col)) / 2 - 8px));
+}
+
+/* ========== Composer: floating island in same reading column ========== */
+.composer,
+body.home-hero .composer,
+.main.home-hero .composer {
+  position: relative;
+  z-index: 5;
+  margin-top: -36px; /* sit into the fade — continuous with messages */
+  padding: 0 max(16px, calc((100% - var(--chat-col)) / 2)) var(--composer-dock-pad);
+  background: transparent !important;
+  border-top: none !important;
+  box-shadow: none !important;
+}
+
+.composer-shell,
+body.home-hero .composer-shell,
+.main.home-hero .composer-shell {
+  width: 100%;
+  max-width: var(--chat-col);
+  margin: 0 auto;
+}
+
+.composer-box,
+body.home-hero .composer-box,
+.main.home-hero .composer-box {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
+    var(--glass-bg-strong) !important;
+  border: 1px solid var(--glass-border-strong) !important;
+  border-radius: var(--composer-island-radius) !important;
+  box-shadow: var(--chrome-glass-shadow) !important;
+  backdrop-filter: var(--glass-blur-heavy) !important;
+  -webkit-backdrop-filter: var(--glass-blur-heavy) !important;
+}
+
+.composer-box:focus-within,
+body.home-hero .composer-box:focus-within,
+.main.home-hero .composer-box:focus-within {
+  border-color: rgba(255, 255, 255, 0.26) !important;
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.06),
+    0 14px 44px rgba(0, 0, 0, 0.42) !important;
+}
+
+.composer-meta,
+body.home-hero .composer-meta,
+.main.home-hero .composer-meta {
+  justify-content: center;
+  padding: 6px 4px 0;
+  min-height: 0;
+}
+
+.attach-bar {
+  width: 100%;
+  max-width: var(--chat-col);
+  margin: 0 auto 8px;
+}
+
+.upload-picker {
+  width: 100%;
+  max-width: var(--chat-col);
+  margin: 0 auto 8px;
+}
+
+.drop-overlay {
+  border-radius: var(--composer-island-radius);
+}
+
+/* A+B: reading column = composer column (padding centers both) */
+.msg,
+.msg.assistant,
+.msg.user,
+.home-welcome,
+.tool-activity.is-live {
+  width: 100%;
+  max-width: 100%;
+}
+
+.messages:not(:has(.home-welcome)) {
+  align-items: stretch;
+}
+
+.msg {
+  align-self: stretch;
+}
+
+.msg.user {
+  align-items: flex-end;
+}
+
+.messages {
+  /* Extra air so last bubble clears the floating island overlap */
+  scroll-padding-bottom: 24px;
+}
+
+/* Home welcome uses same column width */
+body.home-hero .messages,
+.main.home-hero .messages {
+  padding-left: max(16px, calc((100% - var(--chat-col)) / 2));
+  padding-right: max(16px, calc((100% - var(--chat-col)) / 2));
+  padding-bottom: 12px;
+}
+
+/* ========== Desktop icon-rail (collapsed sidebar) ========== */
+@media (min-width: 901px) {
+  body.sidebar-collapsed .app {
+    grid-template-columns: var(--sidebar-rail-w) 1fr !important;
+  }
+
+  body.sidebar-collapsed .sidebar {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    width: var(--sidebar-rail-w) !important;
+    min-width: var(--sidebar-rail-w) !important;
+    max-width: var(--sidebar-rail-w) !important;
+    padding: 12px 8px !important;
+    gap: 8px !important;
+    opacity: 1 !important;
+    overflow: hidden !important;
+    pointer-events: auto !important;
+    transform: none !important;
+    border: 1px solid var(--chrome-glass-border, rgba(255, 255, 255, 0.18)) !important;
+    border-right: 1px solid var(--chrome-glass-border, rgba(255, 255, 255, 0.18)) !important;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.03)),
+      var(--chrome-glass-bg-strong, rgba(255, 255, 255, 0.06)) !important;
+    backdrop-filter: var(--chrome-glass-blur, blur(40px) saturate(1.45)) !important;
+    -webkit-backdrop-filter: var(--chrome-glass-blur, blur(40px) saturate(1.45)) !important;
+    border-radius: var(--chrome-radius, 18px) !important;
+    box-shadow: var(--chrome-glass-shadow) !important;
+  }
+
+  body.sidebar-collapsed .brand {
+    flex-direction: column;
+    justify-content: center;
+    padding: 4px 0 10px;
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+    width: 100%;
+    gap: 0;
+  }
+
+  body.sidebar-collapsed .brand > div:not(.logo) {
+    display: none !important;
+  }
+
+  body.sidebar-collapsed .logo {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    margin: 0 auto;
+  }
+
+  body.sidebar-collapsed .section-label,
+  body.sidebar-collapsed .session-search-wrap,
+  body.sidebar-collapsed .session-list,
+  body.sidebar-collapsed .sidebar-footer,
+  body.sidebar-collapsed #btnQuickMore {
+    display: none !important;
+  }
+
+  /* Force quick extras visible as icons in rail */
+  body.sidebar-collapsed .quick-row-more {
+    display: flex !important;
+    flex-direction: column !important;
+    flex-wrap: nowrap !important;
+    max-height: none !important;
+    opacity: 1 !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    transform: none !important;
+    pointer-events: auto !important;
+    gap: 6px !important;
+    width: 100%;
+  }
+
+  body.sidebar-collapsed .quick-row {
+    display: flex !important;
+    flex-direction: column !important;
+    grid-template-columns: none !important;
+    gap: 6px !important;
+    width: 100%;
+  }
+
+  body.sidebar-collapsed .sidebar .btn.full,
+  body.sidebar-collapsed .sidebar .btn.ghost-sm {
+    width: 44px !important;
+    min-width: 44px !important;
+    max-width: 44px !important;
+    height: 44px !important;
+    margin: 0 auto;
+    padding: 0 !important;
+    border-radius: 12px !important;
+    font-size: 0 !important;
+    line-height: 0 !important;
+    letter-spacing: 0 !important;
+    gap: 0 !important;
+    justify-content: center !important;
+    align-items: center !important;
+  }
+
+  body.sidebar-collapsed .sidebar .btn .ipk,
+  body.sidebar-collapsed .sidebar .btn [class*="ipk"] {
+    width: 18px !important;
+    height: 18px !important;
+    font-size: 18px !important;
+    line-height: 1 !important;
+    margin: 0 !important;
+  }
+
+  body.sidebar-collapsed .sidebar .btn.primary.full {
+    background: #fafafa !important;
+    color: #171717 !important;
+    border-color: #fafafa !important;
+  }
+
+  body.sidebar-collapsed .sidebar .btn.primary.full .ipk {
+    color: #171717 !important;
+  }
+}
+
+/* ========== Subtle ambient (trim redundant pulse elsewhere in motion.css) ========== */
+.messages-wrap::before {
+  animation: ambientDriftSoft 14s ease-in-out infinite alternate !important;
+  opacity: 0.55 !important;
+}
+
+@keyframes ambientDriftSoft {
+  from { opacity: 0.4; transform: scale(1) translate3d(0, 0, 0); }
+  to { opacity: 0.65; transform: scale(1.03) translate3d(0, -1.5%, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .messages-wrap::before {
+    animation: none !important;
+    opacity: 0.45 !important;
+    transform: none !important;
+  }
+  .composer,
+  body.home-hero .composer {
+    margin-top: -24px;
+  }
+}
+
+/* Narrow screens: keep continuous surface, less negative pull */
+@media (max-width: 900px) {
+  .composer,
+  body.home-hero .composer,
+  .main.home-hero .composer {
+    margin-top: -28px;
+    padding-left: 12px;
+    padding-right: 12px;
+    padding-bottom: 12px;
+  }
+  .messages {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .messages-wrap > .scroll-bottom {
+    right: 14px;
+  }
+}
+
+/* ========== Chrome glass: sidebar + floating topbar ========== */
+@media (min-width: 901px) {
+  .app {
+    gap: var(--chrome-inset);
+    padding: var(--chrome-inset);
+    box-sizing: border-box;
+    /* Soft ambient so frosted panels have light/texture to catch */
+    background:
+      radial-gradient(ellipse 55% 48% at 10% 18%, rgba(255, 255, 255, 0.1), transparent 58%),
+      radial-gradient(ellipse 48% 42% at 90% 72%, rgba(140, 160, 255, 0.07), transparent 52%),
+      radial-gradient(ellipse 70% 55% at 48% 42%, rgba(255, 255, 255, 0.035), transparent 65%),
+      #121212 !important;
+  }
+
+  .sidebar {
+    border-radius: var(--chrome-radius) !important;
+    border: 1px solid var(--chrome-glass-border, rgba(255, 255, 255, 0.18)) !important;
+    background:
+      linear-gradient(165deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.035) 55%, rgba(255, 255, 255, 0.05) 100%),
+      var(--chrome-glass-bg) !important;
+    backdrop-filter: var(--chrome-glass-blur) !important;
+    -webkit-backdrop-filter: var(--chrome-glass-blur) !important;
+    box-shadow: var(--chrome-glass-shadow) !important;
+    overflow: hidden;
+  }
+
+  .main {
+    min-width: 0;
+    border-radius: var(--chrome-radius);
+    /* Keep llama chat surface; faint top glow so floating topbar glass reads */
+    background:
+      radial-gradient(ellipse 80% 28% at 50% -4%, rgba(255, 255, 255, 0.055), transparent 55%),
+      var(--chat-surface) !important;
+    overflow: hidden;
+  }
+}
+
+@media (max-width: 900px) {
+  .sidebar {
+    border-radius: 0 var(--chrome-radius) var(--chrome-radius) 0 !important;
+    border: 1px solid var(--chrome-glass-border, rgba(255, 255, 255, 0.18)) !important;
+    border-left: none !important;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.04)),
+      var(--chrome-glass-bg-strong) !important;
+    backdrop-filter: blur(42px) saturate(1.45) !important;
+    -webkit-backdrop-filter: blur(42px) saturate(1.45) !important;
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.3),
+      8px 0 32px rgba(0, 0, 0, 0.38),
+      inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+  }
+
+  .topbar {
+    margin: 8px 10px 0 !important;
+    border-radius: 12px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  body.sidebar-collapsed .sidebar {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: #161616 !important;
+    border-color: rgba(255, 255, 255, 0.12) !important;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35) !important;
+  }
+
+  .topbar,
+  body.home-hero .topbar,
+  .main.home-hero .topbar {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: #1c1c1c !important;
+    border-color: rgba(255, 255, 255, 0.12) !important;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3) !important;
+  }
+
+  .app {
+    background: #121212 !important;
+  }
+
+  .main {
+    background: var(--chat-surface) !important;
+  }
+}
+

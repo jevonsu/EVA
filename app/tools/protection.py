@@ -32,6 +32,7 @@ RESERVED_TOOL_NAMES: frozenset[str] = frozenset({
     "get_current_time",
     "calculator",
     "system_info",
+    "update_persona",
     "create_tool",
     "capability_groups",
     "delete_tool",
@@ -176,3 +177,69 @@ def skill_package_exists(name: str) -> bool:
 
     n = normalize_tool_name(name)
     return bool(n) and (skills_root() / n).is_dir()
+
+# ---- Release gates (F01 / F02) ----------------------------------------------
+
+import contextvars
+
+# Tools that must never run on webhook paths even if use_tools is somehow on.
+WEBHOOK_DANGEROUS_TOOLS: frozenset[str] = frozenset({
+    "create_tool",
+    "delete_tool",
+    "promote_skill",
+    "validate_skill",
+    "terminal",
+})
+
+_blocked_tools_cv: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+    "eva_blocked_tools", default=frozenset()
+)
+
+
+def allow_create_tool() -> bool:
+    """Whether LLM may create/update/delete/promote skills (writes + exec_module)."""
+    try:
+        from app.config import get_settings
+
+        return bool(getattr(get_settings(), "allow_create_tool", False))
+    except Exception:
+        return False
+
+
+def webhook_allow_tools() -> bool:
+    try:
+        from app.config import get_settings
+
+        return bool(getattr(get_settings(), "webhook_allow_tools", False))
+    except Exception:
+        return False
+
+
+def set_blocked_tools(names: frozenset[str] | set[str] | None):
+    return _blocked_tools_cv.set(frozenset(names or ()))
+
+
+def reset_blocked_tools(token) -> None:
+    _blocked_tools_cv.reset(token)
+
+
+def get_blocked_tools() -> frozenset[str]:
+    return _blocked_tools_cv.get()
+
+
+def is_tool_blocked(name: str | None) -> bool:
+    n = normalize_tool_name(name)
+    return bool(n) and n in get_blocked_tools()
+
+
+def create_tool_disabled_payload(action: str = "create_tool") -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": f"{action} 已默认禁用（发布安全：ALLOW_CREATE_TOOL=false）",
+        "hint": (
+            "对话/Webhook 不能靠模型输出落盘并热加载 handler。"
+            "请用设定 → Skills 导入 .evaskill，或在 .env 设 ALLOW_CREATE_TOOL=true 后重启（仅受信本机）。"
+        ),
+        "allow_create_tool": False,
+    }
+

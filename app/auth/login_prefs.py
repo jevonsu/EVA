@@ -146,7 +146,8 @@ def save_login_prefs(
         if len(did) < 8:
             did = _new_device_id()
         data["device_id"] = did[:128]
-        data["has_saved"] = bool(has_saved) and bool(data["control_url"])
+        # Password mode: has_saved tracks device preference, not control_url
+        data["has_saved"] = bool(has_saved)
         _write_unlocked(data)
         return {
             "control_url": data["control_url"],

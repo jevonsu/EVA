@@ -38,6 +38,11 @@
  const showEmpty = (...a) => L.showEmpty(...a);
  const updateTypingPhase = (...a) => L.updateTypingPhase(...a);
  const appendTypingLog = (...a) => L.appendTypingLog(...a);
+ const applyRunProgressEvent = (...a) =>
+  typeof L.applyRunProgressEvent === "function"
+   ? L.applyRunProgressEvent(...a)
+   : null;
+
   const _ipk = (n, c) => (L.ipk ? L.ipk(n, c) : '');
   const _ipkLabel = (n, txt, c) => (L.ipkLabel ? L.ipkLabel(n, txt, c) : (txt || ''));
 
@@ -196,25 +201,42 @@
  }
 
  // ==================== 会话管理 ====================
- /** 卡密套餐 · 有效期（如「体验版套餐 · 剩余 25 天」） */
+ /** 账号状态摘要（卡密套餐文案已废弃） */
  function formatCardPlanMeta(me) {
-  if (!me || !me.authenticated) return "";
+  if (!me) return "";
   if (me.auth_enabled === false || me.mode === "open") return "开放访问";
-  const plan = String(me.plan_name || "").trim() || "未分配套餐";
-  const exp = me.card_expires_at;
-  let validity;
-  if (exp == null || exp === "" || Number(exp) === 0) {
-   validity = "永不过期";
-  } else {
-   const leftMs = Number(exp) * 1000 - Date.now();
-   if (leftMs <= 0) {
-    validity = "已过期";
-   } else {
-    const days = Math.floor(leftMs / 86400000);
-    validity = days <= 0 ? "今日到期" : `剩余 ${days} 天`;
-   }
+  if (!me.authenticated) return "未登录";
+  const name = String(me.display_name || me.username || "").trim() || "已登录";
+  return name;
+ }
+
+ function applyAuthChrome(me) {
+  const wrap = document.getElementById("topAuthWrap");
+  const label = document.getElementById("topAuthLabel");
+  const show = !!(me && me.authenticated && me.auth_enabled !== false);
+  if (wrap) {
+   wrap.hidden = !show;
+   wrap.style.display = show ? "" : "none";
   }
-  return `${plan} · ${validity}`;
+  if (label && show) {
+   label.textContent = String(me.display_name || me.username || "").trim() || "已登录";
+  }
+  // legacy ids (if any remain)
+  const logoutBtn = document.getElementById("btnSidebarLogout");
+  if (logoutBtn) logoutBtn.hidden = true;
+  const userChip = document.getElementById("sidebarAuthUser");
+  if (userChip) userChip.hidden = true;
+ }
+
+ async function refreshAuthChrome() {
+  try {
+   const me = await api("/api/auth/me");
+   applyAuthChrome(me);
+   if (els.agentMeta) els.agentMeta.textContent = formatCardPlanMeta(me) || "";
+   return me;
+  } catch (_) {
+   return null;
+  }
  }
 
  async function loadHealth() {
@@ -239,9 +261,8 @@
  }
 
  const me = await meP;
- let meta = me ? formatCardPlanMeta(me) : "";
- if (!meta) meta = "未登录";
- els.agentMeta.textContent = meta;
+ if (els.agentMeta) els.agentMeta.textContent = formatCardPlanMeta(me) || "";
+ applyAuthChrome(me);
 
  if (needAgent) {
   const agent = await agentP;
@@ -300,11 +321,62 @@
  }
  }
 
+ // ---- 未读提醒：localStorage 记每个会话已读到的消息数 ----
+ const READ_KEY = "eva.sessionRead.v1";
+ function _readMap() {
+  try { return JSON.parse(localStorage.getItem(READ_KEY) || "null"); } catch { return null; }
+ }
+ function _saveReadMap(m) {
+  try { localStorage.setItem(READ_KEY, JSON.stringify(m)); } catch (_) {}
+ }
+ function markSessionRead(sid, count) {
+  if (!sid) return;
+  const m = _readMap() || {};
+  const n = Number(count);
+  if (Number.isFinite(n)) m[sid] = Math.max(Number(m[sid] || 0), n);
+  else {
+   const row = (state.sessionsCache || []).find((r) => r.session_id === sid);
+   m[sid] = Number(row?.message_count || m[sid] || 0);
+  }
+  _saveReadMap(m);
+ }
+ function sessionUnread(s, map) {
+  if (!map || s.session_id === state.sessionId) return false;
+  if (!(s.session_id in map)) return Number(s.message_count || 0) > 0 && map.__init_at && String(s.created_at || "") > map.__init_at;
+  return Number(s.message_count || 0) > Number(map[s.session_id] || 0);
+ }
+ 
+ function syncUnreadAfterSessions(sid) {
+  if (sid && sid === state.sessionId) {
+   const row = (state.sessionsCache || []).find((x) => x.session_id === sid);
+   markSessionRead(sid, row ? row.message_count : undefined);
+  }
+  filterSessions(els.sessionSearch?.value || "");
+ }
+ L.syncUnreadAfterSessions = syncUnreadAfterSessions;
+
+L.markSessionRead = markSessionRead;
+
  function renderSessionList(rows) {
  els.sessionList.innerHTML = "";
+ let readMap = _readMap();
+ if (!readMap) {
+  // 首次启用：现有会话全部视为已读，避免一片红点
+  readMap = { __init_at: new Date().toISOString() };
+  for (const r of state.sessionsCache || []) readMap[r.session_id] = Number(r.message_count || 0);
+  _saveReadMap(readMap);
+ }
+ const activeRow = (rows || []).find((r) => r.session_id === state.sessionId);
+ if (activeRow && !sessionIsGenerating(activeRow.session_id)) {
+  readMap[activeRow.session_id] = Number(activeRow.message_count || 0);
+  _saveReadMap(readMap);
+ }
  if (!rows.length) {
  els.sessionList.innerHTML =
- '<div class="session-item"><div class="meta">暂无对话</div></div>';
+ '<div class="session-empty" role="status">'
+ + '<div class="session-empty-title">还没有对话</div>'
+ + '<div class="session-empty-sub">点上方「新对话」开始；对话会出现在这里。</div>'
+ + '</div>';
  return;
  }
  for (const s of rows) {
@@ -314,18 +386,21 @@
  "session-item" +
  (s.session_id === state.sessionId ? " active" : "") +
  (generating ? " is-generating" : "");
+ const unread = !generating && sessionUnread(s, readMap);
+ if (unread) row.classList.add("has-unread");
  const updated = s.updated_at || s.created_at;
  const timeBit = updated ? timeAgo(updated) : "";
  const genBit = generating ? " · 生成中" : "";
  row.innerHTML = `
  <div class="session-main">
- <div class="title">${escapeHtml(s.title || "未命名对话")}${generating ? ' <span class="session-gen-dot" title="后台生成中"></span>' : ""}</div>
+ <div class="title">${unread ? '<span class="session-unread-dot" title="有新回复（未读）" aria-label="未读"></span>' : ""}${escapeHtml(s.title || "未命名对话")}${generating ? ' <span class="session-gen-dot" title="后台生成中"></span>' : ""}</div>
  <div class="meta">${s.message_count ?? "?"} 条${timeBit ? ` · ${escapeHtml(timeBit)}` : ""}${genBit}</div>
  </div>
  <button type="button" class="session-rename" title="重命名" aria-label="重命名">${_ipk("edit","ipk-sm")}</button>
  <button type="button" class="session-del" title="删除对话" aria-label="删除">${_ipk("delete","ipk-sm")}</button>`;
  row.querySelector(".session-main").addEventListener("click", () => {
  closeMobileSidebar();
+ markSessionRead(s.session_id, s.message_count);
  openSession(s.session_id, s.title);
  });
  row.querySelector(".session-del").addEventListener("click", (e) =>
@@ -390,6 +465,103 @@
  setStatus("载入对话失败: " + e.message, "error");
  showToast("载入对话失败", "error");
  }
+ }
+
+ // ---- 侧栏未读实时刷新：轮询 + 回到前台/聚焦时立即刷新（无需 F5）----
+ let _sessPollBusy = false;
+ async function refreshSessionsQuiet() {
+  if (_sessPollBusy || document.hidden) return;
+  _sessPollBusy = true;
+  try {
+   const rows = await api("/api/sessions");
+   if (Array.isArray(rows)) {
+    const sig = (r) => r.map((x) => x.session_id + ":" + (x.message_count || 0) + ":" + (x.updated_at || "") + ":" + (sessionIsGenerating(x.session_id) ? 1 : 0)).join("|");
+    const changed = sig(rows) !== sig(state.sessionsCache || []);
+    state.sessionsCache = rows;
+    if (changed) filterSessions(els.sessionSearch?.value || "");
+   }
+  } catch (_) {
+  } finally {
+   _sessPollBusy = false;
+  }
+ }
+ L.refreshSessionsQuiet = refreshSessionsQuiet;
+ // ---- IM 式推送：/api/sessions/events (SSE)；轮询仅作兜底 ----
+ let _sessPushTimer = null;
+ let _sessPushPending = false;
+ function _applySessionEvent(ev) {
+  const sid = ev && ev.session_id;
+  if (!sid) return false;
+  const rows = state.sessionsCache || [];
+  if (ev.type === "session_deleted") {
+   state.sessionsCache = rows.filter((r) => r.session_id !== sid);
+   return true;
+  }
+  if (ev.type !== "session_updated") return false;
+  const i = rows.findIndex((r) => r.session_id === sid);
+  if (i < 0) return false; // 新会话：交给全量刷新
+  const r = { ...rows[i], message_count: ev.message_count, updated_at: ev.updated_at || rows[i].updated_at };
+  if (ev.title) r.title = ev.title;
+  const next = rows.slice(); next.splice(i, 1); next.unshift(r);
+  state.sessionsCache = next;
+  return true;
+ }
+ async function _pushRefresh(full) {
+  if (_sessPollBusy) { _sessPushPending = true; return; }
+  try {
+   if (full && typeof syncChatRunsWithServer === "function") await syncChatRunsWithServer();
+  } catch (_) {}
+  _sessPollBusy = false;
+  const wasHidden = document.hidden;
+  // 推送刷新即使页面隐藏也执行（标题/未读同步），轮询仍在隐藏时跳过
+  _sessPollBusy = true;
+  try {
+   const rows = await api("/api/sessions");
+   if (Array.isArray(rows)) state.sessionsCache = rows;
+  } catch (_) {} finally { _sessPollBusy = false; }
+  if (state.sessionId) {
+   const row = (state.sessionsCache || []).find((x) => x.session_id === state.sessionId);
+   if (row && !sessionIsGenerating(state.sessionId) && !wasHidden) markSessionRead(state.sessionId, row.message_count);
+  }
+  filterSessions(els.sessionSearch?.value || "");
+  if (_sessPushPending) { _sessPushPending = false; _schedulePush(true); }
+ }
+ function _schedulePush(full) {
+  clearTimeout(_sessPushTimer);
+  _sessPushTimer = setTimeout(() => _pushRefresh(full), 120);
+ }
+ let _sessES = null, _sessESok = false, _sessFallback = null;
+ function _setFallback(ms) {
+  if (_sessFallback) clearInterval(_sessFallback);
+  _sessFallback = setInterval(refreshSessionsQuiet, ms);
+ }
+ function connectSessionEvents() {
+  if (typeof EventSource === "undefined") { _setFallback(4000); return; }
+  try { _sessES && _sessES.close(); } catch (_) {}
+  _sessES = new EventSource("/api/sessions/events", { withCredentials: true });
+  _sessES.onopen = () => { _sessESok = true; _setFallback(30000); _schedulePush(true); };
+  _sessES.onerror = () => { _sessESok = false; _setFallback(5000); };
+  _sessES.onmessage = (m) => {
+   let ev; try { ev = JSON.parse(m.data); } catch { return; }
+   if (!ev || ev.type === "hello") return;
+   // 先就地更新蓝点（0 延迟），再全量校准（带生成状态）
+   if (_applySessionEvent(ev)) filterSessions(els.sessionSearch?.value || "");
+   _schedulePush(ev.type !== "session_updated" || !(state.sessionsCache || []).some((r) => r.session_id === ev.session_id) || ev.last_role === "assistant");
+  };
+ }
+ L.connectSessionEvents = connectSessionEvents;
+ if (!window.__evaSessPoll) {
+  window.__evaSessPoll = true;
+  _setFallback(5000);
+  connectSessionEvents();
+  document.addEventListener("visibilitychange", () => {
+   if (!document.hidden) {
+    if (!_sessESok) connectSessionEvents();
+    refreshSessionsQuiet();
+   }
+  });
+  window.addEventListener("focus", () => refreshSessionsQuiet());
+  window.addEventListener("online", () => connectSessionEvents());
  }
 
  async function openSession(sessionId, title) {
@@ -726,6 +898,7 @@
   if (state.sessionId && state.sessionId !== sid) {
    setStatus("后台生成已完成（另一会话）", "ok");
    await loadSessions();
+   syncUnreadAfterSessions(sid);
    return;
   }
   state.sessionId = sid;
@@ -754,6 +927,7 @@
    });
    setStatus("无可见正文 · " + toolCalls.length + " 工具", "warn");
    await loadSessions();
+   syncUnreadAfterSessions(sid);
    return;
   }
   const hint =
@@ -763,6 +937,7 @@
   appendMessage("system", hint, { retry: true, retryMessage: message });
   setStatus("模型未输出可见内容", "warn");
   await loadSessions();
+   syncUnreadAfterSessions(sid);
   return;
  }
 
@@ -796,6 +971,7 @@
  const elapsed = Math.floor((Date.now() - startTime) / 1000);
  setStatus("完成（" + elapsed + "s）" + nameBit + formatUsage(usage), "ok");
  await loadSessions();
+   syncUnreadAfterSessions(sid);
  }
 
  /** 订阅后台 run 的 SSE（断开只停监听，服务端继续） */
@@ -833,6 +1009,13 @@
       if (evt.type === "log") {
        toolLogCount += 1;
        appendTypingLog(evt.line);
+      } else if (
+       evt.type === "phase" ||
+       evt.type === "tool_start" ||
+       evt.type === "tool_end" ||
+       evt.type === "status"
+      ) {
+       applyRunProgressEvent(evt);
       } else if (evt.type === "result") {
        finalData = evt;
       } else if (evt.type === "error") {
@@ -945,6 +1128,13 @@
  } else if (evt.type === "log") {
  toolLogCount += 1;
  appendTypingLog(evt.line);
+ } else if (
+  evt.type === "phase" ||
+  evt.type === "tool_start" ||
+  evt.type === "tool_end" ||
+  evt.type === "status"
+ ) {
+  applyRunProgressEvent(evt);
  } else if (evt.type === "result") {
  finalData = evt;
  } else if (evt.type === "error") {
@@ -982,7 +1172,8 @@
   return {
    tool_calls: extractToolCalls(m),
    usage: m.usage || null,
-   timestamp: m.created_at || m.timestamp,
+   timestamp: m.created_at || m.timestamp || null,
+   fromStore: true,
    media_paths: meta.media_paths || m.media_paths || [],
    metadata: meta,
    msgId: m.id || "",
@@ -1349,5 +1540,8 @@
  L.retryLastTurn = retryLastTurn;
  L.syncDomMessageIds = syncDomMessageIds;
  L.deleteChatMessage = deleteChatMessage;
+ L.refreshAuthChrome = refreshAuthChrome;
+ L.applyAuthChrome = applyAuthChrome;
  // cancelRequest 以 app-render 的为准（操作 state.abortController）
 })(window.Lily);
+

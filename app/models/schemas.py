@@ -79,6 +79,11 @@ class MemoryItem(BaseModel):
     session_id: str | None = None
     created_at: datetime
     score: float | None = None
+    status: str = "active"
+    valid_from: str | None = None
+    valid_to: str | None = None
+    confidence: float = 1.0
+    supersedes_id: str | None = None
 
 
 class MemoryCreate(BaseModel):
@@ -86,6 +91,10 @@ class MemoryCreate(BaseModel):
     kind: str = "note"
     tags: list[str] = Field(default_factory=list)
     session_id: str | None = None
+    confidence: float | None = None
+    valid_to: str | None = None
+    ttl_days: float | None = None
+    supersedes_id: str | None = None
 
 
 class MemoryUpdate(BaseModel):
@@ -95,6 +104,10 @@ class MemoryUpdate(BaseModel):
     kind: str = "note"
     tags: list[str] = Field(default_factory=list)
     session_id: str | None = None
+    status: str | None = None
+    confidence: float | None = None
+    valid_to: str | None = None
+    ttl_days: float | None = None
 
 
 class TaskStatus(str, Enum):

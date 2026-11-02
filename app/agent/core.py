@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 import re
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from app.config import Settings, get_settings
 from app.llm.client import LLMClient, get_llm_client
@@ -36,23 +37,28 @@ MEMORY_INSTRUCTION = (
     "Pinned lines are standing prefs; truncated long notes are pointers, not the rule. "
     "If memory conflicts with kb, follow kb (get the page). "
     "Missing fact → action=recall. "
-    "Persist 记住/保存/别忘了: short preference/habit/rule/fact → memory; "
-    "long structured docs → kb; repeatable multi-step → workflow; "
+    "Persist 记住/保存/别忘了: control prefs → standing memory; "
+    "facts/notes without TTL → staging (not gold); evidence → staging+TTL; "
+    "long structured docs → kb staging + link_ref; repeatable multi-step → workflow; "
     "tabular business records → an installed data skill if any, not memory. "
+    "Do not invent certified/gold knowledge; human review approve for 正式认定. "
     "Never claim saved without a successful tool call."
 )
 
 DURABLE_PERSIST_FALLBACK = (
-    "DURABLE PERSIST ROUTING: classify content → memory (short) / kb (structured docs) / "
-    "workflow (multi-step automation). Must call the target tool before claiming saved."
+    "DURABLE PERSIST ROUTING: classify content → memory (short/staging) / kb (structured docs, staging) / "
+    "workflow (multi-step automation). Must call the target tool before claiming saved. "
+    "Staging + review_required until human approve; never auto-certify gold."
 )
 
 KB_INSTRUCTION = (
     "KB (tool `kb`): versioned markdown wiki — authority for procedures and standards. "
-    "Collections: sop/product/handbook/reference/daily/default. "
+    "Collections: sop/product/handbook/reference/daily/staging/default. "
+    "Agent writes land as staging/green-leaf; formal gold requires human review approve. "
     "Ground in matched snippets; cite [[title]]; truncated → kb get before inventing. "
     "If nothing matches, say so — do not invent procedures. "
-    "Long docs → kb; short prefs → memory; session notes → not a procedure source."
+    "Long docs → kb staging; short prefs → memory; skill promote syncs refs only (no auto-certify). "
+    "session notes → not a procedure source."
 )
 
 # Appended when at least one KB page was matched this turn
@@ -100,6 +106,31 @@ _WIDE_TOOL_GROUPS = frozenset({"office", "network", "vision"})
 _WIDE_TOOL_RESULT = frozenset({"workspace"})
 _SOURCE_TOOL_RESULT = frozenset({"read_skill", "validate_skill", "list_skills"})
 _TIGHT_TOOL_GROUPS = frozenset({"infra"})
+
+
+
+def _resolve_user_display_name() -> str:
+    """Single-user / local-session display name for persona injection."""
+    try:
+        from app.auth.local_session import load_local_session
+        from app.auth.users import (
+            effective_display_name,
+            get_user_by_id,
+            sole_user_row,
+        )
+
+        local = load_local_session() or {}
+        uid = str(local.get("user_id") or "")
+        if uid:
+            row = get_user_by_id(uid)
+            if row:
+                return effective_display_name(row)
+        row = sole_user_row()
+        if row:
+            return effective_display_name(row)
+        return str(local.get("username") or "").strip()
+    except Exception:
+        return ""
 
 
 class Agent:
@@ -206,6 +237,8 @@ class Agent:
         use_deputy: bool = False,
         skip_deputy: bool = False,
         form_reply: Any = None,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+        route_origin: str = "chat.web",
     ) -> ChatResponse:
         if not self.llm.is_configured:
             raise RuntimeError(self.llm.unconfigured_message())
@@ -337,6 +370,15 @@ class Agent:
             except Exception:
                 logger.exception("Failed to build deputy LLM client")
                 active_llm = self.llm
+
+        # 模型路由：主对话（未指定 model、未走副模型时）
+        if not used_deputy and not model:
+            from app.llm.routing import routed_client as _route
+
+            _feats = [route_origin or "chat.web"]
+            if agent_cfg.get("roleplay_enabled"):
+                _feats.insert(0, "chat.roleplay")
+            active_llm = _route(_feats, fallback=self.llm, allow_cli=False) or self.llm
 
         tight_ctx = self._is_tight_ctx_llm(active_llm)
         if tight_ctx:
@@ -551,6 +593,14 @@ class Agent:
             vision_skill_tool_name,
         )
 
+        # 模型路由：识图（本轮带图片）
+        if not used_deputy and not model and has_upload_image(message):
+            from app.llm.routing import routed_client as _route
+
+            _vis = _route("vision", fallback=None, allow_cli=False, use_default=False)
+            if _vis is not None:
+                active_llm = _vis
+                tight_ctx = self._is_tight_ctx_llm(active_llm)
         active_model = model or getattr(active_llm, "model", "") or ""
         if used_deputy:
             active_model = getattr(active_llm, "model", "") or ""
@@ -629,6 +679,28 @@ class Agent:
                     name=str(getattr(active_llm, "llm_id", "") or ""),
                 )
 
+        # 模型路由：技能（按技能覆盖 > 技能默认）
+        if not used_deputy and not model and use_tools:
+            try:
+                from app.agent.deputy import is_skill_work_tool as _is_skill
+                from app.llm.routing import SKILL_PREFIX, routed_client as _route
+
+                _cands = sorted(
+                    n for n in (intent_force | required_tools) if _is_skill(n, self.tools)
+                )
+                if _cands:
+                    _sk = _route(
+                        [SKILL_PREFIX + n for n in _cands] + ["skill"],
+                        fallback=None,
+                        allow_cli=False,
+                        use_default=False,
+                    )
+                    if _sk is not None:
+                        active_llm = _sk
+                        tight_ctx = self._is_tight_ctx_llm(active_llm)
+            except Exception:
+                logger.exception("Model routing for skill failed")
+
         image_only = is_image_only_turn(message)
         if image_only:
             intent_force.discard("kb")
@@ -644,6 +716,7 @@ class Agent:
                 image_only=image_only,
                 tools=self.tools,
             ),
+            user_display_name=_resolve_user_display_name(),
         )
         meta_preview = {
             t
@@ -892,7 +965,11 @@ class Agent:
             messages.append(self._sanitize_message(m, max_content=hist_clip))
 
         # Persist plain text in session; send multimodal content to LLM when supported
-        user_msg = {"role": "user", "content": message}
+        user_msg = {
+            "role": "user",
+            "content": message,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
         llm_user_content: Any = message
         if vision_native and has_imgs:
             try:
@@ -1012,6 +1089,15 @@ class Agent:
                             if (t.get("function") or {}).get("name") != "ask_user"
                         ]
                     turn_tools = openai_tools
+                self._emit_progress(
+                    on_progress,
+                    {
+                        "type": "phase",
+                        "phase": "thinking",
+                        "label": "思考中",
+                        "round": round_i,
+                    },
+                )
                 result = await self._llm_chat_fit(
                     messages,
                     tools=openai_tools if use_tools else None,
@@ -1090,6 +1176,29 @@ class Agent:
                             _arg_hint,
                         )
                         logger.info("Tool call round=%s name=%s args=%s", round_i, name, _arg_hint or "{}")
+                        _args_ui = (
+                            {
+                                k: (
+                                    v
+                                    if not isinstance(v, str) or len(v) <= 80
+                                    else v[:80] + "…"
+                                )
+                                for k, v in (args.items() if isinstance(args, dict) else [])
+                            }
+                            if isinstance(args, dict)
+                            else {}
+                        )
+                        self._emit_progress(
+                            on_progress,
+                            {
+                                "type": "tool_start",
+                                "name": name,
+                                "arguments": _args_ui,
+                                "label": self._tool_progress_label(name),
+                                "detail": _arg_hint or None,
+                                "round": round_i,
+                            },
+                        )
                         if (
                             allow_deputy
                             and deputy_client
@@ -1108,6 +1217,28 @@ class Agent:
                                 name,
                             )
                         tool_result = await self.tools.execute(name, args)
+                        _ok_tool = True
+                        try:
+                            _pj = json.loads(tool_result) if isinstance(tool_result, str) else None
+                            if isinstance(_pj, dict) and (
+                                _pj.get("ok") is False or _pj.get("error")
+                            ):
+                                _ok_tool = False
+                        except Exception:
+                            pass
+                        self._emit_progress(
+                            on_progress,
+                            {
+                                "type": "tool_end",
+                                "name": name,
+                                "ok": _ok_tool,
+                                "result": self._summarize_tool_result_for_ui(
+                                    name, tool_result
+                                ),
+                                "label": self._tool_progress_label(name),
+                                "round": round_i,
+                            },
+                        )
                         llm_tool_content = self._clip_tool_result_for_llm(
                             name,
                             tool_result,
@@ -1331,19 +1462,44 @@ class Agent:
                         continue
 
                     if self._user_wants_file(message, content):
-                        forced_retries += 1
-                        intent_force |= {"workspace"}
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": (
+                        # P0: skip force if a file tool already ran this turn
+                        if not (called & {"workspace", "document"}):
+                            forced_retries += 1
+                            office = self._text_has_office_files(message) or any(
+                                k in (message or "").lower()
+                                for k in (
+                                    "excel",
+                                    "xlsx",
+                                    "xls",
+                                    "docx",
+                                    "pptx",
+                                    "pdf",
+                                    "word",
+                                    "ppt",
+                                    "powerpoint",
+                                    "markdown",
+                                    ".md",
+                                )
+                            )
+                            if office:
+                                intent_force |= {"document"}
+                                must = (
+                                    "[SYSTEM] You claimed to create/write an office file "
+                                    "without a tool. MUST call document (action=write) now. "
+                                    "Path under docs/ or exports/ or scratch/ — never workspace root. "
+                                    "If the file already exists, ask_user first then overwrite=true."
+                                )
+                            else:
+                                intent_force |= {"workspace"}
+                                must = (
                                     "[SYSTEM] You claimed to create/write a file without a tool. "
-                                    "MUST call workspace (action=write) now."
-                                ),
-                            }
-                        )
-                        round_i += 1
-                        continue
+                                    "MUST call workspace (action=write) now. "
+                                    "Path under scratch/ or exports/ — never workspace root. "
+                                    "If the file already exists, ask_user first then overwrite=true."
+                                )
+                            messages.append({"role": "user", "content": must})
+                            round_i += 1
+                            continue
 
                     if self._claimed_skill_created_without_tool(content, called):
                         forced_retries += 1
@@ -1394,6 +1550,15 @@ class Agent:
                         round_i += 1
                         continue
 
+                self._emit_progress(
+                    on_progress,
+                    {
+                        "type": "phase",
+                        "phase": "writing",
+                        "label": "生成回复",
+                        "round": round_i,
+                    },
+                )
                 final_content = content
                 if pending_form:
                     if pending_form.get("kind") == "integ":
@@ -1527,13 +1692,24 @@ class Agent:
                 pending_form = _skill_form(message)
                 final_content = str(pending_form.get("title") or "请在下方填写")
             else:
+                self._emit_progress(
+                    on_progress,
+                    {
+                        "type": "phase",
+                        "phase": "writing",
+                        "label": "整理结果",
+                    },
+                )
+                from app.llm.routing import routed_client as _route
+
+                _fin = _route("tool_final", fallback=None, allow_cli=False, use_default=False)
                 final_content = await self._synthesize_after_tool_cap(
                     messages,
                     tool_records=tool_records,
                     max_rounds=max_rounds,
-                    model=None if used_deputy else model,
+                    model=None if (used_deputy or _fin is not None) else model,
                     total_usage=total_usage,
-                    llm=turn_llm,
+                    llm=_fin or turn_llm,
                 )
             if final_content:
                 messages.append({"role": "assistant", "content": final_content})
@@ -1710,14 +1886,17 @@ class Agent:
             keep,
             settings.get("trigger_messages"),
         )
+        from app.llm.routing import routed_client as _route
+
+        evo_llm = _route("evolution", fallback=None)  # rule or routing default
         new_evo = await evolve_session_context(
-            llm=self.llm,
+            llm=evo_llm or self.llm,
             previous=evo,
             messages_to_compress=older,
             latest_user=latest_user,
             latest_assistant=latest_assistant,
             settings=settings,
-            model=model,
+            model=None if evo_llm is not None else model,
         )
         await self.sessions.set_evolution(
             session_id,
@@ -1762,7 +1941,7 @@ class Agent:
         return (
             f"TOOL BUDGET: ≤{n} tool rounds per phase; runtime auto-continues — "
             "do not ask 是否继续. Don't recursively list folders. "
-            ".docx .xlsx .pptx .pdf .md → tool document."
+            ".docx .xlsx .pptx .pdf .md → tool document (path under docs/exports/scratch)."
         )
 
     def _ops_instructions(
@@ -1971,6 +2150,49 @@ class Agent:
         return packed
 
     @staticmethod
+    def _emit_progress(
+        on_progress: Callable[[dict[str, Any]], None] | None,
+        event: dict[str, Any],
+    ) -> None:
+        if not on_progress:
+            return
+        try:
+            on_progress(event)
+        except Exception:
+            logger.debug("on_progress failed", exc_info=True)
+
+    @staticmethod
+    def _tool_progress_label(name: str) -> str:
+        labels = {
+            "kb": "查知识库",
+            "memory": "读写记忆",
+            "workspace": "读写工作区",
+            "workflow": "跑工作流",
+            "integrations": "读集成配置",
+            "llms": "查看对话模型",
+            "list_skills": "列出技能",
+            "validate_skill": "校验技能",
+            "promote_skill": "发布技能",
+            "web_search": "搜索网页",
+            "create_tool": "创建技能",
+            "read_skill": "读技能代码",
+            "delete_tool": "删除技能",
+            "terminal": "执行终端命令",
+            "document": "读写办公文档",
+            "reload_runtime": "热重载",
+            "list_api_models": "拉取模型列表",
+            "server_health_check": "健康检查",
+            "scheduled_task": "查看定时任务",
+            "get_current_time": "读取当前时间",
+            "ask_user": "向你确认",
+        }
+        n = (name or "").strip()
+        if n in labels:
+            return labels[n]
+        nice = n.replace("_", " ") if n else "工具"
+        return f"调用 {nice}"
+
+    @staticmethod
     def _summarize_tool_result_for_ui(name: str, text: str) -> str:
         raw = (text if isinstance(text, str) else str(text or "")).strip()
         if not raw:
@@ -2047,10 +2269,17 @@ class Agent:
 
     @staticmethod
     def _strip_visible_tool_digest(text: str) -> str:
-        """Drop a leading 已操作 / 已调用工具 line from user-visible replies."""
+        """Drop tool digests and leaked DSML / special tool markup from replies."""
         t = (text or "").strip()
         if not t:
             return t
+        try:
+            from app.llm.tool_text import extract_dsml_tool_calls, looks_like_dsml
+
+            if looks_like_dsml(t):
+                t, _ = extract_dsml_tool_calls(t)
+        except Exception:
+            pass
         t = re.sub(
             r"^(?:已操作|已调用工具|已执行)[：:].*?(?:\n{1,2}|$)",
             "",
@@ -2167,6 +2396,7 @@ class Agent:
                 image_only=image_only,
                 tools=self.tools,
             ),
+            user_display_name=_resolve_user_display_name(),
         )
 
         title = (
@@ -2249,7 +2479,12 @@ class Agent:
         messages.append({"role": "user", "content": message})
 
         parts: list[str] = []
-        async for delta in self.llm.chat_stream(messages, model=model):
+        stream_llm = self.llm
+        if not model:
+            from app.llm.routing import routed_client as _route
+
+            stream_llm = _route("chat.stream", fallback=self.llm) or self.llm
+        async for delta in stream_llm.chat_stream(messages, model=model):
             parts.append(delta)
             yield delta
 
@@ -2370,7 +2605,7 @@ class Agent:
 
     @staticmethod
     def _user_wants_file(user_msg: str, assistant_reply: str) -> bool:
-        """Detect if user asked for file creation but LLM hallucinated without calling any tool."""
+        """Detect hallucinated file creation claim (caller must skip if workspace/document already called)."""
         file_kw = ("excel", "xlsx", "xls", "docx", "pptx", "pdf", ".md",
                    "製作", "制作", "文件", "生成", "創建", "创建", "重新生成")
         reply_kw = ("已生成", "已重新生成", "搞掂", "搞掂",

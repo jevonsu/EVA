@@ -11,7 +11,7 @@ html {
 
 body {
  overscroll-behavior: none;
- -webkit-tap-highlight-color: rgba(63, 185, 80, 0.12);
+ -webkit-tap-highlight-color: rgba(255, 255, 255, 0.12);
 }
 
 .app {
@@ -51,72 +51,55 @@ body {
   max-width: 100%;
  }
 
- /* Grok 式居中主页 · 移动端 */
+ /* 空态欢迎台 · 移动端（文档流 + 底栏输入） */
  body.home-hero .composer,
  .main.home-hero .composer {
-  width: min(100%, calc(100% - 20px));
-  top: 46%;
-  transform: translate(-50%, -50%);
-  gap: 12px;
-  /* 避免被顶栏/底部安全区裁切 */
-  max-height: calc(var(--app-height, 100vh) - 24px);
-  overflow: visible;
+  position: relative;
+  left: auto;
+  top: auto;
+  transform: none;
+  width: 100%;
+  max-width: none;
+  padding: 8px 10px max(10px, env(safe-area-inset-bottom));
  }
- body.home-hero .home-hero-title {
-  font-size: clamp(26px, 7.5vw, 36px);
- }
- body.home-hero .home-hero-sub {
-  font-size: 13px;
-  padding: 0 8px;
- }
- body.home-hero .home-setup {
-  padding: 12px 14px;
- }
- body.home-hero.kb-open .home-setup {
-  display: none !important;
+ body.home-hero .composer-shell,
+ .main.home-hero .composer-shell {
+  width: 100%;
  }
  body.home-hero .top-actions {
-  display: none;
+  display: none !important;
  }
- /* 手机主页：快捷入口横向滑动，不占两行高度 */
- body.home-hero .home-hero-chips:not(.hidden),
- .main.home-hero .home-hero-chips:not(.hidden) {
-  display: flex;
-  flex-wrap: nowrap;
+ body.home-hero .messages,
+ .main.home-hero .messages {
+  padding: 16px 12px 8px;
   justify-content: flex-start;
-  gap: 8px;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-  padding: 2px 2px 4px;
-  max-width: 100%;
-  scroll-snap-type: x proximity;
  }
- body.home-hero .home-hero-chips::-webkit-scrollbar {
-  display: none;
+ .home-welcome {
+  gap: 16px;
+  padding: 4px 0;
  }
- body.home-hero .home-hero-chip {
-  flex: 0 0 auto;
-  scroll-snap-align: start;
-  min-height: 40px;
-  padding: 8px 14px;
+ .home-welcome-title {
+  font-size: clamp(22px, 6.5vw, 28px);
+ }
+ .home-welcome-sub {
   font-size: 13px;
-  white-space: nowrap;
+ }
+ .home-capability-grid {
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+ }
+ .home-cap-card {
+  min-height: 78px;
+  padding: 12px;
   touch-action: manipulation;
  }
- /* 键盘弹起：主页改贴底，避免输入框被挡 */
+ .home-cap-label { font-size: 13px; }
+ .home-cap-desc { font-size: 11.5px; }
+ /* 键盘弹起：欢迎区可滚，输入贴底 */
  body.home-hero.kb-open .composer,
  .main.home-hero.kb-open .composer,
  body.home-hero.kb-open .main.home-hero .composer {
-  top: auto;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  width: 100%;
-  max-width: none;
-  transform: none;
   padding: 8px 10px max(8px, env(safe-area-inset-bottom));
-  gap: 8px;
   background: linear-gradient(
    180deg,
    transparent 0%,
@@ -124,14 +107,18 @@ body {
    rgba(13, 17, 23, 0.98) 100%
   );
  }
- body.home-hero.kb-open .home-hero-head {
-  display: none !important;
- }
- body.home-hero.kb-open .home-hero-chips {
+ body.home-hero.kb-open .home-welcome-greeting,
+ body.home-hero.kb-open .home-capability-grid {
   display: none !important;
  }
  body.home-hero.kb-open .composer-shell {
   width: 100%;
+ }
+ /* 窄屏悬停不好用：操作常显 */
+ .msg.assistant .msg-foot .msg-actions,
+ .msg.user .msg-foot .msg-actions {
+  opacity: 1;
+  pointer-events: auto;
  }
  /* 菜单按钮始终可点 */
  .btn.icon-btn {
@@ -493,9 +480,9 @@ body {
  }
 
  body.kb-open .composer-box {
- border-color: rgba(63, 185, 80, 0.35);
+ border-color: rgba(255, 255, 255, 0.35);
  box-shadow:
-  0 0 0 1px rgba(63, 185, 80, 0.12),
+  0 0 0 1px rgba(255, 255, 255, 0.12),
   0 8px 24px rgba(0, 0, 0, 0.35);
  }
 
@@ -888,6 +875,6 @@ body.kb-open:not(.home-hero) .top-actions .top-hint-chip {
   transform: scale(0.94);
  }
  .session-item:active {
-  background: rgba(63, 185, 80, 0.1);
+  background: rgba(255, 255, 255, 0.1);
  }
 }

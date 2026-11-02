@@ -22,6 +22,36 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+def _assert_handler_under_skills(handler_path) -> None:
+    """F02: refuse to exec_module files outside live/draft skills roots."""
+    from pathlib import Path as _P
+
+    hp = _P(handler_path).resolve()
+    roots = []
+    try:
+        roots.append(_P(skills_root()).resolve())
+    except Exception:
+        pass
+    try:
+        from app.config import PROJECT_ROOT, RESOURCE_ROOT
+
+        roots.append((_P(PROJECT_ROOT) / "skills").resolve())
+        roots.append((_P(RESOURCE_ROOT) / "skills").resolve())
+        roots.append((_P(PROJECT_ROOT) / "workspace" / "skills").resolve())
+    except Exception:
+        pass
+    ok = False
+    for root in roots:
+        try:
+            hp.relative_to(root)
+            ok = True
+            break
+        except ValueError:
+            continue
+    if not ok:
+        raise PermissionError(f"Refusing to load handler outside skills/: {hp}")
+
+
 logger = logging.getLogger(__name__)
 
 META_TOOL_NAMES: frozenset[str] = frozenset(
@@ -370,6 +400,7 @@ def load_handler_module(handler_py: Path, mod_name: str):
         sys.path.insert(0, skill_dir)
     try:
         mod = importlib.util.module_from_spec(spec)
+        _assert_handler_under_skills(handler_py)
         spec.loader.exec_module(mod)
         return mod, None
     except Exception as exc:  # noqa: BLE001
@@ -396,7 +427,21 @@ def _preflight_import(handler_py: Path, skill_id: str) -> str | None:
 
 
 def promote_skill(name: str, *, rebuild: bool = True) -> dict[str, Any]:
-    """Copy workspace/skills/<id> → skills/<id> and optionally rebuild runtime."""
+    try:
+        from app.tools.protection import allow_create_tool, create_tool_disabled_payload
+
+        if not allow_create_tool():
+            return create_tool_disabled_payload("promote_skill")
+    except Exception:
+        return {"ok": False, "error": "promote_skill disabled"}
+    """Copy workspace/skills/<id> → skills/<id> and optionally rebuild runtime.
+
+    Human-gate: promote publishes the *skill package* only. Declared
+    ``knowledge_refs`` are synced as **refs/edges** (skill→kb|memory); they do
+    **not** auto-certify / gold / activate target knowledge pages. Any memory/kb
+    a skill handler writes must go through agent gates (staging unless control
+    preference, or human review approve path). Promote ≠ certify knowledge.
+    """
     n = normalize_skill_id(name)
     src = draft_skill_dir(n)
     dst = live_skill_dir(n)
@@ -460,6 +505,16 @@ def promote_skill(name: str, *, rebuild: bool = True) -> dict[str, Any]:
         except Exception as exc:
             runtime = {"error": str(exc)}
 
+    # Phase 4: materialize declared knowledge_refs into eva_knowledge_refs
+    refs_sync: dict | None = None
+    try:
+        from app.knowledge.skill_refs import sync_skill_knowledge_refs_sync
+
+        refs_sync = sync_skill_knowledge_refs_sync(n, skill_dir=dst)
+    except Exception as exc:
+        logger.warning("promote skill refs sync failed for %s: %s", n, exc)
+        refs_sync = {"ok": False, "error": str(exc)}
+
     return {
         "ok": True,
         "name": n,
@@ -468,7 +523,12 @@ def promote_skill(name: str, *, rebuild: bool = True) -> dict[str, Any]:
         "backup": backup,
         "validate": v,
         "runtime": runtime,
-        "hint": "已发布到 skills/。若 runtime.deferred=true，请 reload_runtime。",
+        "knowledge_refs": refs_sync,
+        "knowledge_certified": False,
+        "hint": (
+            "已发布到 skills/。knowledge_refs 仅为引用边，不会把目标知识自动认定为正式/金叶；"
+            "技能若写 memory/kb 仍进暂存，须人工评审批准。若 runtime.deferred=true，请 reload_runtime。"
+        ),
     }
 
 
@@ -509,6 +569,18 @@ def live_meta_tools_for_turn(
     Old-session sticky ``create_tool`` stays on disk for 确认 / 改技能 follow-up,
     but listing or chatting about 技能 must not re-inject create/delete.
     """
+    try:
+        from app.tools.protection import allow_create_tool
+
+        if not allow_create_tool():
+            # F02: never unlock write/hot-load meta tools when disabled
+            sticky_s = {str(t) for t in (sticky or set()) if str(t) in _READ_META}
+            this_s = {str(t) for t in (this_meta or set()) if str(t) in (_READ_META | {"validate_skill"})}
+            # validate also gated with writes when create disabled
+            return (this_s | sticky_s) & _READ_META
+    except Exception:
+        return set()
+
     sticky_s = {str(t) for t in (sticky or set()) if str(t) in META_TOOL_NAMES}
     this_s = {str(t) for t in (this_meta or set()) if str(t) in META_TOOL_NAMES}
     if spec_confirmed or pending:
@@ -778,6 +850,13 @@ def missing_capability_meta_tools(query: str) -> set[str]:
 def auto_meta_tools_for_query(query: str) -> set[str]:
     """Unlock create+read when user mentions an existing skill and repair intent."""
     if not query:
+        return set()
+    try:
+        from app.tools.protection import allow_create_tool
+
+        if not allow_create_tool():
+            return set()
+    except Exception:
         return set()
     unlocked = missing_capability_meta_tools(query)
     skills = mentioned_skill_ids(query)

@@ -14,12 +14,16 @@
  <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
  <title>AI 助手</title>
  <link rel="icon" type="image/png" href="/static/logo.png" />
- <link rel="stylesheet" href="/static/css/base.css" />
- <link rel="stylesheet" href="/static/css/sidebar.css" />
- <link rel="stylesheet" href="/static/css/messages.css" />
- <link rel="stylesheet" href="/static/css/modals.css" />
- <link rel="stylesheet" href="/static/css/mobile.css" />
- <link rel="stylesheet" href="/static/css/llama-theme.css" />
+ <link rel="stylesheet" href="/static/css/base.css?v=ux9" />
+ <link rel="stylesheet" href="/static/css/sidebar.css?v=ux9" />
+ <link rel="stylesheet" href="/static/css/messages.css?v=ux9" />
+ <link rel="stylesheet" href="/static/css/modals.css?v=ux9" />
+ <link rel="stylesheet" href="/static/css/mobile.css?v=ux9" />
+ <link rel="stylesheet" href="/static/css/llama-theme.css?v=ux9" />
+ <link rel="stylesheet" href="/static/css/motion.css?v=ux9" />
+ <link rel="stylesheet" href="/static/css/chat-c.css?v=ux9" />
+ <link rel="stylesheet" href="/static/css/mobile-polish.css?v=ux9" />
+<link rel="stylesheet" href="/static/css/chat-layout.css?v=ux9" />
  <style>
  /* 先 100vh 再 100dvh：旧 WebView 不识别 dvh 时仍有可用高度，避免首屏 height 失效 */
  :root { --app-height: 100vh; }
@@ -31,7 +35,7 @@
   max-height: var(--app-height, 100vh);
   overflow: hidden;
  }
- /* composer 位置由 messages.css / mobile.css 控制（主页 absolute / 对话 grid 底栏） */
+ /* composer：悬浮输入岛（chat-c）；空态欢迎在 messages */
  </style>
 </head>
 <body>
@@ -41,21 +45,24 @@
  <div class="app">
  <aside class="sidebar">
  <div class="brand">
- <div class="logo logo-img" aria-hidden="true"><img src="/static/logo.png" alt="" /></div>
+ <div class="logo logo-img logo-menu" id="btnLogoMenu" role="button" tabindex="0" title="折叠/展开侧栏" aria-label="折叠/展开侧栏" aria-controls="sessionList"><img src="/static/logo.png" alt="" /></div>
  <div>
  <div class="brand-title" id="agentName">Eva</div>
- <div class="brand-sub" id="agentMeta">加载中…</div>
+ <div class="brand-sub" id="agentMeta" hidden style="display:none"></div>
  </div>
  </div>
 
- <button type="button" class="btn primary full icon-inline" id="btnNewChat"><span data-ipk="comment" data-ipk-class="ipk-sm"></span> 新对话</button>
- <button type="button" class="btn full icon-inline" id="btnOpenConfig"><span data-ipk="setting-two" data-ipk-class="ipk-sm"></span> 设定</button>
+ <button type="button" class="btn primary full icon-inline" id="btnNewChat" title="新对话" aria-label="新对话"><span data-ipk="comment" data-ipk-class="ipk-sm"></span> 新对话</button>
+ <button type="button" class="btn full icon-inline" id="btnQuickWorkspace" title="打开工作区" aria-label="工作区"><span data-ipk="folder-open" data-ipk-class="ipk-sm"></span> 工作区</button>
 
  <div class="quick-row">
- <button type="button" class="btn ghost-sm icon-inline" id="btnQuickTasks" title="打开任务"><span data-ipk="alarm-clock" data-ipk-class="ipk-xs"></span> 任务</button>
- <button type="button" class="btn ghost-sm icon-inline" id="btnQuickMemory" title="打开记忆"><span data-ipk="brain" data-ipk-class="ipk-xs"></span> 记忆</button>
- <button type="button" class="btn ghost-sm icon-inline" id="btnQuickKb" title="打开知识库"><span data-ipk="book-open" data-ipk-class="ipk-xs"></span> 知识库</button>
- <button type="button" class="btn ghost-sm icon-inline" id="btnQuickWorkspace" title="打开工作区"><span data-ipk="folder-open" data-ipk-class="ipk-xs"></span> 工作区</button>
+ <button type="button" class="btn ghost-sm icon-inline" id="btnQuickMore" title="设定、任务、记忆、知识库" aria-expanded="false" aria-controls="quickRowMore"><span data-ipk="all-application" data-ipk-class="ipk-sm"></span> 更多</button>
+ </div>
+ <div class="quick-row-more" id="quickRowMore">
+ <button type="button" class="btn ghost-sm icon-inline" id="btnOpenConfig" title="设定" aria-label="设定"><span data-ipk="setting-two" data-ipk-class="ipk-sm"></span> 设定</button>
+ <button type="button" class="btn ghost-sm icon-inline" id="btnQuickTasks" title="打开任务"><span data-ipk="alarm-clock" data-ipk-class="ipk-sm"></span> 任务</button>
+ <button type="button" class="btn ghost-sm icon-inline" id="btnQuickMemory" title="打开记忆"><span data-ipk="brain" data-ipk-class="ipk-sm"></span> 记忆</button>
+ <button type="button" class="btn ghost-sm icon-inline" id="btnQuickKb" title="打开知识库"><span data-ipk="book-open" data-ipk-class="ipk-sm"></span> 知识库</button>
  </div>
 
  <div class="section-label icon-inline"><span data-ipk="list" data-ipk-class="ipk-xs"></span> 对话纪录</div>
@@ -75,18 +82,25 @@
  <main class="main">
  <header class="topbar">
  <div class="topbar-left">
- <button type="button" class="btn icon-btn" id="btnMenu" title="菜单" aria-label="菜单" aria-expanded="true" aria-controls="sessionList"><span data-ipk="hamburger-button" data-ipk-class="ipk-md"></span></button>
- <div>
+ <button type="button" class="btn topbar-avatar-btn" id="btnMenu" title="菜单" aria-label="菜单" aria-expanded="true" aria-controls="sessionList"><img src="/static/logo.png" alt="" /></button>
  <h1 id="chatTitle" class="icon-inline"><span data-ipk="comment" data-ipk-class="ipk-sm"></span> <span id="chatTitleText">新对话</span></h1>
- <p class="hint" id="sessionHint">输入消息开始对话</p>
- </div>
+ <p class="hint sr-only" id="sessionHint">输入消息开始对话</p>
  </div>
  <div class="top-actions">
  <!-- 工具 / 记忆默认开启，界面不展示开关；保留隐藏 checkbox 供逻辑读取 -->
  <input type="checkbox" id="useTools" class="sr-only" checked tabindex="-1" aria-hidden="true" />
  <input type="checkbox" id="useMemory" class="sr-only" checked tabindex="-1" aria-hidden="true" />
  <span class="hint-chip top-hint-chip is-idle" id="voiceHint" hidden title="连续听写：点一次开始、再点停止。识别语言跟随设定→人设→语言（粤语/普通话/英语；「跟随用户」时才自动切换）。建议 Chrome/Edge">语音：待机</span>
- <button type="button" class="hint-chip top-hint-chip mode-chip" id="modeHint" title="点一下切换：工具开启=可调用技能（完整回复）；关闭=流式回复。">模式：工具开启 · 完整回复</button>
+ <button type="button" class="hint-chip top-hint-chip mode-chip" id="modeHint" title="点一下切换：工具开启=可调用技能（完整回复）；关闭=流式回复。">工具开</button>
+ <div class="top-auth-wrap" id="topAuthWrap" hidden>
+  <button type="button" class="hint-chip top-hint-chip top-auth-btn" id="btnTopAuth" aria-haspopup="menu" aria-expanded="false" title="账号菜单">
+   <span id="topAuthLabel">—</span><span class="top-auth-caret" aria-hidden="true">▾</span>
+  </button>
+  <div class="top-auth-menu" id="topAuthMenu" hidden role="menu">
+   <button type="button" class="top-auth-item" role="menuitem" id="btnTopAuthRename">修改称呼</button>
+   <button type="button" class="top-auth-item is-danger" role="menuitem" id="btnTopAuthLogout">注销</button>
+  </div>
+ </div>
  </div>
  </header>
 
@@ -96,12 +110,12 @@
  </div>
 
  <footer class="composer" id="composer">
- <!-- 空会话：产品名；左上角才是用户给 Agent 的名字。没模型时引导去添加 -->
- <div class="home-hero-head" id="homeHeroHead" hidden>
-  <h2 class="home-hero-title" id="homeHeroTitle">EVA System OS</h2>
-  <p class="home-hero-sub" id="homeHeroSub">有什么可以帮你的？</p>
+ <!-- 空态欢迎台改到 #messages（文档流）；composer 始终底栏 -->
+ <div class="home-hero-head" id="homeHeroHead" hidden aria-hidden="true">
+  <h2 class="home-hero-title" id="homeHeroTitle">有什么可以帮你的？</h2>
+  <p class="home-hero-sub" id="homeHeroSub">选一个开始，或直接在下方输入</p>
  </div>
- <div class="home-setup hidden" id="homeSetup">
+ <div class="home-setup hidden" id="homeSetup" hidden>
   <p class="home-setup-title">还没有对话模型</p>
   <p class="home-setup-hint">先添加一个本地或云端模型，才能开始聊天。</p>
   <button type="button" class="btn primary icon-inline" id="btnHomeAddLlm">
@@ -172,8 +186,8 @@
  <div class="status" id="status"></div>
  </div>
  </div>
- <!-- 空会话快捷建议（居中模式挂在输入框下方） -->
- <div class="home-hero-chips hidden" id="homeHeroChips" aria-label="快速开始"></div>
+ <!-- 空态能力卡改到 #messages；保留节点供旧逻辑隐藏 -->
+ <div class="home-hero-chips hidden" id="homeHeroChips" aria-label="快速开始" hidden></div>
  <div class="drop-overlay hidden" id="dropOverlay" aria-hidden="true">
  <div class="drop-overlay-inner">松开以上传到 workspace</div>
  </div>
@@ -200,7 +214,7 @@
  <!-- Config modal: async (do not block first paint with sync XHR) -->
  <script>
  window.__configModalReady = (function () {
-  var p = fetch("/static/html/config-modal.html", { credentials: "same-origin" })
+  var p = fetch("/static/html/config-modal.html?v=ux9", { credentials: "same-origin" })
    .then(function (r) {
     if (!r.ok) throw new Error("config modal " + r.status);
     return r.text();
@@ -219,15 +233,17 @@
  </script>
 
  <script defer src="/static/js/icons.js"></script>
- <script defer src="/static/js/app-core.js"></script>
- <script defer src="/static/js/app-render.js"></script>
- <script defer src="/static/js/app-chat.js"></script>
+ <script defer src="/static/js/app-core.js?v=ux9"></script>
+ <script defer src="/static/js/app-render.js?v=ux9"></script>
+ <script defer src="/static/js/app-chat.js?v=ux9"></script>
  <script defer src="/static/js/app-upload.js"></script>
  <script defer src="/static/js/app-voice.js"></script>
  <script defer src="/static/js/app-tts.js"></script>
  <script defer src="/static/js/app-panels.js"></script>
  <script defer src="/static/js/app-workspace.js"></script>
- <script defer src="/static/js/app-config.js"></script>
- <script defer src="/static/js/app-init.js"></script>
+ <script defer src="/static/js/app-config.js?v=ux9"></script>
+ <script defer src="/static/js/app-model-routing.js?v=ux9"></script>
+ <script defer src="/static/js/app-init.js?v=ux9"></script>
+<script defer src="/static/js/app-chat-ux.js?v=ux9"></script>
 </body>
 </html>

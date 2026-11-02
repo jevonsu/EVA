@@ -50,8 +50,9 @@ pysmb>=1.2.10
 # paramiko>=3.4.0   # skills/netops SSH/SCP
 psutil>=5.9.0
 
-# Auth (card login / admin)
+# Auth (local password + encrypted session)
 bcrypt>=4.2.0
+cryptography>=43.0.0
 
 # Launcher system tray (Windows)
 pystray>=0.19.5

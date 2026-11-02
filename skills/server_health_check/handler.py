@@ -24,7 +24,17 @@ def register(registry):
         "server_health_check",
         DESC,
         check_health,
-        {"type": "object", "properties": {}},
+        {
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "enum": ["all", "cpu", "memory", "disk"],
+                    "description": "可选：只返回某一项，默认 all（本技能无必填参数）",
+                }
+            },
+            "required": [],
+        },
         source="skill",
         metadata={"timeout_sec": 15, "group": "dev", "tag": "健康检查"},
     )
@@ -104,7 +114,22 @@ def _disk_rows(psutil) -> list[dict]:
     return rows
 
 
-async def check_health() -> str:
+async def check_health(section: str = "all") -> str:
+    out = await _check_health_all()
+    sec = (section or "all").strip().lower()
+    if sec == "all":
+        return out
+    try:
+        data = json.loads(out)
+    except Exception:
+        return out
+    if isinstance(data, dict) and sec in data:
+        keep = {k: data[k] for k in ("ok", sec, "score", "status", "summary") if k in data}
+        return json.dumps(keep, ensure_ascii=False)
+    return out
+
+
+async def _check_health_all() -> str:
     try:
         psutil = _psutil()
         cpu: dict = {"count": os.cpu_count()}

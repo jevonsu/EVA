@@ -5,10 +5,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+import asyncio
+import json
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.memory.session import get_session_store
+from app.services import session_events as _sess_bus
 from app.models.schemas import SessionInfo
 
 class SessionCreate(BaseModel):
@@ -47,6 +52,34 @@ def _session_info(r: dict[str, Any]) -> SessionInfo:
         updated_at=datetime.fromisoformat(str(r["updated_at"])),
         message_count=r["message_count"],
         title=r.get("title"),
+    )
+
+
+@router.get("/events")
+async def session_events_stream(request: Request) -> StreamingResponse:
+    """IM-style push: sidebar subscribes once; server broadcasts session changes."""
+    q = _sess_bus.subscribe()
+
+    async def gen():
+        try:
+            yield "retry: 2000\n\n"
+            yield f"data: {json.dumps({'type': 'hello'})}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    evt = await asyncio.wait_for(q.get(), timeout=20.0)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
+                yield f"data: {json.dumps(evt, ensure_ascii=False, default=str)}\n\n"
+        finally:
+            _sess_bus.unsubscribe(q)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

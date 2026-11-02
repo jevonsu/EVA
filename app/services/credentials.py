@@ -57,7 +57,16 @@ def llm_credentials(llm_id: str = "") -> dict[str, str]:
 
         store = get_config_store()
         wanted = (llm_id or "").strip()
-        row = store.get_llm(wanted) if wanted else store.get_default_llm()
+        row = None
+        if not wanted:
+            try:
+                from app.llm.routing import routed_row
+
+                row = routed_row("skill_handler")
+            except Exception:
+                row = None
+        if row is None:
+            row = store.get_llm(wanted) if wanted else store.get_default_llm()
         if not row and wanted:
             # allow lookup by name
             for item in store.list_llms():
