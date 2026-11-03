@@ -7,6 +7,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import webbrowser
 from typing import Any, Callable, TextIO
 
@@ -1530,8 +1531,10 @@ class EvaLauncher:
         try:
             from app.services.online_update import apply_now, apply_pending_zip, check, pending_zip
 
+            prog = self._make_update_progress()
             if pending_zip().is_file():
-                result = apply_pending_zip()
+                self._emit("发现已下载的更新包，跳过下载。")
+                result = apply_pending_zip(prog)
             else:
                 status = check(force=True, interactive=False)
                 if not status.get("newer"):
@@ -1550,7 +1553,7 @@ class EvaLauncher:
 
                     self._ui(_latest)
                     return
-                result = apply_now(force=True)
+                result = apply_now(force=True, progress=prog)
             tag = str(result.get("applied_tag") or "")
             if result.get("restarting"):
                 def _restart() -> None:
@@ -1592,6 +1595,44 @@ class EvaLauncher:
                 self._emit(f"[X] 更新失败：{extra}")
 
             self._ui(_fail)
+
+    def _make_update_progress(self) -> Callable[[str, int, int], None]:
+        """Throttled progress lines for the launcher log pane (no console window)."""
+        state: dict[str, Any] = {"stage": "", "pct": -1, "t": 0.0}
+        names = {"download": "下载更新包", "extract": "解压更新包", "apply": "替换程序文件"}
+
+        def _bar(pct: int) -> str:
+            n = pct // 5
+            return "[" + "#" * n + "-" * (20 - n) + f"] {pct:3d}%"
+
+        def cb(stage: str, done: int, total: int) -> None:
+            now = time.monotonic()
+            label = names.get(stage, stage)
+            if stage != state["stage"]:
+                state.update(stage=stage, pct=-1, t=0.0)
+                if stage == "apply":
+                    self._emit(f"{label}…")
+                    return
+            if stage == "apply":
+                return
+            if total > 0:
+                pct = min(100, int(done * 100 / total))
+                final = done >= total
+                if not final and (pct - state["pct"] < 5 and now - state["t"] < 1.0):
+                    return
+                if pct == state["pct"] and not final:
+                    return
+                state.update(pct=pct, t=now)
+                if stage == "download":
+                    extra = f"  {done / 1048576:.1f}/{total / 1048576:.1f} MB"
+                else:
+                    extra = f"  {done}/{total} 个文件"
+                self._emit(f"{label} {_bar(pct)}{extra}")
+            elif now - state["t"] >= 1.0 or done == 0:
+                state["t"] = now
+                self._emit(f"{label}… 已 {done / 1048576:.1f} MB")
+
+        return cb
 
     def _on_boot_toggle(self) -> None:
         want = bool(self._boot_var.get())

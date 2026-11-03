@@ -532,7 +532,7 @@ def check(*, force: bool = False, token: str = "", interactive: bool = True) -> 
     now = time.time()
     last = float(st.get("checked_at") or 0)
     cached = st.get("latest") if isinstance(st.get("latest"), dict) else None
-    if not force and cached and (now - last) < 3600 and st.get("latest_ok"):
+    if not force and cached and (now - last) < 300 and st.get("latest_ok"):
         remote = cached
     else:
         remote = fetch_latest_release(token=token, interactive=interactive)
@@ -564,7 +564,7 @@ def due_for_daily_check() -> bool:
     return (time.time() - last) >= 86400
 
 
-def download_to_pending(url: str, *, token: str = "") -> Path:
+def download_to_pending(url: str, *, token: str = "", progress: Any = None) -> Path:
     import httpx
 
     dest = pending_zip()
@@ -580,16 +580,37 @@ def download_to_pending(url: str, *, token: str = "") -> Path:
         with client.stream("GET", url, headers=headers) as r:
             if r.status_code >= 400:
                 raise RuntimeError(f"下载失败 HTTP {r.status_code}")
+            try:
+                total = int(r.headers.get("content-length") or 0)
+            except ValueError:
+                total = 0
+            done = 0
+            _progress(progress, "download", 0, total)
             with tmp.open("wb") as fh:
                 for chunk in r.iter_bytes(1024 * 256):
                     fh.write(chunk)
+                    done += len(chunk)
+                    _progress(progress, "download", done, total)
     tmp.replace(dest)
     return dest
 
 
-def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
+def _progress(cb: Any, stage: str, done: int, total: int) -> None:
+    if cb is None:
+        return
+    try:
+        cb(stage, done, total)
+    except Exception:
+        pass
+
+
+def _safe_extract(zf: zipfile.ZipFile, dest: Path, progress: Any = None) -> None:
     dest.mkdir(parents=True, exist_ok=True)
-    for info in zf.infolist():
+    infos = zf.infolist()
+    n = len(infos)
+    _progress(progress, "extract", 0, n)
+    for i, info in enumerate(infos, 1):
+        _progress(progress, "extract", i, n)
         name = info.filename.replace("\\", "/")
         if name.startswith("/") or ".." in Path(name).parts:
             continue
@@ -884,7 +905,7 @@ def _maybe_install_requirements(dest: Path) -> str:
     return "已按 requirements.txt 安装依赖"
 
 
-def apply_pending_zip() -> dict[str, Any]:
+def apply_pending_zip(progress: Any = None) -> dict[str, Any]:
     zpath = pending_zip()
     if not zpath.is_file():
         raise RuntimeError("没有已下载的更新包")
@@ -892,8 +913,9 @@ def apply_pending_zip() -> dict[str, Any]:
     tmp = Path(tempfile.mkdtemp(prefix="eva-upd-"))
     try:
         with zipfile.ZipFile(zpath, "r") as zf:
-            _safe_extract(zf, tmp)
+            _safe_extract(zf, tmp, progress)
         src = _find_payload_root(tmp)
+        _progress(progress, "apply", 0, 0)
         frozen_install = bool(getattr(sys, "frozen", False))
         frozen_payload = _looks_frozen_payload(src)
         if frozen_install and not frozen_payload:
@@ -943,14 +965,14 @@ def apply_pending_zip() -> dict[str, Any]:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def download_and_stage(*, force: bool = False, token: str = "") -> dict[str, Any]:
+def download_and_stage(*, force: bool = False, token: str = "", progress: Any = None) -> dict[str, Any]:
     status = check(force=True, token=token)
     if not status.get("newer") and not force:
         return {**status, "downloaded": False, "message": "已是最新"}
     url = str((status.get("remote") or {}).get("download_url") or "")
     if not url:
         raise RuntimeError("没有下载地址")
-    path = download_to_pending(url, token=token)
+    path = download_to_pending(url, token=token, progress=progress)
     return {
         **status,
         "downloaded": True,
@@ -960,13 +982,13 @@ def download_and_stage(*, force: bool = False, token: str = "") -> dict[str, Any
     }
 
 
-def apply_now(*, force: bool = False, token: str = "") -> dict[str, Any]:
+def apply_now(*, force: bool = False, token: str = "", progress: Any = None) -> dict[str, Any]:
     pending = pending_zip()
     if not pending.is_file():
-        staged = download_and_stage(force=force, token=token)
+        staged = download_and_stage(force=force, token=token, progress=progress)
         if not staged.get("downloaded") and not pending.is_file():
             return staged
-    return apply_pending_zip()
+    return apply_pending_zip(progress)
 
 
 # ---------------------------------------------------------------------------
@@ -1034,7 +1056,7 @@ def web_status(*, force: bool = False) -> dict[str, Any]:
     key = f"web_latest_{plat}"
     cached = st.get(key) if isinstance(st.get(key), dict) else None
     now = time.time()
-    if not force and cached and now - float(st.get(key + "_at") or 0) < 3600:
+    if not force and cached and now - float(st.get(key + "_at") or 0) < 300:
         remote = cached
     else:
         remote = fetch_latest_for_platform(plat)
