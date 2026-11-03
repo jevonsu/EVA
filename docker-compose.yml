@@ -1,0 +1,21 @@
+# Eva — Docker Compose (server mode)
+# Windows 启动器 / 托盘 / 在线更新 zip 与此无关；容器更新请重建镜像或 pull 后 up -d。
+services:
+  eva:
+    build: .
+    image: eva:local
+    container_name: eva
+    ports:
+      - "8080:8080"
+    volumes:
+      # 会话、配置、SQLite 等；升级镜像时保留此目录
+      - ./data:/app/data
+      # 可选：工作区持久化（需要时取消下一行注释）
+      # - ./workspace:/app/workspace
+    env_file:
+      - .env
+    environment:
+      # 容器内必须监听全接口；勿依赖宿主机 .env 里的 127.0.0.1
+      HOST: "0.0.0.0"
+      PORT: "8080"
+    restart: unless-stopped

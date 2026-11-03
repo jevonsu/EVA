@@ -1,0 +1,58 @@
+# Venv / caches
+.venv/
+venv/
+env/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Git / IDE / OS
+.git/
+.gitattributes
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Secrets — inject at runtime via compose env_file / -e
+.env
+.env.local
+*.pem
+
+# Runtime data & user workspace (compose volumes)
+data/
+workspace/
+
+# Local agent / scratch / logs
+scratch/
+_agent_sync/
+*.log
+logs/
+Users/
+.agents/
+node_modules/
+
+# Packaging / Windows portable / frozen build artifacts
+dist/
+build/
+*.spec
+*.spec.bak
+*.exe
+*.dll
+_internal/
+EVA-update.zip
+*.db
+*.db-shm
+*.db-wal
+
+# Tests live with the publisher tree, not shipped in image
+tests/
