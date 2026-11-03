@@ -1,5 +1,5 @@
 # Eva — container image (CLI / server only; no Windows launcher / tray)
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     EVA_DEPLOY=docker \
@@ -10,16 +10,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Runtime CA certs for HTTPS LLM / MCP calls
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# python:3.12-slim 自带 CA 证书；跳过 apt，避免飞牛等国内网络构建卡住
 
 COPY requirements.txt .
 
 # pystray is Windows tray-only; skip so Linux slim builds stay lean and reliable
 RUN grep -iv '^[[:space:]]*pystray' requirements.txt > /tmp/requirements.docker.txt \
-    && pip install --no-cache-dir -r /tmp/requirements.docker.txt \
+    && pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com -r /tmp/requirements.docker.txt \
     && rm -f /tmp/requirements.docker.txt
 
 COPY . .

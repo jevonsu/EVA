@@ -689,7 +689,7 @@ def _validate_imported_dir(skill_dir: Path, sid: str) -> dict[str, Any]:
         try:
             from app.services.skill_lifecycle import _preflight_import
 
-            pre = _preflight_import(handler, sid)
+            pre = _preflight_import(handler, sid, allow_root=skill_dir)
             if pre and "import failed" in pre.lower():
                 issues.append(pre)
             elif pre:

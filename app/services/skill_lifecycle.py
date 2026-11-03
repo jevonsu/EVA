@@ -22,12 +22,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-def _assert_handler_under_skills(handler_path) -> None:
-    """F02: refuse to exec_module files outside live/draft skills roots."""
+def _assert_handler_under_skills(handler_path, allow_root=None) -> None:
+    """F02: refuse to exec_module files outside live/draft skills roots.
+
+    *allow_root*: extra trusted root (e.g. an import staging dir being validated).
+    """
     from pathlib import Path as _P
 
     hp = _P(handler_path).resolve()
     roots = []
+    if allow_root is not None:
+        try:
+            roots.append(_P(allow_root).resolve())
+        except Exception:
+            pass
     try:
         roots.append(_P(skills_root()).resolve())
     except Exception:
@@ -385,7 +393,7 @@ def validate_skill_code(
     }
 
 
-def load_handler_module(handler_py: Path, mod_name: str):
+def load_handler_module(handler_py: Path, mod_name: str, allow_root: Path | None = None):
     """Load handler.py with its folder on sys.path so sibling modules import."""
     import sys
 
@@ -400,7 +408,7 @@ def load_handler_module(handler_py: Path, mod_name: str):
         sys.path.insert(0, skill_dir)
     try:
         mod = importlib.util.module_from_spec(spec)
-        _assert_handler_under_skills(handler_py)
+        _assert_handler_under_skills(handler_py, allow_root=allow_root)
         spec.loader.exec_module(mod)
         return mod, None
     except Exception as exc:  # noqa: BLE001
@@ -413,10 +421,12 @@ def load_handler_module(handler_py: Path, mod_name: str):
                 pass
 
 
-def _preflight_import(handler_py: Path, skill_id: str) -> str | None:
+def _preflight_import(
+    handler_py: Path, skill_id: str, allow_root: Path | None = None
+) -> str | None:
     """Import handler module; return error string or None."""
     mod_name = f"skill_validate_{skill_id}_{abs(hash(str(handler_py))) % 10**8}"
-    mod, err = load_handler_module(handler_py, mod_name)
+    mod, err = load_handler_module(handler_py, mod_name, allow_root=allow_root)
     if err:
         return f"import failed: {err}" if not err.startswith("handler") else err
     if not hasattr(mod, "register") and not hasattr(mod, "handle") and not hasattr(
