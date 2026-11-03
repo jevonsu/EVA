@@ -90,6 +90,12 @@ def create_tables(engine: Engine | None = None) -> None:
         with eng.begin() as conn:
             conn.execute(text("PRAGMA journal_mode=WAL"))
             conn.execute(text("PRAGMA synchronous=NORMAL"))
+    # v0.1.10: widen TEXT -> LONGTEXT on existing MySQL/MariaDB tables
+    if eng.dialect.name in ("mysql", "mariadb"):
+        try:
+            migrate_longtext(eng)
+        except Exception:
+            logger.exception("LONGTEXT migrate failed")
     # Phase 1: add lifecycle columns on existing DBs (idempotent ALTER)
     try:
         from app.storage.lifecycle import migrate_lifecycle_schema
@@ -106,6 +112,30 @@ def create_tables(engine: Engine | None = None) -> None:
             migrate_refs_schema(conn)
     except Exception:
         logger.exception("Refs schema migrate failed")
+
+
+def migrate_longtext(eng: Engine) -> None:
+    """Idempotent: ALTER any Text column still narrower than LONGTEXT."""
+    from app.storage.schema import LongText
+
+    with eng.begin() as conn:
+        db = conn.execute(text("SELECT DATABASE()")).scalar()
+        for tbl in metadata.sorted_tables:
+            for col in tbl.columns:
+                if col.type is not LongText:
+                    continue
+                row = conn.execute(
+                    text(
+                        "SELECT DATA_TYPE FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA=:db AND TABLE_NAME=:t AND COLUMN_NAME=:c"
+                    ),
+                    {"db": db, "t": tbl.name, "c": col.name},
+                ).first()
+                if not row or str(row[0]).lower() == "longtext":
+                    continue
+                null = "NULL" if col.nullable else "NOT NULL"
+                conn.execute(text(f"ALTER TABLE `{tbl.name}` MODIFY `{col.name}` LONGTEXT {null}"))
+                logger.info("Widened %s.%s %s -> LONGTEXT", tbl.name, col.name, row[0])
 
 
 @contextmanager
