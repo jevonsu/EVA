@@ -276,6 +276,26 @@ def _gh_cli_token() -> str:
     return (proc.stdout or "").strip()
 
 
+BUNDLED_TOKEN_FILE = "bundled_update.json"
+_BUNDLED_KEY = b"EVA-bundled-update-v1"
+
+
+def _bundled_token() -> str:
+    """发布程序打包时内置的只读 Token（优先级低于环境变量与启动器填写）。"""
+    import base64
+
+    path = _runtime_root() / BUNDLED_TOKEN_FILE
+    if not path.is_file():
+        return ""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        b = base64.b64decode(str(raw.get("t") or ""))
+        return bytes(c ^ _BUNDLED_KEY[i % len(_BUNDLED_KEY)] for i, c in enumerate(b)).decode("utf-8").strip()
+    except Exception:
+        logger.warning("bundled_update.json 无法解析，已忽略")
+        return ""
+
+
 def resolve_token(explicit: str = "", *, interactive: bool = True) -> str:
     tok = (explicit or "").strip()
     if tok:
@@ -285,6 +305,9 @@ def resolve_token(explicit: str = "", *, interactive: bool = True) -> str:
         if tok:
             return tok
     tok = str(load_channel().get("token") or "").strip()
+    if tok:
+        return tok
+    tok = _bundled_token()
     if tok:
         return tok
     tok = _dotenv_token()
@@ -302,6 +325,8 @@ def resolve_token(explicit: str = "", *, interactive: bool = True) -> str:
 
 
 def _remember_token(tok: str) -> None:
+    if tok and tok == _bundled_token():
+        return  # 内置 Token 不写入用户 data，换包后自动随新包更新
     tok = (tok or "").strip()
     if not tok:
         return
@@ -942,3 +967,239 @@ def apply_now(*, force: bool = False, token: str = "") -> dict[str, Any]:
         if not staged.get("downloaded") and not pending.is_file():
             return staged
     return apply_pending_zip()
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform update (Web UI): win portable / linux source / docker context
+# ---------------------------------------------------------------------------
+
+PLATFORM_ASSETS = {
+    "win": ("EVA-update.zip",),
+    "linux": ("EVA-linux-src.tar.gz",),
+    "docker": ("EVA-docker-context.zip", "EVA-linux-src.tar.gz"),
+}
+_apply_lock = __import__("threading").Lock()
+
+
+def deploy_platform() -> str:
+    """win | linux | docker | dev (source checkout — never auto-overwritten)."""
+    env = (os.environ.get("EVA_DEPLOY") or "").strip().lower()
+    if env in {"win", "linux", "docker", "dev"}:
+        return env
+    if getattr(sys, "frozen", False):
+        return "win"
+    if Path("/.dockerenv").exists():
+        return "docker"
+    root = _runtime_root()
+    if (root / ".git").exists() or sys.platform == "win32":
+        return "dev"
+    return "linux"
+
+
+def _pick_platform_asset(assets: list[Any], plat: str) -> dict[str, Any] | None:
+    by_name = {str(a.get("name") or ""): a for a in assets if isinstance(a, dict)}
+    for name in PLATFORM_ASSETS.get(plat, ()):
+        if name in by_name:
+            return by_name[name]
+    if plat == "win":
+        return pick_portable_asset(assets)
+    return None
+
+
+def fetch_latest_for_platform(plat: str, *, token: str = "") -> dict[str, Any]:
+    status, data = _api("/releases/latest", token=token, interactive=False)
+    if status >= 400 or not isinstance(data, dict):
+        raise RuntimeError(_auth_error(status, data))
+    tag = str(data.get("tag_name") or "")
+    assets = data.get("assets") if isinstance(data.get("assets"), list) else []
+    asset = _pick_platform_asset(assets, plat) if plat != "dev" else None
+    return {
+        "tag": tag,
+        "name": str(data.get("name") or tag),
+        "notes": str(data.get("body") or ""),
+        "published_at": str(data.get("published_at") or ""),
+        "html_url": str(data.get("html_url") or ""),
+        "version": tag.lstrip("vV"),
+        "download_url": _asset_download_url(asset) if asset else "",
+        "asset": str(asset.get("name") or "") if asset else "",
+        "size": int(asset.get("size") or 0) if asset else 0,
+    }
+
+
+def web_status(*, force: bool = False) -> dict[str, Any]:
+    """Lightweight, non-interactive check for the Web UI (cached 1h)."""
+    plat = deploy_platform()
+    local = local_info()
+    st = _read_state()
+    key = f"web_latest_{plat}"
+    cached = st.get(key) if isinstance(st.get(key), dict) else None
+    now = time.time()
+    if not force and cached and now - float(st.get(key + "_at") or 0) < 3600:
+        remote = cached
+    else:
+        remote = fetch_latest_for_platform(plat)
+        _write_state({key: remote, key + "_at": now})
+    rv = _parse_ver(str(remote.get("version") or ""))
+    lv = _parse_ver(str(local.get("version") or ""))
+    if not remote.get("tag"):
+        newer = False
+    elif rv != (0, 0, 0) and lv != (0, 0, 0):
+        newer = rv > lv
+    else:
+        newer = _is_newer(remote, local)
+    can_apply = bool(newer and remote.get("download_url") and plat in {"win", "linux", "docker"})
+    hint = ""
+    if plat == "dev":
+        hint = "当前是开发源码目录（git），不会自动覆盖；请 git pull 或用发布程序。"
+    elif newer and not remote.get("download_url"):
+        hint = f"该版本没有 {PLATFORM_ASSETS.get(plat, ('?',))[0]}，无法自动更新。"
+    elif plat == "docker":
+        hint = (
+            "容器内会直接替换代码并重启进程；若之后重建/重新创建容器，会回到镜像里的旧版本。"
+            "要永久升级，请在宿主机 eva_docker 目录更新 app/ 后执行 docker compose build && docker compose up -d。"
+        )
+    return {
+        "ok": True,
+        "platform": plat,
+        "local": {"version": local.get("version"), "tag": local.get("tag")},
+        "remote": remote,
+        "newer": newer,
+        "can_apply": can_apply,
+        "hint": hint,
+    }
+
+
+def _download_asset(url: str, dest: Path) -> Path:
+    import httpx
+
+    headers = _headers(interactive=False)
+    headers["Accept"] = "application/octet-stream"
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    with _httpx_client(timeout=None, follow_redirects=True) as client:
+        with client.stream("GET", url, headers=headers) as r:
+            if r.status_code >= 400:
+                raise RuntimeError(f"下载失败 HTTP {r.status_code}")
+            with tmp.open("wb") as fh:
+                for chunk in r.iter_bytes(1024 * 256):
+                    fh.write(chunk)
+    tmp.replace(dest)
+    return dest
+
+
+def _extract_any(archive: Path, dest: Path) -> None:
+    if archive.name.endswith((".tar.gz", ".tgz")):
+        import tarfile
+
+        with tarfile.open(archive, "r:gz") as tf:
+            base = dest.resolve()
+            safe = []
+            for m in tf.getmembers():
+                if not (m.isfile() or m.isdir()):
+                    continue
+                target = (dest / m.name).resolve()
+                if base not in target.parents and target != base:
+                    continue
+                safe.append(m)
+            tf.extractall(dest, members=safe)
+    else:
+        with zipfile.ZipFile(archive, "r") as zf:
+            _safe_extract(zf, dest)
+
+
+def _find_source_root(extracted: Path) -> Path:
+    """Locate the directory holding run.py + app/ (handles src/, app/ wrappers)."""
+    cands = [extracted] + sorted(p for p in extracted.rglob("run.py"))
+    for c in cands:
+        d = c if c.is_dir() else c.parent
+        if (d / "run.py").is_file() and (d / "app" / "__init__.py").is_file():
+            if "__pycache__" not in d.parts:
+                return d
+    raise RuntimeError("更新包里找不到 Eva 源码（run.py + app/）")
+
+
+def _pip_install_current(dest: Path, plat: str) -> str:
+    req = dest / "requirements.txt"
+    if not req.is_file():
+        return ""
+    lines = req.read_text(encoding="utf-8", errors="replace").splitlines()
+    lines = [x for x in lines if not x.strip().lower().startswith("pystray")]
+    tmp_req = _pending_dir() / "requirements.update.txt"
+    tmp_req.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    args = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-q", "-r", str(tmp_req)]
+    if plat == "docker":
+        args.insert(4, "--no-cache-dir")
+    try:
+        proc = subprocess.run(args, cwd=str(dest), capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=900)
+    except (OSError, subprocess.TimeoutExpired) as extra:
+        return f"依赖安装未完成：{extra}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        return f"依赖安装未完成：{(err[-1] if err else proc.returncode)}"[:240]
+    return "依赖已更新"
+
+
+def _restart_process_later(delay: float = 1.5) -> None:
+    import threading
+
+    def _go() -> None:
+        time.sleep(delay)
+        if sys.platform == "win32" and getattr(sys, "frozen", False):
+            os._exit(0)  # apply_update.ps1 waits for exit, then relaunches EVA.exe
+        try:
+            logging.shutdown()
+        except Exception:
+            pass
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    threading.Thread(target=_go, name="eva-update-restart", daemon=True).start()
+
+
+def web_apply() -> dict[str, Any]:
+    """Download the platform asset and apply it. Restarts the process afterwards."""
+    if not _apply_lock.acquire(blocking=False):
+        raise RuntimeError("已有更新在进行中")
+    try:
+        status = web_status(force=True)
+        plat = status["platform"]
+        remote = status["remote"]
+        if not status.get("newer"):
+            return {"ok": True, "applied": False, "message": "已是最新版本"}
+        if not status.get("can_apply"):
+            raise RuntimeError(status.get("hint") or "当前部署方式不支持自动更新")
+        tag = str(remote.get("tag") or "")
+        if plat == "win":
+            _download_asset(str(remote["download_url"]), pending_zip())
+            _write_state({"latest": {**remote, "source": "portable"}})
+            res = apply_pending_zip()
+            if res.get("restarting"):
+                _restart_process_later()
+                return {"ok": True, "applied": True, "restarting": True, "tag": tag,
+                        "message": "更新已下载，EVA 即将退出并自动替换、重新打开（约 10–30 秒）。"}
+            return {"ok": True, "applied": True, "restarting": False, "tag": tag,
+                    "message": "已应用更新，请重新启动 EVA。"}
+        # linux / docker: source overlay
+        dest = _runtime_root()
+        name = str(remote.get("asset") or "update.bin")
+        archive = _pending_dir() / name
+        _download_asset(str(remote["download_url"]), archive)
+        tmp = Path(tempfile.mkdtemp(prefix="eva-upd-"))
+        try:
+            _extract_any(archive, tmp)
+            src = _find_source_root(tmp)
+            changed = apply_source_tree(src, dest)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+            archive.unlink(missing_ok=True)
+        pip_msg = _pip_install_current(dest, plat)
+        _write_state({"applied_tag": tag, "applied_at": time.time()})
+        _restart_process_later()
+        msg = f"已更新到 {tag}，服务正在重启，页面稍后会自动刷新。"
+        if pip_msg:
+            msg += " " + pip_msg
+        if plat == "docker":
+            msg += " 注意：重建容器会回到镜像版本，请在宿主机同步 eva_docker/app 并 docker compose build。"
+        return {"ok": True, "applied": True, "restarting": True, "tag": tag,
+                "changed": changed, "pip": pip_msg, "message": msg}
+    finally:
+        _apply_lock.release()

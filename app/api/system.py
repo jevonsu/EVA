@@ -77,3 +77,41 @@ async def api_info() -> dict:
         "ui": "/",
     }
 
+
+
+# ---- 在线更新（Web 前端，三平台） ----
+from fastapi import HTTPException, Request
+from starlette.concurrency import run_in_threadpool
+
+
+async def _require_admin(request: Request) -> None:
+    from app.api.config import _settings_actor
+
+    actor = await _settings_actor(request)
+    if not actor:
+        raise HTTPException(status_code=401, detail="未登录")
+    role = str(actor.get("role") or "")
+    if role and role != "admin":
+        raise HTTPException(status_code=403, detail="只有管理员可以更新")
+
+
+@router.get("/api/update/status")
+async def update_status(request: Request, force: bool = False) -> dict:
+    from app.services import online_update as ou
+
+    try:
+        return await run_in_threadpool(ou.web_status, force=force)
+    except Exception as extra:
+        return {"ok": False, "newer": False, "error": str(extra)}
+
+
+@router.post("/api/update/apply")
+async def update_apply(request: Request) -> dict:
+    await _require_admin(request)
+    from app.services import online_update as ou
+
+    try:
+        return await run_in_threadpool(ou.web_apply)
+    except Exception as extra:
+        logger.warning("web update failed", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"更新失败：{extra}")

@@ -1,6 +1,6 @@
 # Eva
 
-Ruyi Studio 出品的本地 **AI 助手**（v0.1.4）。
+Ruyi Studio 出品的本地 **AI 助手**（v0.1.5）。
 
 对话、多模型、工具 / 技能、长期记忆、知识库、定时任务、工作流与 MCP。使用前需 **账号密码登录**（首次打开创建管理员，或在 `.env` 设置 `EVA_ADMIN_USER` / `EVA_ADMIN_PASSWORD`）。
 
@@ -108,7 +108,68 @@ Windows 建议用 `.venv\Scripts\python.exe run.py`（会转到 `pythonw.exe`，
 
 启动器左侧「更新」：检查 GitHub Release 上的便携包（`EVA-update.zip`），停止服务后点「更新」。只替换 `EVA.exe` / `_internal`，不改 `data/`、工作区、`.env`。私有仓库可在「更多设定」填写 Token，或使用环境变量 `GITHUB_TOKEN`。
 
-打包与发布在 **Eva 项目外面**：双击 `OPC/发布EVA/启动.bat`。菜单 1 打包并发布、2 发布、3 打包；每次版本号 +1 并同步 GitHub。启动器「更新」下载 `EVA-update.zip`，不改 `data/` / `.env`。
+打包与发布在 **Eva 项目外面**：双击 `OPC/发布程序/启动.bat`（GUI「发布程序」，产物在 `发布程序/OUT`）。菜单 1 打包并发布、2 发布、3 打包；每次版本号 +1 并同步 GitHub。启动器「更新」下载 `EVA-update.zip`，不改 `data/` / `.env`。
+
+---
+
+## Docker 部署
+
+面向 Linux 服务器 / 无头环境。容器只跑 CLI 服务（`run.py --cli`），**不包含** Windows 启动器、托盘与开机启动。Windows 本机仍用 `run.bat` / 启动器；**容器侧升级走镜像重建或镜像仓库 pull，不要用启动器里的在线更新 zip**。
+
+### 准备
+
+1. 安装 Docker 与 Compose 插件。
+2. 项目根目录准备 `.env`（可从 `.env.example` 复制）。LLM Key 仍建议登录后在 **设定 → LLM** 填写。
+3. 确保存在 `data/` 目录（首次可空；compose 会挂到容器内）。
+
+### 构建与启动
+
+```bash
+cd /path/to/eva
+docker compose build
+docker compose up -d
+```
+
+浏览器访问：`http://<主机>:8080/`（健康检查：`/health`）。
+
+常用：
+
+```bash
+docker compose logs -f eva   # 看日志
+docker compose stop          # 停止
+docker compose down          # 停止并移除容器（保留 ./data）
+```
+
+### 更新版本
+
+数据在宿主机 `./data` 卷中，换镜像一般不丢会话与配置。
+
+本地源码更新后：
+
+```bash
+git pull   # 或同步新版本源码
+docker compose build
+docker compose up -d
+```
+
+若使用镜像仓库（自行 `docker tag` / `push` 后）：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+不要依赖容器内的 `EVA.exe` / 启动器「更新」按钮。
+
+### 安全注意
+
+- 容器内监听 `0.0.0.0:8080` 才能映射端口；**勿把该端口裸奔到公网**。前面加 Nginx / Caddy 等反向代理，并保持 `AUTH_ENABLED=true`。
+- 宿主机 `.env` 里即便写了 `HOST=127.0.0.1`，compose 也会用环境变量覆盖为 `0.0.0.0`；对外暴露时务必加反代与鉴权。
+- 若反代传 `X-Forwarded-For`，可按需设 `AUTH_TRUST_PROXY=true`（仅信任的代理后开启）。
+- `CORS_ORIGINS` 按实际访问域名/端口调整。
+- 镜像构建时会跳过 `pystray`（仅 Windows 托盘）；SQL Server 的 `pyodbc` 默认未装，需要时自行改镜像并安装 ODBC。
+
+可选：在 `docker-compose.yml` 取消注释 `./workspace:/app/workspace`，持久化工作区文件。
 
 ---
 
@@ -167,10 +228,13 @@ eva/
 ├── run.py                 # 入口
 ├── requirements.txt
 ├── pyproject.toml
+├── Dockerfile             # 容器镜像
+├── docker-compose.yml     # Compose 编排
+├── .dockerignore
 ├── .env                   # 唯一配置文件
 ├── app/
 ├── skills/
-├── data/                  # 运行时数据（本机）
+├── data/                  # 运行时数据（本机 / 卷）
 └── workspace/
 ```
 
@@ -253,3 +317,11 @@ eva/
 ## 版权
 
 © Ruyi Studio
+
+<!-- 追加到 EVA/README.md 的 Docker 节 -->
+> **部署入口已拆分**：本目录 `EVA` 只保留源码。分发/部署请用同级目录：
+> - Windows 打包/发布：`OPC/eva_win`（`打包.bat` / `发布.bat`）
+> - Linux 源码部署：`OPC/eva_linux`（`run.sh`、`update.sh`、`eva.service`）
+> - Docker 部署：`OPC/eva_docker`（`docker compose build && docker compose up -d`，上下文为 `../EVA`）
+>
+> 若 EVA 根目录仍有旧 `Dockerfile` / `docker-compose.yml`，以 `eva_docker` 为准。
