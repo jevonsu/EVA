@@ -1048,19 +1048,41 @@ def fetch_latest_for_platform(plat: str, *, token: str = "") -> dict[str, Any]:
     }
 
 
+WEB_STATUS_TTL = 30.0
+WEB_FORCE_MIN = 5.0
+
+
 def web_status(*, force: bool = False) -> dict[str, Any]:
-    """Lightweight, non-interactive check for the Web UI (cached 1h)."""
+    """Lightweight, non-interactive check for the Web UI.
+
+    Cache is short (WEB_STATUS_TTL) so a refresh sees a new Release within
+    seconds; force=true bypasses it but is still floored at WEB_FORCE_MIN to
+    avoid hammering GitHub (60 req/h anonymous). On fetch failure the last
+    good result is returned with ``error``/``stale`` so the UI can tell.
+    """
     plat = deploy_platform()
     local = local_info()
     st = _read_state()
     key = f"web_latest_{plat}"
     cached = st.get(key) if isinstance(st.get(key), dict) else None
     now = time.time()
-    if not force and cached and now - float(st.get(key + "_at") or 0) < 300:
+    last = float(st.get(key + "_at") or 0)
+    age = now - last
+    error = ""
+    stale = False
+    if cached and (age < WEB_FORCE_MIN or (not force and age < WEB_STATUS_TTL)):
         remote = cached
     else:
-        remote = fetch_latest_for_platform(plat)
-        _write_state({key: remote, key + "_at": now})
+        try:
+            remote = fetch_latest_for_platform(plat)
+            _write_state({key: remote, key + "_at": now})
+            last = now
+        except Exception as extra:
+            if not cached:
+                raise
+            remote = cached
+            error = str(extra) or extra.__class__.__name__
+            stale = True
     rv = _parse_ver(str(remote.get("version") or ""))
     lv = _parse_ver(str(local.get("version") or ""))
     if not remote.get("tag"):
@@ -1088,6 +1110,9 @@ def web_status(*, force: bool = False) -> dict[str, Any]:
         "newer": newer,
         "can_apply": can_apply,
         "hint": hint,
+        "checked_at": last,
+        "stale": stale,
+        "error": error,
     }
 
 

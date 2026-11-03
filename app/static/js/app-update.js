@@ -10,15 +10,29 @@
     badge = badge || document.getElementById("evaUpdateBadge");
     if (!badge) return;
     try {
-      var r = await fetch("/api/update/status" + (force ? "?force=true" : ""), { credentials: "same-origin" });
-      if (!r.ok) return hide();
+      var r = await fetch("/api/update/status" + (force ? "?force=true" : ""), { credentials: "same-origin", cache: "no-store" });
+      if (!r.ok) return fail("HTTP " + r.status);
       info = await r.json();
-      if (!info || !info.ok || !info.newer) return hide();
+      if (!info || !info.ok) return fail((info && info.error) || "检测失败");
+      if (info.error) console.warn("[EVA update] 检测失败，使用上次结果：", info.error);
+      if (!info.newer) {
+        if (info.error) return fail(info.error);
+        return hide();
+      }
       badge.textContent = "新版本 " + fmt(info.remote && (info.remote.tag || info.remote.version));
+      badge.title = info.error ? ("最新检测失败，显示的是上次结果：" + info.error) : "点击查看更新说明";
       badge.hidden = false;
-    } catch (_) { hide(); }
+    } catch (e) { fail(e && e.message ? e.message : String(e)); }
   }
-  function hide() { if (badge) { badge.hidden = true; badge.textContent = ""; } }
+  function fail(msg) {
+    info = null;
+    console.warn("[EVA update] 版本检测失败：", msg);
+    if (!badge) return;
+    badge.textContent = "更新检测失败";
+    badge.title = "版本检测失败：" + msg + "（点击重试）";
+    badge.hidden = false;
+  }
+  function hide() { if (badge) { badge.hidden = true; badge.textContent = ""; badge.title = ""; } }
 
   function waitBack(oldTag) {
     var tries = 0;
@@ -33,7 +47,7 @@
   }
 
   function openDialog() {
-    if (!info || !info.newer) return;
+    if (!info || !info.newer) return check(true);
     var rm = info.remote || {};
     var mask = document.createElement("div");
     mask.className = "eva-upd-mask";
@@ -79,8 +93,10 @@
     badge = document.getElementById("evaUpdateBadge");
     if (!badge) return;
     badge.addEventListener("click", openDialog);
-    setTimeout(function () { check(false); }, 1500);
-    setInterval(function () { check(false); }, 6 * 3600 * 1000);
+    // 打开/刷新页面立即强制检测；之后每 60s 轮询，切回标签页时也强制检测
+    setTimeout(function () { check(true); }, 800);
+    setInterval(function () { if (!document.hidden) check(false); }, 60 * 1000);
+    document.addEventListener("visibilitychange", function () { if (!document.hidden) check(true); });
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
   window.evaCheckUpdate = check;
