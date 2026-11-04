@@ -56,6 +56,15 @@ _DENY = (
     re.compile(r"\bpython[\d.]*(?:\.exe)?\s+-c\s+.*(?:base64|b64decode|exec\s*\(|os\.system|subprocess)", re.I),
     re.compile(r"\|\s*(?:iex|invoke-expression|sh|bash|cmd(?:\.exe)?|powershell|pwsh)\b", re.I),
     re.compile(r"\b(?:curl|wget|iwr|invoke-webrequest|irm|invoke-restmethod)\b.*\|", re.I),
+    # POSIX shell 模式额外规则
+    re.compile(r"\bmkfs(?:\.\w+)?\b|\bdd\b.*\bof=/dev/|>\s*/dev/(?:sd|nvme|hd|vd|mmcblk)", re.I),
+    re.compile(r":\s*\(\s*\)\s*\{.*:\s*\|\s*:", re.I),
+    re.compile(r"\b(?:reboot|halt|poweroff|init\s+[06])\b", re.I),
+    re.compile(r"\bbase64\b.*(?:-d|--decode).*\|", re.I),
+    re.compile(r"\beval\b|\bsource\s+/dev/|\b(?:sh|bash|zsh|dash)\s+-c\b|<\(\s*(?:curl|wget)", re.I),
+    re.compile(r"\bchmod\s+(?:-R\s+)?[0-7]*777\s+/(?:\s|$)|\bchown\s+-R\b.*\s/(?:\s|$)", re.I),
+    re.compile(r"\b(?:rm|rmdir)\b.*\s(?:/|/\*|~|\$HOME|/(?:etc|usr|bin|lib|boot|var|app)\b\S*)\s*(?:$|[;&|])", re.I),
+    re.compile(r"\bsudo\b|\bnsenter\b|\bdocker\b.*\b(?:run|exec)\b", re.I),
 )
 
 _AUTO_BG = re.compile(
@@ -167,6 +176,33 @@ def rewrite_argv(argv: list[str], eva: Path) -> list[str]:
     return argv
 
 
+POSIX_SHELL = os.name != "nt"
+
+
+def _posix_shell() -> str:
+    for c in ("/bin/bash", "/bin/sh"):
+        if os.path.isfile(c):
+            return c
+    return "/bin/sh"
+
+
+def build_argv(command: str, eva: Path) -> tuple[list[str], dict[str, str] | None]:
+    """Windows：保持原逻辑（拆 argv 直接 exec）。
+    Linux/Docker：交给 sh -c，支持 | && 重定向 变量；pip/python 通过 PATH 优先 Eva .venv。"""
+    if not POSIX_SHELL:
+        return rewrite_argv(split_command(command), eva), None
+    line = (command or "").strip()
+    if not line:
+        raise ValueError("command 为空")
+    env = dict(os.environ)
+    py = _venv_python(eva)
+    if py:
+        env["PATH"] = str(py.parent) + os.pathsep + env.get("PATH", "")
+        env["VIRTUAL_ENV"] = str(py.parent.parent)
+    env.setdefault("LANG", "C.UTF-8")
+    return [_posix_shell(), "-c", line], env
+
+
 def _clip(text: str, limit: int = MAX_CAPTURE) -> str:
     if len(text) <= limit:
         return text
@@ -217,7 +253,7 @@ async def run_sync(
         return {"ok": False, "error": denied}
     eva, _ws = _roots()
     work = resolve_cwd(cwd, root=root)
-    argv = rewrite_argv(split_command(command), eva)
+    argv, env = build_argv(command, eva)
     timeout = SYNC_TIMEOUT_DEFAULT if timeout_sec is None else float(timeout_sec)
     timeout = max(5.0, min(timeout, SYNC_TIMEOUT_MAX))
     jid = uuid.uuid4().hex[:10]
@@ -229,6 +265,10 @@ async def run_sync(
     }
     if os.name == "nt":
         kw["creationflags"] = CREATE_NO_WINDOW
+    else:
+        kw["start_new_session"] = True
+    if env is not None:
+        kw["env"] = env
     started = time.time()
     try:
         proc = await asyncio.create_subprocess_exec(*argv, **kw)
@@ -241,10 +281,7 @@ async def run_sync(
     try:
         code = await asyncio.wait_for(_pump(proc, log_path), timeout=timeout)
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        _kill_tree(proc)
         text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
         return {
             "ok": False,
@@ -280,7 +317,7 @@ async def start_bg(
         return {"ok": False, "error": denied}
     eva, _ws = _roots()
     work = resolve_cwd(cwd, root=root)
-    argv = rewrite_argv(split_command(command), eva)
+    argv, env = build_argv(command, eva)
     jid = uuid.uuid4().hex[:10]
     log_path = _jobs_dir(eva) / f"{jid}.log"
     job = {
@@ -303,6 +340,10 @@ async def start_bg(
     }
     if os.name == "nt":
         kw["creationflags"] = CREATE_NO_WINDOW
+    else:
+        kw["start_new_session"] = True
+    if env is not None:
+        kw["env"] = env
     try:
         proc = await asyncio.create_subprocess_exec(*argv, **kw)
     except FileNotFoundError:
@@ -395,7 +436,23 @@ def _kill_pid(pid: int) -> None:
             creationflags=CREATE_NO_WINDOW,
         )
         return
-    os.kill(pid, 15)
+    try:
+        os.killpg(pid, 15)
+    except Exception:
+        os.kill(pid, 15)
+
+
+def _kill_tree(proc: Any) -> None:
+    try:
+        if os.name != "nt" and proc.pid:
+            os.killpg(proc.pid, 9)
+            return
+    except Exception:
+        pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
 
 
 async def kill(job_id: str) -> dict[str, Any]:
@@ -414,7 +471,7 @@ async def kill(job_id: str) -> dict[str, Any]:
     proc = job.get("proc") if jid in _jobs else None
     try:
         if proc is not None:
-            proc.kill()
+            _kill_tree(proc)
         else:
             pid = int(job.get("pid") or 0)
             if not pid:
