@@ -108,7 +108,7 @@ class Settings(BaseSettings):
     # F02: LLM create_tool / promote / delete hot-load (default OFF for release)
     allow_create_tool: bool = False
     # F01: Webhook endpoints may set use_tools=true only when this is on
-    webhook_allow_tools: bool = False
+    webhook_allow_tools: bool = True
 
     @field_validator("data_dir", mode="before")
     @classmethod

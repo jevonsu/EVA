@@ -210,7 +210,7 @@ def webhook_allow_tools() -> bool:
     try:
         from app.config import get_settings
 
-        return bool(getattr(get_settings(), "webhook_allow_tools", False))
+        return bool(getattr(get_settings(), "webhook_allow_tools", True))
     except Exception:
         return False
 

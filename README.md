@@ -87,7 +87,7 @@ docker compose up -d
 - **LLM**：Key 不要写进 `.env`，登录后在 **设定 → LLM** 填写，存在 `data/config.json`。
 - **数据**：都在 `data/`（默认 SQLite `eva.db`）。迁移或备份时拷 `data/` 和 `.env` 就行。
 - **安全**：Windows 默认只监听本机 `127.0.0.1`。Linux/Docker 对外开放时，**不要把端口直接暴露到公网**，前面加 Nginx/Caddy 并保持 `AUTH_ENABLED=true`；有反向代理时才开 `AUTH_TRUST_PROXY=true`。
-- **默认关掉的危险能力**：`ALLOW_CREATE_TOOL=false`、`WEBHOOK_ALLOW_TOOLS=false`。
+- **默认关掉的危险能力**：`ALLOW_CREATE_TOOL=false`。`WEBHOOK_ALLOW_TOOLS` 默认 `true`（Webhook 可用工具），可在 .env 设为 false 关闭。
 
 ---
 
