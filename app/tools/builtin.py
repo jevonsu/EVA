@@ -34,12 +34,24 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     register_workspace_tools(registry)
 
     async def get_current_time() -> str:
+        import os
+        from datetime import timedelta
         now = datetime.now(timezone.utc)
+        tzname = os.environ.get("EVA_TZ") or os.environ.get("TZ") or "Asia/Shanghai"
+        try:
+            from zoneinfo import ZoneInfo
+            local = now.astimezone(ZoneInfo(tzname))
+        except Exception:
+            tzname = "Asia/Shanghai(UTC+8)"
+            local = now.astimezone(timezone(timedelta(hours=8)))
+        wd = "一二三四五六日"[local.weekday()]
         return json.dumps(
             {
+                "beijing": local.strftime("%Y-%m-%d %H:%M:%S") + f" 星期{wd}",
+                "timezone": tzname,
                 "utc": now.isoformat(),
                 "unix": int(now.timestamp()),
-                "local_hint": datetime.now().isoformat(),
+                "note": "回答时间/日期一律以 beijing 字段为准，原样引用，不要自行换算或编造。",
             },
             ensure_ascii=False,
         )
@@ -3311,7 +3323,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     tools: list[tuple[str, str, Any, dict[str, Any]]] = [
      (
          "get_current_time",
-            "Get the current UTC/local time.",
+            "读取真实当前时间（北京时间+星期）。凡问几点、今天几号、星期几、早上/晚上、距离某时多久，必须先调用本工具再答，禁止凭记忆或上下文推算。",
             get_current_time,
             {"type": "object", "properties": {}},
         ),

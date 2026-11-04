@@ -287,7 +287,7 @@ SCENE_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
     "get_current_time": (
         "几点", "现在几点", "当前时间", "几点了", "现在时间", "what time", "date now",
-        "今天几号", "现在是",
+        "今天几号", "几号", "星期几", "礼拜几", "今日", "日期", "几时", "幾點", "幾時", "而家", "宜家", "時間", "时间", "现在是",
     ),
     "create_tool": ("创建工具", "新建工具", "create tool", "新 skill", "做成工具"),
     "capability_groups": (
