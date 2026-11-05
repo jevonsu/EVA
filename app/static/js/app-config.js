@@ -1394,6 +1394,7 @@
  data.cli_command = cli_command;
  data.cli_args = cli_args;
  data.cli_cwd = cli_cwd;
+ data.cli_preset = ($("llmCliPreset")?.value || "").trim();
  } else {
  data.cli_command = "";
  data.cli_args = "";
@@ -1429,6 +1430,18 @@
  }
  }
 
+ function detectLlmCliPreset(llm) {
+ if (!llm || !isLlmCli(llm)) return "";
+ const saved = String(llm.cli_preset || "").trim();
+ if (saved && LLM_CLI_PRESETS[saved]) return saved;
+ const norm = (s) => String(s || "").trim().replace(/\s+/g, " ");
+ const base = (c) => norm(c).replace(/^["']|["']$/g, "").split(/[\\/]/).pop().toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, "");
+ for (const [k, p] of Object.entries(LLM_CLI_PRESETS)) {
+ if (base(llm.cli_command) === base(p.command) && norm(llm.cli_args) === norm(p.args)) return k;
+ }
+ return "";
+ }
+
  function applyLlmCliPreset() {
  const key = ($("llmCliPreset")?.value || "").trim();
  const preset = LLM_CLI_PRESETS[key];
@@ -1455,7 +1468,7 @@
  if ($("llmCliCommand")) $("llmCliCommand").value = llm.cli_command || "";
  if ($("llmCliArgs")) $("llmCliArgs").value = llm.cli_args || "";
  if ($("llmCliCwd")) $("llmCliCwd").value = llm.cli_cwd || "";
- if ($("llmCliPreset")) $("llmCliPreset").value = "";
+ if ($("llmCliPreset")) $("llmCliPreset").value = detectLlmCliPreset(llm);
  if (isLlmCli(llm) && !($("llmCliCommand")?.value || "").trim()) {
  const n = String(llm.name || llm.model || "");
  if (/grok/i.test(n) && $("llmCliPreset")) {

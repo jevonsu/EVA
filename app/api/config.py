@@ -94,6 +94,7 @@ class LLMBody(BaseModel):
     cli_command: str = ""
     cli_args: str = ""
     cli_cwd: str = ""
+    cli_preset: str = ""
 
 
 class ToolToggle(BaseModel):
@@ -459,10 +460,12 @@ def _normalize_llm_payload(data: dict[str, Any]) -> dict[str, Any]:
         payload["cli_command"] = cmd
         payload["cli_args"] = args
         payload["cli_cwd"] = str(payload.get("cli_cwd") or "").strip()
+        payload["cli_preset"] = str(payload.get("cli_preset") or "").strip()
     else:
         payload["cli_command"] = ""
         payload["cli_args"] = ""
         payload["cli_cwd"] = ""
+        payload["cli_preset"] = ""
     return payload
 
 
