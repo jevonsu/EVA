@@ -1,7 +1,12 @@
 """Controlled local process runner for the terminal system skill.
 
-Sync `run` blocks the chat turn (no tokens while waiting).
-`bg` returns a job id immediately; poll/kill manage it.
+Process classes (see also app/services/service_manager.py):
+  ① one-shot `run`  — EVA-internal. Hard timeout; on timeout / chat stop /
+     EVA shutdown the WHOLE process tree is killed. stdin=DEVNULL.
+  ② `service`       — user-requested long-running server. Lives in
+     service_manager, detached from EVA, never killed except explicit stop.
+  ③ `bg` job        — finite background work (pip/npm/clone). Survives chat
+     stop; `kill` kills its tree (after pid identity check).
 Cwd is locked to workspace or the Eva project (for .venv pip).
 """
 
@@ -67,13 +72,63 @@ _DENY = (
     re.compile(r"\bsudo\b|\bnsenter\b|\bdocker\b.*\b(?:run|exec)\b", re.I),
 )
 
+# Killing processes from a shell bypasses the inform-and-confirm flow.
+# Best effort: obfuscated variants (aliases built at runtime, scripts on disk
+# that kill, other languages' APIs) cannot all be caught by regex.
+_KILL_CMD = re.compile(
+    r"\b(?:taskkill|tskill|pkill|killall|xkill|fuser\s+-k)(?:\.exe)?\b"
+    r"|\bstop-process\b|\bspps\b|\.kill\(\)|\.terminate\(\)"
+    r"|(?:^|[;&|(`]\s*|\bsudo\s+|\bxargs\s+)kill(?:\s|$)"
+    r"|\bkill\s+-(?:\d+|[A-Z]+|s\s+\w+)\b"
+    r"|\bwmic\b.*\bprocess\b.*\b(?:delete|terminate|call\s+terminate)\b"
+    r"|\b(?:Get-Process|gps|ps)\b.*\|\s*(?:Stop-Process|spps|kill)\b"
+    r"|\bGet-CimInstance\b.*Win32_Process.*\b(?:Terminate|Invoke-CimMethod)\b"
+    r"|\bos\.kill\b|\bos\.killpg\b|\bpsutil\b.*\b(?:kill|terminate)\b|\bprocess\.kill\b"
+    r"|\bsignal\.SIG(?:KILL|TERM)\b",
+    re.I,
+)
+
 _AUTO_BG = re.compile(
     r"\b(pip|pip3|npm|pnpm|yarn)\b.*\b(install|ci|add)\b|\bgit\s+clone\b|\bnpm\s+i\b",
     re.I,
 )
 
+# Long-running / never-ending commands: refuse in `run` (would block the chat
+# until timeout, then get killed). Suggest action=service instead.
+_SERVICE_LIKE = re.compile(
+    r"\buvicorn\s+[\w.]+:\w+|-m\s+uvicorn\b|\b(?:gunicorn|hypercorn|daphne|waitress-serve)\s+\S"
+    r"|\bflask\s+run\b|\bdjango-admin\s+runserver\b|\bmanage\.py\s+runserver\b"
+    r"|-m\s+http\.server\b|\bSimpleHTTPServer\b"
+    r"|\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|preview)\b"
+    r"|\bvite(?:\s*$|\s+(?:dev|serve|preview)\b|\s+--)|\bnext\s+(?:dev|start)\b|\bnuxt\s+dev\b"
+    r"|\bwebpack-dev-server\b|\bng\s+serve\b|\bserve\s+-[sl]\b"
+    r"|\bstreamlit\s+run\b|\bjupyter\s+(?:lab|notebook)\b|\bphp\s+-S\b|\bcaddy\s+run\b"
+    r"|\bnode(?:\.exe)?\s+\S*(?:server|app)\.(?:c?js|mjs|ts)\b",
+    re.I,
+)
+_WATCH_LIKE = re.compile(
+    r"\btail\s+-[a-z]*f|\bGet-Content\b.*-Wait\b|\bwatch\s|--watch\b|\bping\s+-t\b"
+    r"|\bnodemon\b|\bpause\b|\bRead-Host\b",
+    re.I,
+)
+
+
+def service_like_reason(command: str) -> str | None:
+    """Why `command` looks long-running (server / watcher), else None."""
+    line = command or ""
+    if _AUTO_BG.search(line):
+        return None  # pip/npm install, git clone: finite
+    if _SERVICE_LIKE.search(line):
+        return "server"
+    if _WATCH_LIKE.search(line):
+        return "watch"
+    return None
+
+
 _jobs: dict[str, dict[str, Any]] = {}
 _lock = asyncio.Lock()
+# ① live one-shot runs: pid -> {"create_time", "descendants": set[(pid, ct)]}
+_active_runs: dict[int, dict[str, Any]] = {}
 
 
 def _roots() -> tuple[Path, Path]:
@@ -155,6 +210,12 @@ def split_command(command: str) -> list[str]:
 
 
 def deny_reason(command: str) -> str | None:
+    if _KILL_CMD.search(command or ""):
+        return (
+            "拒绝在终端里直接结束进程（taskkill/Stop-Process/kill/pkill 等）。"
+            "请改用 process_control 工具：先 action=query 告知用户进程作用与影响，"
+            "用户下一轮明确同意后再 action=kill。"
+        )
     for rx in _DENY:
         if rx.search(command or ""):
             return f"拒绝执行（高风险）：匹配 {rx.pattern}"
@@ -212,6 +273,9 @@ def _clip(text: str, limit: int = MAX_CAPTURE) -> str:
 def _dump_job(job: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": job.get("id"),
+        "kind": job.get("kind") or "bg",
+        "create_time": job.get("create_time"),
+        "fp": job.get("fp"),
         "status": job.get("status"),
         "command": job.get("command"),
         "cwd": job.get("cwd"),
@@ -223,7 +287,8 @@ def _dump_job(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _pump(proc: asyncio.subprocess.Process, log_path: Path) -> int:
+async def _pump_stream(proc: asyncio.subprocess.Process, log_path: Path) -> None:
+    """Copy stdout to log until EOF (does not wait for process exit)."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     size = 0
     with log_path.open("ab") as fh:
@@ -237,8 +302,64 @@ async def _pump(proc: asyncio.subprocess.Process, log_path: Path) -> int:
                 fh.write(take)
                 size += len(take)
                 fh.flush()
-        code = await proc.wait()
+
+
+async def _pump(proc: asyncio.subprocess.Process, log_path: Path) -> int:
+    await _pump_stream(proc, log_path)
+    code = await proc.wait()
     return int(code if code is not None else -1)
+
+
+def _spawn_kwargs(work: Path, env: dict[str, str] | None) -> dict[str, Any]:
+    kw: dict[str, Any] = {
+        "cwd": str(work),
+        "stdin": asyncio.subprocess.DEVNULL,
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.STDOUT,
+    }
+    if os.name == "nt":
+        kw["creationflags"] = CREATE_NO_WINDOW
+    else:
+        kw["start_new_session"] = True
+    if env is not None:
+        kw["env"] = env
+    return kw
+
+
+async def _watch_descendants(pid: int, bag: set[tuple[int, float]]) -> None:
+    """Remember every descendant we see, so we can still kill grandchildren
+    after their parent exited (Windows has no process groups)."""
+    from app.services.proc_tree import descendants
+
+    n = 0
+    while True:
+        try:
+            for pair in await asyncio.to_thread(descendants, pid):
+                bag.add(pair)
+        except Exception:
+            pass
+        n += 1
+        await asyncio.sleep(0.25 if n < 20 else 1.0)
+
+
+def _cleanup_run(pid: int, create_time: float | None, bag: set[tuple[int, float]]) -> dict[str, Any]:
+    from app.services.proc_tree import kill_tree
+
+    try:
+        from app.services.service_manager import protected_pids
+
+        prot = protected_pids()
+    except Exception:
+        prot = set()
+    pairs = set(bag)
+    if os.name == "nt":
+        from app.services.proc_tree import orphans_of
+
+        pairs.update(orphans_of(pid, create_time))
+    extra = [p for p in pairs if p[0] not in prot]
+    # force_group: POSIX one-shot runs own their session (pgid == pid); sweep it
+    # even if the leader already exited (re-parented grandchildren).
+    return kill_tree(pid, create_time=create_time, extra=extra, force_group=True)
 
 
 async def run_sync(
@@ -251,6 +372,20 @@ async def run_sync(
     denied = deny_reason(command)
     if denied:
         return {"ok": False, "error": denied}
+    why = service_like_reason(command)
+    if why:
+        return {
+            "ok": False,
+            "error": (
+                "这条命令看起来会一直运行（%s），不能用 action=run（会占住对话直到超时并被结束）。"
+                % ("服务/端口进程" if why == "server" else "监视/等待输入")
+            ),
+            "hint": (
+                "用户明确要常驻服务时改用 action=service（受保护，停止对话/重启 EVA 都不会结束）；"
+                "有限时长的后台任务用 action=bg；只想看一眼输出请去掉 -f/--watch 等常驻参数。"
+            ),
+            "suggest_action": "service" if why == "server" else "bg",
+        }
     eva, _ws = _roots()
     work = resolve_cwd(cwd, root=root)
     argv, env = build_argv(command, eva)
@@ -258,17 +393,7 @@ async def run_sync(
     timeout = max(5.0, min(timeout, SYNC_TIMEOUT_MAX))
     jid = uuid.uuid4().hex[:10]
     log_path = _jobs_dir(eva) / f"{jid}.log"
-    kw: dict[str, Any] = {
-        "cwd": str(work),
-        "stdout": asyncio.subprocess.PIPE,
-        "stderr": asyncio.subprocess.STDOUT,
-    }
-    if os.name == "nt":
-        kw["creationflags"] = CREATE_NO_WINDOW
-    else:
-        kw["start_new_session"] = True
-    if env is not None:
-        kw["env"] = env
+    kw = _spawn_kwargs(work, env)
     started = time.time()
     try:
         proc = await asyncio.create_subprocess_exec(*argv, **kw)
@@ -278,22 +403,69 @@ async def run_sync(
             "error": f"找不到命令：{argv[0]}。请确认已安装并在 PATH 中。",
             "argv": argv,
         }
+    from app.services.proc_tree import WinJob, identity
+
+    job_obj = WinJob()  # Windows: whole-tree containment for this one-shot run
+    in_job = job_obj.assign(proc.pid)
+    ident = identity(proc.pid)
+    ct = ident["create_time"] if ident else None
+    bag: set[tuple[int, float]] = set()
+    _active_runs[proc.pid] = {"create_time": ct, "descendants": bag, "command": command, "job": job_obj}
+    pump = asyncio.create_task(_pump_stream(proc, log_path), name=f"terminal-pump-{jid}")
+    watcher = asyncio.create_task(_watch_descendants(proc.pid, bag), name=f"terminal-watch-{jid}")
+    status = "ok"
+    code: int | None = None
     try:
-        code = await asyncio.wait_for(_pump(proc, log_path), timeout=timeout)
-    except asyncio.TimeoutError:
-        _kill_tree(proc)
-        text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
+        # Note: asyncio's proc.wait() also waits for the stdout pipe to close,
+        # so a background grandchild holding the pipe would block it. Watch
+        # returncode (set as soon as the direct child exits) instead.
+        deadline = time.monotonic() + timeout
+        while proc.returncode is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        if proc.returncode is None:
+            status = "timeout"
+        else:
+            code = proc.returncode
+            # Parent exited; a background grandchild may still hold the pipe.
+            try:
+                await asyncio.wait_for(asyncio.shield(pump), timeout=3.0)
+            except asyncio.TimeoutError:
+                status = "leftover"
+    except asyncio.CancelledError:
+        status = "cancelled"
+        raise
+    finally:
+        watcher.cancel()
+        report: dict[str, Any] = {}
+        alive_root = proc.returncode is None
+        if in_job:
+            # one-shot semantics: whatever the command left behind ends with it
+            job_obj.terminate()
+        if alive_root or status != "ok" or bag:
+            # ① cleanup: kill the whole tree (root if alive + every descendant seen)
+            report = await asyncio.to_thread(_cleanup_run, proc.pid, ct, bag) if status != "cancelled" else _cleanup_run(proc.pid, ct, bag)
+        try:
+            await asyncio.wait_for(asyncio.shield(pump), timeout=2.0)
+        except BaseException:
+            pump.cancel()
+        _active_runs.pop(proc.pid, None)
+        job_obj.close()
+        if status == "cancelled":
+            logger.info("terminal run %s cancelled; process tree cleaned %s", jid, report)
+    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
+    if status == "timeout":
         return {
             "ok": False,
-            "error": f"超时 {int(timeout)}s，进程已结束。长任务请用 action=bg。",
+            "error": f"超时 {int(timeout)}s，整个进程树已结束。长任务请用 action=bg；常驻服务请用 action=service。",
             "id": jid,
             "argv": argv,
             "cwd": str(work),
             "output": _clip(text),
             "log_path": str(log_path),
         }
-    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
-    return {
+    if code is None:
+        code = proc.returncode if proc.returncode is not None else -1
+    out = {
         "ok": code == 0,
         "id": jid,
         "exit_code": code,
@@ -304,6 +476,27 @@ async def run_sync(
         "log_path": str(log_path),
         "hint": None if code == 0 else "失败时看 output / log_path；装依赖请用 Eva 的 python -m pip。",
     }
+    if status == "leftover" or bag:
+        out["note"] = "命令遗留的子进程已随本次 run 一并结束（run 是一次性执行）。需要常驻请用 action=service。"
+    return out
+
+
+def shutdown_cleanup() -> int:
+    """EVA shutdown: kill class-① one-shot runs still alive. Never touches
+    registered services (class ②)."""
+    n = 0
+    for pid, info in list(_active_runs.items()):
+        try:
+            job = info.get("job")
+            if job is not None:
+                job.terminate()
+                job.close()
+            _cleanup_run(pid, info.get("create_time"), set(info.get("descendants") or ()))
+            n += 1
+        except Exception:
+            logger.exception("shutdown cleanup failed pid=%s", pid)
+        _active_runs.pop(pid, None)
+    return n
 
 
 async def start_bg(
@@ -315,12 +508,20 @@ async def start_bg(
     denied = deny_reason(command)
     if denied:
         return {"ok": False, "error": denied}
+    if service_like_reason(command) == "server":
+        return {
+            "ok": False,
+            "error": "这是常驻服务类命令。action=bg 只用于会结束的后台任务（pip/npm install/clone 等）。",
+            "hint": "用户明确要常驻服务时改用 action=service（受保护，不随对话/EVA 结束）。",
+            "suggest_action": "service",
+        }
     eva, _ws = _roots()
     work = resolve_cwd(cwd, root=root)
     argv, env = build_argv(command, eva)
     jid = uuid.uuid4().hex[:10]
     log_path = _jobs_dir(eva) / f"{jid}.log"
     job = {
+        "kind": "bg",
         "id": jid,
         "status": "running",
         "command": command,
@@ -333,17 +534,7 @@ async def start_bg(
         "log_path": str(log_path),
         "proc": None,
     }
-    kw: dict[str, Any] = {
-        "cwd": str(work),
-        "stdout": asyncio.subprocess.PIPE,
-        "stderr": asyncio.subprocess.STDOUT,
-    }
-    if os.name == "nt":
-        kw["creationflags"] = CREATE_NO_WINDOW
-    else:
-        kw["start_new_session"] = True
-    if env is not None:
-        kw["env"] = env
+    kw = _spawn_kwargs(work, env)
     try:
         proc = await asyncio.create_subprocess_exec(*argv, **kw)
     except FileNotFoundError:
@@ -354,6 +545,14 @@ async def start_bg(
         }
     job["pid"] = proc.pid
     job["proc"] = proc
+    try:
+        from app.services.proc_tree import identity
+
+        _ident = identity(proc.pid)
+        if _ident:
+            job["create_time"] = _ident["create_time"]
+    except Exception:
+        pass
     async with _lock:
         _jobs[jid] = job
 
@@ -361,7 +560,8 @@ async def start_bg(
         try:
             code = await _pump(proc, log_path)
             job["exit_code"] = code
-            job["status"] = "ok" if code == 0 else "failed"
+            if job.get("status") != "killed":
+                job["status"] = "ok" if code == 0 else "failed"
         except Exception:
             logger.exception("bg job %s crashed", jid)
             job["status"] = "failed"
@@ -378,6 +578,12 @@ async def start_bg(
             except OSError:
                 pass
 
+    try:
+        (_jobs_dir(eva) / f"{jid}.json").write_text(
+            json.dumps(_dump_job(job), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
     asyncio.create_task(_wait(), name=f"terminal-{jid}")
     return {
         "ok": True,
@@ -423,36 +629,35 @@ async def poll(job_id: str, *, tail: int = 80) -> dict[str, Any]:
     return out
 
 
-def _kill_pid(pid: int) -> None:
+def _kill_pid(pid: int, *, create_time: float | None = None, started_near: float | None = None, fp: str | None = None) -> dict[str, Any]:
+    """Kill a pid tree only after proving it is still our process."""
+    from app.services.proc_tree import kill_tree, matches
+
     if pid <= 0:
         raise ValueError("pid 无效")
-    if os.name == "nt":
-        import subprocess
-
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True,
-            check=False,
-            creationflags=CREATE_NO_WINDOW,
-        )
-        return
+    if not matches(pid, create_time=create_time, fp=fp, started_near=started_near):
+        raise ValueError("进程已不存在，或 pid 已被系统复用为别的程序（身份核对未通过），未执行结束。")
     try:
-        os.killpg(pid, 15)
-    except Exception:
-        os.kill(pid, 15)
+        from app.services.service_manager import protected_pids
+
+        if pid in protected_pids():
+            raise ValueError("该进程属于受保护服务，请用 action=stop_service 并由用户明确确认。")
+    except ImportError:
+        pass
+    return kill_tree(pid, create_time=None if create_time is None else create_time)
 
 
 def _kill_tree(proc: Any) -> None:
+    """Kill a live asyncio/Popen child and all its descendants."""
+    from app.services.proc_tree import kill_tree
+
     try:
-        if os.name != "nt" and proc.pid:
-            os.killpg(proc.pid, 9)
-            return
+        kill_tree(int(proc.pid))
     except Exception:
-        pass
-    try:
-        proc.kill()
-    except Exception:
-        pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 async def kill(job_id: str) -> dict[str, Any]:
@@ -474,9 +679,14 @@ async def kill(job_id: str) -> dict[str, Any]:
             _kill_tree(proc)
         else:
             pid = int(job.get("pid") or 0)
-            if not pid:
+            if not pid or job.get("status") not in (None, "running"):
                 return {"ok": False, "error": "任务已结束", **_dump_job(job)}
-            _kill_pid(pid)
+            _kill_pid(
+                pid,
+                create_time=job.get("create_time"),
+                started_near=job.get("started_at"),
+                fp=job.get("fp"),
+            )
     except Exception as exc:
         return {"ok": False, "error": str(exc), **_dump_job(job)}
     job["status"] = "killed"
@@ -497,6 +707,29 @@ async def kill(job_id: str) -> dict[str, Any]:
     return {"ok": True, **_dump_job(job)}
 
 
+def mark_job_killed(job_id: str) -> None:
+    """Bookkeeping after a confirmed kill done by process_control."""
+    jid = (job_id or "").strip()
+    eva, _ = _roots()
+    job = _jobs.get(jid)
+    if job is None:
+        meta = _jobs_dir(eva) / f"{jid}.json"
+        try:
+            job = json.loads(meta.read_text(encoding="utf-8")) if meta.is_file() else None
+        except Exception:
+            job = None
+    if not job:
+        return
+    job["status"] = "killed"
+    job["ended_at"] = time.time()
+    try:
+        (_jobs_dir(eva) / f"{jid}.json").write_text(
+            json.dumps(_dump_job(job), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
 def pwd() -> dict[str, Any]:
     eva, ws = _roots()
     py = _venv_python(eva)
@@ -505,5 +738,5 @@ def pwd() -> dict[str, Any]:
         "eva": str(eva),
         "workspace": str(ws),
         "venv_python": str(py) if py else None,
-        "hint": "默认 cwd=workspace；装库用 python -m pip（会改写到 Eva .venv）。长任务用 action=bg。",
+        "hint": "默认 cwd=workspace；装库用 python -m pip（会改写到 Eva .venv）。长任务用 action=bg；常驻服务用 action=service。",
     }

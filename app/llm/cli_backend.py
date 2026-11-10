@@ -203,6 +203,29 @@ def build_argv(
     return argv
 
 
+def _kill_cli_tree(proc: Any) -> None:
+    """Kill the CLI process and every child it spawned (grok CLI runs tools)."""
+    try:
+        from app.services.proc_tree import kill_tree
+
+        try:
+            from app.services.service_manager import protected_pids
+
+            prot = protected_pids()
+        except Exception:
+            prot = set()
+        if proc.pid in prot:
+            return
+        kill_tree(int(proc.pid))
+    except Exception:
+        pass
+    try:
+        if proc.returncode is None:
+            proc.kill()
+    except Exception:
+        pass
+
+
 async def run_cli_completion(
     *,
     command: str,
@@ -256,11 +279,12 @@ async def run_cli_completion(
                 proc.communicate(), timeout=wait
             )
         except asyncio.TimeoutError as exc:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            _kill_cli_tree(proc)
             raise RuntimeError(f"CLI 超时（{int(wait)}s）：{argv[0]}") from exc
+        except asyncio.CancelledError:
+            # Chat stopped by the user: the CLI (and anything it spawned) must go.
+            _kill_cli_tree(proc)
+            raise
 
         stdout = _rewrite_cli_output(
             (stdout_b or b"").decode("utf-8", "replace").strip()

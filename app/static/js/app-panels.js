@@ -2041,6 +2041,115 @@
  }
  }
 
+
+ async function exportKbPack() {
+  try {
+   const coll = ($("kbFilterCollection")?.value || "").trim();
+   const q = new URLSearchParams();
+   if (coll) q.set("collection", coll);
+   q.set("include_archived", "true");
+   setMsg("msgKb", "导出中…");
+   const res = await fetch("/api/kb/export?" + q.toString(), {
+    credentials: "same-origin",
+   });
+   if (!res.ok) {
+    let detail = "导出失败";
+    try {
+     const j = await res.json();
+     detail = j.detail || detail;
+    } catch (_) {}
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+   }
+   const blob = await res.blob();
+   const cd = res.headers.get("content-disposition") || "";
+   let fname = "eva-kb.evakb";
+   const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+   const plain = /filename="?([^";]+)"?/i.exec(cd);
+   if (star && star[1]) {
+    try {
+     fname = decodeURIComponent(star[1]);
+    } catch (_) {}
+   } else if (plain && plain[1]) {
+    fname = plain[1];
+   }
+   const a = document.createElement("a");
+   a.href = URL.createObjectURL(blob);
+   a.download = fname;
+   document.body.appendChild(a);
+   a.click();
+   a.remove();
+   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+   const scope = coll ? `分类 ${coll}` : "全部";
+   setMsg("msgKb", `已导出（${scope}）`, "ok");
+   showToast(`知识库已导出（${scope}）`, "success");
+  } catch (e) {
+   setMsg("msgKb", e.message || String(e), "error");
+   showToast("知识库导出失败", "error");
+  }
+ }
+
+ async function importKbPack(file) {
+  if (!file) return;
+  let conflict = "skip";
+  const choice = confirm(
+   "导入「" +
+    file.name +
+    "」\n\n确定 = 覆盖已存在的同 ID / 同分类同 slug 页面\n取消 = 下一步可选跳过或保留副本"
+  );
+  if (choice) {
+   conflict = "overwrite";
+  } else {
+   const both = confirm(
+    "已存在页面如何处理？\n\n确定 = 两者都保留（导入项另存为副本）\n取消 = 跳过已存在项"
+   );
+   conflict = both ? "keep_both" : "skip";
+  }
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+   setMsg("msgKb", "导入中…");
+   const res = await fetch(
+    "/api/kb/import?conflict=" + encodeURIComponent(conflict),
+    { method: "POST", body: fd, credentials: "same-origin" }
+   );
+   const data = await res.json().catch(() => ({}));
+   if (!res.ok) {
+    throw new Error(
+     (typeof data.detail === "string" && data.detail) ||
+      data.error ||
+      "导入失败"
+    );
+   }
+   const c = data.counts || {};
+   const n = c.installed || (data.installed || []).length || 0;
+   const skip = c.skipped || (data.skipped || []).length || 0;
+   const fail = c.failed || (data.failed || []).length || 0;
+   const bits = [`导入 ${n}`];
+   if (skip) bits.push(`跳过 ${skip}`);
+   if (fail) bits.push(`失败 ${fail}`);
+   let detailFail = "";
+   if (fail) {
+    const reasons = (data.failed || [])
+     .slice(0, 5)
+     .map((x) => `${x.id || "?"}: ${x.reason || "未知原因"}`)
+     .join("；");
+    detailFail = reasons ? `。失败详情：${reasons}` : "";
+   }
+   setMsg("msgKb", bits.join(" · ") + detailFail, fail ? "error" : "ok");
+   showToast(
+    fail
+     ? `导入完成：成功 ${n}，跳过 ${skip}，失败 ${fail}`
+     : `导入完成：成功 ${n}` + (skip ? `，跳过 ${skip}` : ""),
+    fail ? "error" : "success"
+   );
+   await loadKb($("kbSearch")?.value || "");
+   await refreshKbCollectionOptions();
+  } catch (e) {
+   setMsg("msgKb", e.message || String(e), "error");
+   showToast("知识库导入失败", "error");
+  }
+ }
+
  function bindKbDelegatedUi() {
  if (bindKbDelegatedUi._done) return;
  bindKbDelegatedUi._done = true;
@@ -2059,6 +2168,16 @@
   if (t.closest("#btnNewKbPage")) {
    e.preventDefault();
    openKbEditor("");
+   return;
+  }
+  if (t.closest("#btnExportKb")) {
+   e.preventDefault();
+   exportKbPack();
+   return;
+  }
+  if (t.closest("#btnImportKb")) {
+   e.preventDefault();
+   $("kbImportInput")?.click();
    return;
   }
   if (t.closest("#btnSaveKb")) {
@@ -2092,6 +2211,12 @@
  });
  $("kbFilterCollection")?.addEventListener("change", () => {
   loadKb($("kbSearch")?.value || "");
+ });
+ $("kbImportInput")?.addEventListener("change", (e) => {
+  const t = e.target;
+  const file = t && t.files && t.files[0];
+  if (t) t.value = "";
+  if (file) importKbPack(file);
  });
  document.addEventListener("click", () => closeKbCollectionMs());
  }

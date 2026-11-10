@@ -27,9 +27,12 @@ GROUNDING_INSTRUCTION = (
     "不要为了显得有用而编造。"
     "【时间铁律】凡涉及现在几点、今天日期、星期、早晚、多久之后、行程时刻，回答前必须先调用 get_current_time，"
     "只按工具返回的 beijing 字段（北京时间 UTC+8）作答；未调用就不准说任何具体时间或日期，角色扮演模式同样适用。"
-    "需要用户补充或选方案时调用 ask_user："
-    "options=单选，multi=多选，fields=输入框（均可每行一项），然后停；"
-    "不要在正文里出客服式 A/B 长题。"
+    "【何时提问】先用上下文、记忆、知识库和只读工具找答案；可逆、低影响、在用户委托范围内的细节按合理默认自己定，并在回复里说明你的选择。"
+    "只有缺少会实质改变结果、又查不到的信息，或必须由用户拍板（花钱、删除、对外发送、结束进程等）时，才调用 ask_user，然后停；"
+    "调用后正文不要把同一组问题再写一遍，也不要在正文里出客服式 A/B 长题。"
+    "一次以一个自然的问题为主（真正独立的最多 3 个）；选项 2～6 个、简短、互不重叠、真实可执行，需要解释写成「选项 :: 说明」；"
+    "不要列「其他/都可以」（表单自带补充框），不要编造未确认可用的服务或账户，不要把高风险选项放第一个当默认。"
+    "用户取消或跳过后尊重决定，不要立刻重问同一问题。已有的安全确认（结束进程、删除、发消息、付款等）照常走，不能因为少打断而跳过或替用户同意。"
 )
 
 # Long-term memory instruction injected into system prompt
@@ -246,6 +249,21 @@ class Agent:
             raise RuntimeError(self.llm.unconfigured_message())
         if getattr(self.llm, "is_cli", False):
             use_tools = False
+        # Tools that must act only on the user's own words this turn
+        # (terminal service / stop_service) read this.
+        try:
+            from app.tools.protection import set_turn_context
+
+            set_turn_context(message, session_id)
+            if route_origin in ("chat.scheduler", "chat.workflow", "chat.webhook"):
+                from app.tools.protection import (
+                    UNATTENDED_BLOCKED_ACTIONS,
+                    add_blocked_tools,
+                )
+
+                add_blocked_tools(UNATTENDED_BLOCKED_ACTIONS)
+        except Exception:
+            logger.exception("set turn context failed")
 
         agent_cfg = self._agent_cfg()
         max_history = int(agent_cfg.get("max_history_messages") or self.settings.max_history_messages)
@@ -275,8 +293,38 @@ class Agent:
                     last_assistant_form,
                 )
 
+                from app.agent.ask_form import form_reply_is_stale
+
+                if form_reply_is_stale(last_assistant_form(history), form_reply):
+                    ack = (
+                        "那个问题已经过期（之后有了新的消息），没有按它执行。"
+                        "需要的话请在最新的问题里选，或直接告诉我。"
+                    )
+                    await self.sessions.append_messages(
+                        session_id,
+                        [
+                            {"role": "user", "content": (message or "").strip() or "（过期的表单回复）"},
+                            {"role": "assistant", "content": ack},
+                        ],
+                        title=suggest_session_title(message),
+                        max_history=max_history,
+                    )
+                    return ChatResponse(
+                        session_id=session_id,
+                        reply=ack,
+                        model=getattr(self.llm, "model", "") or "",
+                    )
                 if is_form_cancel(form_reply):
                     ack = "好，已取消。没有创建技能，也没有保存配置。"
+                    try:
+                        _prev = last_assistant_form(history) or {}
+                        if _prev.get("purpose") == "kill_confirm":
+                            from app.services.process_control import revoke_session_tokens
+
+                            revoke_session_tokens(session_id)
+                            ack = "好，已取消，没有结束任何进程。"
+                    except Exception:
+                        logger.exception("kill-confirm cancel cleanup failed")
                     await self.sessions.append_messages(
                         session_id,
                         [
@@ -856,7 +904,8 @@ class Agent:
                 "Do not stop at a delivery summary.\n"
                 "- Multi-action skills: spec_json.inputs must include action (enum) and a limit "
                 "for list/query (default 50). Never ship properties:{}.\n"
-                "- LAN APIs: skill_http.request + 设定→集成; never spoof Host=localhost. "
+                "- LAN APIs: `await skill_http.arequest(...)` + 设定→集成 (never the sync request() "
+                "inside async def handle — it freezes every chat); never spoof Host=localhost. "
                 "HTTP 502: check 设定→集成; do not rewrite or delete the skill.\n"
                 "- NEVER claim you lack skill permission when these tools are listed. "
                 "If a call fails, report the tool error JSON (protected/syntax), not 'no permission'."
@@ -1269,6 +1318,15 @@ class Agent:
                                     pending_form = integration_needed_form(miss)
                         except Exception:
                             logger.exception("missing-integration hint failed")
+                        if name in ("process_control", "terminal") and not pending_form:
+                            # Kill confirmation card (inform → user decides next turn).
+                            try:
+                                _pj = json.loads(tool_result) if isinstance(tool_result, str) else {}
+                                _f = _pj.get("form") if isinstance(_pj, dict) else None
+                                if isinstance(_f, dict) and _f.get("purpose") == "kill_confirm":
+                                    pending_form = _f
+                            except Exception:
+                                pass
                         if name == "ask_user":
                             try:
                                 from app.agent.ask_form import (
@@ -1733,6 +1791,13 @@ class Agent:
                 "deputy_reason": deputy_reason or "hard_fail",
             }
         if pending_form:
+            if not str(pending_form.get("id") or "").strip():
+                try:
+                    from app.agent.ask_form import new_form_id
+
+                    pending_form["id"] = new_form_id()  # 每张表单一个问题 id：前端回传，过期回复不会套到新问题上
+                except Exception:
+                    pass
             llm_meta["form"] = pending_form
 
         # Persist user + final assistant (and compact tool summary if any)

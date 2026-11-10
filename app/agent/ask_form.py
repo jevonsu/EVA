@@ -4,17 +4,49 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 from typing import Any
 
-_MAX_OPTIONS = 8
+_MAX_OPTIONS = 12
 _MAX_FIELDS = 6
-_MAX_LABEL = 80
+_MAX_LABEL = 80  # 内部短标签（集成字段名等，系统生成）
+_MAX_OPT = 160  # 超过此长度的选项：label 显示短标题，完整原文在 full（不是上限）
+# 安全上限：超过时整张表单报错（AskFormTooLong），不静默截断、不返回半份表单
+_MAX_OPT_TEXT = 6000  # 单个选项原文
+_MAX_DESC = 3000  # 单个选项 / 问题的补充说明
+_MAX_Q = 1000  # 问题（字段标签）
+_MAX_TITLE = 200
+_MAX_PROMPT = 6000
+_MAX_PLACEHOLDER = 300
+_MAX_SUBMIT = 40
+_MAX_FORM_CHARS = 40000  # 整张表单全部文字合计
+_OPT_DESC_SEP = re.compile(r"\s+::\s+")  # 「标签 :: 说明」
+_GENERIC_OTHER = re.compile(r"^(?:其他|其它|其他情况|其他（请说明）|其他\(请说明\)|其他，请说明|other)$", re.I)
 
 _SKIP_LABELS = frozenset({"补充", "补充说明", "请选择", "单选", "多选"})
 
 
 def _strip(v: Any) -> str:
     return str(v or "").strip()
+
+
+class AskFormTooLong(ValueError):
+    """Form content exceeds a safety limit. Message names the part and sizes only, never the content."""
+
+
+def _check_len(text: str, limit: int, what: str) -> str:
+    n = len(text)
+    if n > limit:
+        raise AskFormTooLong(
+            f"{what}有 {n} 字，超过上限 {limit} 字。表单没有显示。"
+            "请不要删减用户原文：把背景放进 prompt、把长选项拆成更短的选项并把细节写在「选项 :: 说明」里，或分成几次提问。"
+        )
+    return text
+
+
+def _check_count(n: int, limit: int, what: str) -> None:
+    if n > limit:
+        raise AskFormTooLong(f"{what}有 {n} 个，超过上限 {limit} 个。表单没有显示。请合并或分成几次提问，不要丢掉选项。")
 
 
 def _split_lines(raw: str) -> list[str]:
@@ -29,12 +61,14 @@ def _split_lines(raw: str) -> list[str]:
         except json.JSONDecodeError:
             pass
     parts: list[str] = []
-    for line in re.split(r"[\n|;；]+", t):
+    # 有换行时只按行切：选项文字里的「；」「|」不再把一个选项拆成几个
+    pieces = t.split("\n") if "\n" in t else re.split(r"[|;；]+", t)
+    for line in pieces:
         s = _strip(line)
         s = re.sub(r"^(?:[0-9]{1,2}|[A-Fa-f])[.\、\)\]]\s*", "", s)
         s = re.sub(r"^[-*•]\s*", "", s)
         if s:
-            parts.append(s[:_MAX_LABEL])
+            parts.append(s)
     return parts
 
 
@@ -45,10 +79,10 @@ def _split_choices(raw: str) -> list[str]:
     if "\n" in t:
         lines = [_strip(x) for x in t.split("\n") if _strip(x)]
         if len(lines) >= 2:
-            return [p[:_MAX_LABEL] for p in lines][:_MAX_OPTIONS]
+            return lines
     # 不要用裸 `/` 切开「播/停/切歌」；只用「 / 」、顿号、竖线
     parts = re.split(r"\s+/\s+|\s*[|｜、]\s+", t)
-    return [p[:_MAX_LABEL] for p in (_strip(x) for x in parts) if p][:_MAX_OPTIONS]
+    return [p for p in (_strip(x) for x in parts) if p]
 
 
 def _field_id(prefix: str, index: int, label: str) -> str:
@@ -58,8 +92,67 @@ def _field_id(prefix: str, index: int, label: str) -> str:
     return slug[:32]
 
 
-def _choice_options(labels: list[str]) -> list[dict[str, str]]:
-    return [{"value": str(i + 1), "label": lab} for i, lab in enumerate(labels)]
+def _opt_item(raw: Any, where: str = "选项") -> dict[str, str] | None:
+    """One option → {label, full?, desc?, value?}.
+
+    label = 显示用短标题；full = 完整原文（仅当原文超过 _MAX_OPT 时出现，提交用它）；
+    desc = 真正的说明（独立保存，不再塞续写）。超过安全上限时抛 AskFormTooLong。
+    """
+    if isinstance(raw, dict):
+        # 已规范化过的选项（带 full）再次规范化时，以完整原文为准
+        label = _strip(raw.get("full") or raw.get("label") or raw.get("text") or raw.get("value"))
+        desc = _strip(raw.get("desc") or raw.get("description") or raw.get("hint"))
+        value = _strip(raw.get("value")) if (raw.get("label") or raw.get("full")) else ""
+    else:
+        label, desc, value = _strip(raw), "", ""
+        parts = _OPT_DESC_SEP.split(label, maxsplit=1)
+        if len(parts) == 2:
+            label, desc = _strip(parts[0]), _strip(parts[1])
+    label = re.sub(r"\s+", " ", label)
+    if not label:
+        return None
+    _check_len(label, _MAX_OPT_TEXT, where + "原文")
+    _check_len(desc, _MAX_DESC, where + "说明")
+    full = ""
+    if len(label) > _MAX_OPT:
+        full = label  # 完整原文，不截
+        cut = label[:_MAX_OPT]
+        m = re.search(r"[，。；,;：:（(]", cut[40:])
+        head = cut[: 40 + m.start()] if m else cut
+        label = head.rstrip() + "…"  # 仅作短标题；界面显示 full
+    out = {"label": label}
+    if full:
+        out["full"] = full  # 提交给模型的是完整原文，不是显示用的短标签
+    if desc:
+        out["desc"] = desc
+    if value and re.fullmatch(r"[\w.:-]{1,64}", value):
+        out["value"] = value
+    return out
+
+
+def _choice_options(labels: list[Any]) -> list[dict[str, str]]:
+    """Dedupe, drop generic 其他 (every form has its own 补充 box), stable values."""
+    out: list[dict[str, str]] = []
+    seen_lab: set[str] = set()
+    seen_val: set[str] = set()
+    for i, raw in enumerate(labels, start=1):
+        it = _opt_item(raw, f"第 {i} 个选项")
+        if not it:
+            continue
+        key = re.sub(r"\s+", "", it.get("full") or it["label"]).lower()
+        if key in seen_lab or _GENERIC_OTHER.match(it["label"]):
+            continue
+        seen_lab.add(key)
+        val = it.get("value") or str(len(out) + 1)
+        if val in seen_val:
+            val = str(len(out) + 1)
+        while val in seen_val:
+            val += "_"
+        seen_val.add(val)
+        it["value"] = val
+        out.append(it)
+    _check_count(len(out), _MAX_OPTIONS, "选项")
+    return out
 
 
 def _parse_spec_line(line: str) -> dict[str, Any] | None:
@@ -123,34 +216,30 @@ def _normalize_field(raw: dict[str, Any], index: int) -> dict[str, Any] | None:
         ftype = "textarea"
     if ftype not in ("single", "multi", "text", "textarea", "password"):
         return None
-    label = _strip(raw.get("label"))[:_MAX_LABEL] or ftype
+    label = _check_len(re.sub(r"\s+", " ", _strip(raw.get("label") or raw.get("question"))), _MAX_Q, "问题") or ftype
     fid = _strip(raw.get("id")) or _field_id("f", index, label)
     out: dict[str, Any] = {
         "id": fid[:32],
         "type": ftype,
         "label": label,
         "required": bool(raw.get("required")),
-        "placeholder": _strip(raw.get("placeholder"))[:_MAX_LABEL],
+        "placeholder": _check_len(_strip(raw.get("placeholder")), _MAX_PLACEHOLDER, "输入框提示"),
         "secret": bool(raw.get("secret")) or ftype == "password",
     }
+    help_text = _check_len(_strip(raw.get("help") or raw.get("description") or raw.get("desc")), _MAX_DESC, "问题说明")
+    if help_text:
+        out["help"] = help_text
     if ftype in ("single", "multi"):
         opts_raw = raw.get("options") or []
-        labels: list[str] = []
+        labels: list[Any] = []
         if isinstance(opts_raw, str):
-            labels = _split_lines(opts_raw) or _split_choices(opts_raw)
+            labels = list(_split_lines(opts_raw) or _split_choices(opts_raw))
         elif isinstance(opts_raw, list):
-            for o in opts_raw:
-                if isinstance(o, dict):
-                    lab = _strip(o.get("label") or o.get("value"))
-                    if lab:
-                        labels.append(lab[:_MAX_LABEL])
-                else:
-                    lab = _strip(o)
-                    if lab:
-                        labels.append(lab[:_MAX_LABEL])
-        if not labels:
+            labels = [o for o in opts_raw if isinstance(o, dict) or _strip(o)]
+        opts = _choice_options(labels)
+        if not opts:
             return None
-        out["options"] = _choice_options(labels[:_MAX_OPTIONS])
+        out["options"] = opts
         out["required"] = True if raw.get("required") is None else bool(raw.get("required"))
     return out
 
@@ -166,57 +255,61 @@ def build_form(
     kind: str = "ask",
     submit_label: str = "发送",
 ) -> dict[str, Any] | None:
-    title = _strip(title)[:_MAX_LABEL]
-    prompt = _strip(prompt)[:400]
+    title = _check_len(re.sub(r"\s+", " ", _strip(title)), _MAX_TITLE, "标题")
+    prompt = _check_len(_strip(prompt), _MAX_PROMPT, "问题背景（prompt）")
     out_fields: list[dict[str, Any]] = []
 
     for line in _split_lines(spec):
         parsed = _parse_spec_line(line)
         if not parsed:
             continue
+        _check_len(_strip(parsed.get("label")), _MAX_Q, "问题")
         parsed["id"] = _field_id("f", len(out_fields) + 1, parsed.get("label") or "")
         out_fields.append(parsed)
-        if len(out_fields) >= _MAX_FIELDS:
-            break
+    _check_count(len(out_fields), _MAX_FIELDS, "spec 里的问题")
 
     opt_labels = (
-        [_strip(x)[:_MAX_LABEL] for x in options if _strip(x)]
+        [x for x in options if isinstance(x, dict) or _strip(x)]
         if isinstance(options, list)
         else _split_lines(options)
-    )[:_MAX_OPTIONS]
-    if opt_labels and not any(f.get("type") == "single" for f in out_fields):
+    )
+    opt_list = _choice_options(opt_labels) if opt_labels else []
+    if opt_list and not any(f.get("type") == "single" for f in out_fields):
         out_fields.append(
             {
                 "id": "choice",
                 "type": "single",
                 "label": "单选",
                 "required": True,
-                "options": _choice_options(opt_labels),
+                "options": opt_list,
             }
         )
 
     multi_labels = (
-        [_strip(x)[:_MAX_LABEL] for x in multi if _strip(x)]
+        [x for x in multi if isinstance(x, dict) or _strip(x)]
         if isinstance(multi, list)
         else _split_lines(multi)
-    )[:_MAX_OPTIONS]
-    if multi_labels and not any(f.get("type") == "multi" for f in out_fields):
+    )
+    multi_list = _choice_options(multi_labels) if multi_labels else []
+    if multi_list and not any(f.get("type") == "multi" for f in out_fields):
         out_fields.append(
             {
                 "id": "multi",
                 "type": "multi",
                 "label": "多选",
                 "required": False,
-                "options": _choice_options(multi_labels),
+                "options": multi_list,
             }
         )
 
     field_labels = (
-        [_strip(x)[:_MAX_LABEL] for x in fields if _strip(x)]
+        [_strip(x) for x in fields if _strip(x)]
         if isinstance(fields, list)
         else _split_lines(fields)
-    )[:_MAX_FIELDS]
+    )
+    _check_count(len(field_labels), _MAX_FIELDS, "输入框")
     for i, lab in enumerate(field_labels, start=1):
+        _check_len(lab, _MAX_Q, "输入框标题")
         out_fields.append(
             {
                 "id": _field_id("f", i, lab),
@@ -231,19 +324,55 @@ def build_form(
         return None
     if not title:
         title = "还需要你补充一下"
+    _check_count(len(out_fields), _MAX_FIELDS + 2, "问题")
     form = {
         "kind": kind if kind in ("ask", "deputy", "integ", "skill") else "ask",
         "title": title,
         "prompt": prompt,
-        "submit_label": _strip(submit_label)[:20] or "发送",
-        "fields": out_fields[: _MAX_FIELDS + 2],
+        "submit_label": _check_len(_strip(submit_label), _MAX_SUBMIT, "提交按钮文字") or "发送",
+        "fields": out_fields,
+        "id": new_form_id(),
     }
+    _check_form_total(form)
     if kind != "deputy":
         attach_other_and_cancel(form)
     return form
 
 
-_OTHER_IDS = frozenset({"other", "note", "_cancel"})
+def _form_chars(v: Any) -> int:
+    if isinstance(v, str):
+        return len(v)
+    if isinstance(v, dict):
+        return sum(_form_chars(x) for k, x in v.items() if k != "label" or "full" not in v)
+    if isinstance(v, list):
+        return sum(_form_chars(x) for x in v)
+    return 0
+
+
+def _check_form_total(form: dict[str, Any]) -> None:
+    n = _form_chars(form)
+    if n > _MAX_FORM_CHARS:
+        raise AskFormTooLong(
+            f"整张表单文字合计 {n} 字，超过上限 {_MAX_FORM_CHARS} 字。表单没有显示。请分成几次提问，不要删减用户原文。"
+        )
+
+
+def new_form_id() -> str:
+    return "q" + secrets.token_hex(6)
+
+
+def form_reply_is_stale(prev_form: dict[str, Any] | None, form_reply: Any) -> bool:
+    """A reply that names a question id which is no longer the latest open question."""
+    if not isinstance(form_reply, dict):
+        return False
+    rid = _strip(form_reply.get("_form_id"))
+    if not rid:
+        return False  # 旧前端 / 旧卡片：不带 id 时按原逻辑
+    pid = _strip((prev_form or {}).get("id"))
+    return not prev_form or (bool(pid) and pid != rid)
+
+
+_OTHER_IDS = frozenset({"other", "note", "_cancel", "_form_id"})
 _OTHER_LABELS = frozenset({"其他", "其它", "补充"})
 
 
@@ -268,6 +397,8 @@ def attach_other_and_cancel(form: dict[str, Any] | None) -> dict[str, Any]:
     )
     form["fields"] = fields
     form["cancellable"] = True
+    if not _strip(form.get("id")):
+        form["id"] = new_form_id()
     return form
 
 
@@ -538,6 +669,8 @@ def form_from_tool_payload(args: dict[str, Any] | None, result: str = "") -> dic
                 payload = parsed
         except json.JSONDecodeError:
             payload = {}
+    if payload.get("ok") is False and payload.get("error") == "form_too_long":
+        return None  # 工具已把错误返回给模型，不再从参数拼出半份表单
     if isinstance(payload.get("form"), dict):
         form = dict(payload["form"])
         cleaned: list[dict[str, Any]] = []
@@ -548,6 +681,8 @@ def form_from_tool_payload(args: dict[str, Any] | None, result: str = "") -> dic
                     cleaned.append(nf)
         if cleaned:
             form["fields"] = cleaned
+            _check_count(len(cleaned), _MAX_FIELDS + 2, "问题")
+            _check_form_total(form)
             form.setdefault("kind", "ask")
             if form.get("kind") != "deputy":
                 attach_other_and_cancel(form)
@@ -565,7 +700,7 @@ def form_from_tool_payload(args: dict[str, Any] | None, result: str = "") -> dic
 
 def _labels_for(field: dict[str, Any], picked: list[str]) -> list[str]:
     opts = {
-        _strip(o.get("value")): _strip(o.get("label"))
+        _strip(o.get("value")): _strip(o.get("full") or o.get("label"))
         for o in (field.get("options") or [])
         if isinstance(o, dict)
     }
@@ -1002,12 +1137,15 @@ def skill_intake_plan(message: str, *, mode: str | None = None) -> dict[str, Any
 def skill_intake_form(user_message: str = "", *, mode: str | None = None) -> dict[str, Any]:
     kind = (mode or skill_authoring_mode(user_message) or "create").strip().lower()
     plan = skill_intake_plan(user_message, mode=kind)
-    form = build_form(
-        title=plan.get("title") or "还需要你提供信息",
-        prompt=plan.get("prompt") or "",
-        spec=str(plan.get("spec") or ""),
-        kind="skill",
-    ) or {}
+    try:
+        form = build_form(
+            title=plan.get("title") or "还需要你提供信息",
+            prompt=plan.get("prompt") or "",
+            spec=str(plan.get("spec") or ""),
+            kind="skill",
+        ) or {}
+    except AskFormTooLong:
+        form = {}
     form["kind"] = "skill"
     form["skill_mode"] = kind
     form["howto"] = _strip(plan.get("howto"))
@@ -1053,8 +1191,8 @@ def _quiz_question_lines(text: str) -> list[str]:
             continue
         if "？" not in q and "?" not in q and "还是" not in q:
             continue
-        if 4 <= len(q) <= _MAX_LABEL + 24:
-            out.append(q[:_MAX_LABEL])
+        if 4 <= len(q) <= _MAX_Q:
+            out.append(q)
         if len(out) >= _MAX_FIELDS:
             break
     return out
@@ -1112,7 +1250,7 @@ def quiz_to_form(text: str, *, pending_user: str = "") -> dict[str, Any] | None:
         for x in re.findall(r"\[\s*\]\s*(.+)", t)
         if _strip(x)
     ]
-    checks = [c[:_MAX_LABEL] for c in checks if 1 < len(c) < 80][:_MAX_OPTIONS]
+    checks = [c for c in checks if 1 < len(c) <= _MAX_OPT][:_MAX_OPTIONS]
 
     or_line = re.search(
         r"((?:控制方式|接入|协议|方式)[^。\n]{0,20})(LMS[^\n]{0,40})还是([^\n？?]{2,40})",
@@ -1141,7 +1279,7 @@ def quiz_to_form(text: str, *, pending_user: str = "") -> dict[str, Any] | None:
             continue
         seen_labels.add(label)
         if opts:
-            spec_lines.append(f"单选 {label[:24]}：{' / '.join(opts)}")
+            spec_lines.append(f"单选 {label}：{' / '.join(opts)}")
         else:
             spec_lines.append(f"输入 {label}")
 
@@ -1150,11 +1288,14 @@ def quiz_to_form(text: str, *, pending_user: str = "") -> dict[str, Any] | None:
 
     if not spec_lines:
         return None
-    form = build_form(
-        title="还差这几项才能继续",
-        prompt="直接在下面选或填；上面的说明可以对照着看。",
-        spec="\n".join(spec_lines),
-    )
+    try:
+        form = build_form(
+            title="还差这几项才能继续",
+            prompt="直接在下面选或填；上面的说明可以对照着看。",
+            spec="\n".join(spec_lines),
+        )
+    except AskFormTooLong:
+        return None  # 原文仍在正文里，不做截断版表单
     if not form:
         return None
     if pending_user:

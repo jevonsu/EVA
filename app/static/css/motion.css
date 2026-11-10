@@ -1,4 +1,4 @@
-﻿/* EVA motion — llama pure dark; flashier tier; load after llama-theme.css */
+/* EVA motion — llama pure dark; flashier tier; load after llama-theme.css */
 
 :root {
   --motion-fast: 220ms;
@@ -144,7 +144,7 @@ body.home-hero .messages-wrap::before {
 }
 
 .quick-row-more.is-open {
-  max-height: 96px;
+  max-height: 360px;
   opacity: 1;
   transform: none;
   margin-top: 0;

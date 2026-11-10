@@ -1335,7 +1335,8 @@ L.markSessionRead = markSessionRead;
 
  // 默认走后台可脱离的完整模式（关页/切会话仍继续）
  // 仅「无附件 + 明确关工具」时用流式（流式仍绑定当前页）
- const preferStream = !els.useTools.checked && !attachments.length;
+ // 带表单回复 / 取消等 metadata 时走完整模式：流式接口不传 metadata，会丢掉表单回复
+ const preferStream = !els.useTools.checked && !attachments.length && !metadata;
  if (preferStream) {
   setStatus("纯文本流式（不调技能/工具）");
  }

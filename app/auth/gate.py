@@ -20,6 +20,7 @@ _PUBLIC_PREFIXES = (
     "/m.html",
     "/api/webhook/",
     "/webhook/",
+    "/api/llm-push/",  # token-protected in app/api/llm_failover.py
 )
 
 _PUBLIC_EXACT = frozenset(

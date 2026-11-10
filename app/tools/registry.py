@@ -158,6 +158,7 @@ class ToolRegistry:
         "integrations",
         "llms",
         "terminal",
+        "process_control",
         "document",
         "reload_runtime",
         "list_api_models",
@@ -926,6 +927,21 @@ class ToolRegistry:
         timeout = max(5.0, min(timeout, 3600.0))
 
         try:
+            if (spec.metadata or {}).get("thread_loop") and inspect.iscoroutinefunction(
+                spec.handler
+            ):
+                # Opt-in isolation for legacy async skills that do blocking I/O:
+                # run the coroutine on its own event loop in a worker thread so
+                # the main loop (other chats, SSE, stop) never freezes.
+                # Not default: handlers that touch main-loop objects (shared
+                # async clients, asyncio locks, create_task) would break there.
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(_run_coro_isolated, spec.handler, dict(arguments)),
+                    timeout=timeout,
+                )
+                if not isinstance(result, str):
+                    result = json.dumps(result, ensure_ascii=False, default=str)
+                return result
             result = spec.handler(**arguments)
             if inspect.isawaitable(result):
                 result = await asyncio.wait_for(result, timeout=timeout)
@@ -996,6 +1012,11 @@ class ToolRegistry:
         except Exception as exc:
             logger.exception("Tool %s failed", name)
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+def _run_coro_isolated(handler: Callable[..., Any], kwargs: dict[str, Any]) -> Any:
+    """Run an async handler to completion on a private loop (worker thread)."""
+    return asyncio.run(handler(**kwargs))
 
 
 _registry: ToolRegistry | None = None

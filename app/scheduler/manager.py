@@ -201,14 +201,25 @@ class TaskScheduler:
         agent = get_agent()
         always_new = bool(meta.get("always_new_session"))
         sid = None if always_new else (task.get("session_id") or None)
-        result = await agent.chat(
-            task["prompt"],
-            session_id=sid,
-            use_tools=True,
-            use_memory=True,
-            allow_deputy=True,
-            route_origin="chat.scheduler",
+        # Unattended path: never start/stop protected services from a schedule.
+        from app.tools.protection import (
+            UNATTENDED_BLOCKED_ACTIONS,
+            add_blocked_tools,
+            reset_blocked_tools,
         )
+
+        block_token = add_blocked_tools(UNATTENDED_BLOCKED_ACTIONS)
+        try:
+            result = await agent.chat(
+                task["prompt"],
+                session_id=sid,
+                use_tools=True,
+                use_memory=True,
+                allow_deputy=True,
+                route_origin="chat.scheduler",
+            )
+        finally:
+            reset_blocked_tools(block_token)
         task["status"] = TaskStatus.completed.value
         task["last_result"] = result.reply[:4000]
         task["last_error"] = None

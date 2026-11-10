@@ -16,14 +16,15 @@
  <link rel="icon" type="image/png" href="/static/logo.png" />
  <link rel="stylesheet" href="/static/css/base.css?v=ux9" />
  <link rel="stylesheet" href="/static/css/sidebar.css?v=ux9" />
- <link rel="stylesheet" href="/static/css/messages.css?v=ux9" />
+ <link rel="stylesheet" href="/static/css/messages.css?v=ux9-af4" />
  <link rel="stylesheet" href="/static/css/modals.css?v=ux9" />
  <link rel="stylesheet" href="/static/css/mobile.css?v=ux9" />
  <link rel="stylesheet" href="/static/css/llama-theme.css?v=ux9" />
- <link rel="stylesheet" href="/static/css/motion.css?v=ux9" />
+ <link rel="stylesheet" href="/static/css/motion.css?v=ux10" />
  <link rel="stylesheet" href="/static/css/chat-c.css?v=ux9" />
  <link rel="stylesheet" href="/static/css/mobile-polish.css?v=ux9" />
 <link rel="stylesheet" href="/static/css/chat-layout.css?v=ux9" />
+<link rel="stylesheet" href="/static/css/avatar-round.css?v=av1" />
  <style>
  /* 先 100vh 再 100dvh：旧 WebView 不识别 dvh 时仍有可用高度，避免首屏 height 失效 */
  :root { --app-height: 100vh; }
@@ -54,6 +55,7 @@
  </div>
 
  <button type="button" class="btn primary full icon-inline" id="btnNewChat" title="新对话" aria-label="新对话"><span data-ipk="comment" data-ipk-class="ipk-sm"></span> 新对话</button>
+ <button type="button" class="btn full icon-inline" id="btnQuickPromptStudio" title="Grok提示词（生成 / 检查 Grok Imagine 图像与视频提示词）" aria-label="Grok提示词"><span data-ipk="picture" data-ipk-class="ipk-sm"></span> Grok提示词</button>
  <button type="button" class="btn full icon-inline" id="btnQuickWorkspace" title="打开工作区" aria-label="工作区"><span data-ipk="folder-open" data-ipk-class="ipk-sm"></span> 工作区</button>
 
  <div class="quick-row">
@@ -235,17 +237,19 @@
 
  <script defer src="/static/js/icons.js"></script>
  <script defer src="/static/js/app-core.js?v=ux9"></script>
- <script defer src="/static/js/app-render.js?v=ux9"></script>
- <script defer src="/static/js/app-chat.js?v=ux9"></script>
+ <script defer src="/static/js/app-render.js?v=ux9-af4"></script>
+ <script defer src="/static/js/app-chat.js?v=ux9-af1"></script>
  <script defer src="/static/js/app-upload.js"></script>
  <script defer src="/static/js/app-voice.js"></script>
  <script defer src="/static/js/app-tts.js"></script>
- <script defer src="/static/js/app-panels.js"></script>
+ <script defer src="/static/js/app-panels.js?v=kbfix1"></script>
  <script defer src="/static/js/app-workspace.js"></script>
  <script defer src="/static/js/app-config.js?v=ux9"></script>
  <script defer src="/static/js/app-model-routing.js?v=ux9"></script>
+ <script defer src="/static/js/app-llm-failover.js?v=fo2"></script>
  <script defer src="/static/js/app-init.js?v=ux9"></script>
 <script defer src="/static/js/app-chat-ux.js?v=ux9"></script>
 <script defer src="/static/js/app-update.js?v=upd1"></script>
+<script defer src="/static/js/app-prompt-studio.js?v=ips18"></script>
 </body>
 </html>

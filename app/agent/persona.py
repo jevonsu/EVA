@@ -439,6 +439,7 @@ _TASK_PERSONA_TOOLS = frozenset(
         "list_api_models",
         "reload_runtime",
         "terminal",
+        "process_control",
         "document",
         "kb",
     }

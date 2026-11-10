@@ -640,78 +640,273 @@ body.sidebar-open .btn.icon-btn {
  color: #3d6b8c;
  background: rgba(61, 107, 140, 0.12);
 }
+/* ======== 提问表单（ask_user / 确认卡）========
+ 长问题 / 长选项 / 长说明全部换行完整显示（不截断、不靠悬停），
+ 超长英文 / URL / 连续字符可断行不撑破气泡；操作栏贴底不跑出屏幕。 */
 .ask-form {
  display: flex;
  flex-direction: column;
  align-items: stretch;
- gap: 10px;
+ gap: 12px;
  margin: 8px 0 2px;
- width: min(420px, 100%);
- padding: 12px 14px;
+ width: min(600px, 100%);
+ max-width: 100%;
+ min-width: 0;
+ padding: 14px 16px 0;
  border: 1px solid rgba(255, 255, 255, 0.1);
  border-radius: 12px;
  background: #1c1c1c;
  box-sizing: border-box;
  pointer-events: auto;
+ overflow-wrap: anywhere;
+ word-break: normal;
+}
+.ask-form,
+.ask-form * {
+ min-width: 0;
 }
 .ask-form-title {
- font-size: 14px;
+ font-size: 15px;
  font-weight: 600;
  color: #fafafa;
- line-height: 1.4;
-}
-.ask-form-hint {
- font-size: 12px;
- color: #a3a3a3;
  line-height: 1.45;
+ white-space: normal;
+}
+.ask-form-hint,
+.ask-form-howto,
+.ask-q-help {
+ font-size: 13px;
+ color: #b5b5b5;
+ line-height: 1.6;
+ white-space: normal;
 }
 .ask-form-howto {
- font-size: 12.5px;
  color: #e5e5e5;
- line-height: 1.55;
  padding: 8px 10px;
  border-radius: 8px;
  background: #262626;
  border: 1px solid rgba(255, 255, 255, 0.08);
 }
+.ask-q-help {
+ font-size: 12.5px;
+ color: #a3a3a3;
+}
+.is-folded > .ask-text {
+ display: -webkit-box;
+ -webkit-line-clamp: 6;
+ -webkit-box-orient: vertical;
+ overflow: hidden;
+}
+.ask-q-help.is-folded > .ask-text {
+ -webkit-line-clamp: 3;
+}
+.ask-more {
+ appearance: none;
+ border: none;
+ background: none;
+ padding: 4px 0;
+ margin-top: 2px;
+ min-height: 28px;
+ color: #8fb4ff;
+ font-size: 12.5px;
+ cursor: pointer;
+ pointer-events: auto;
+}
+.ask-more:hover,
+.ask-more:focus-visible {
+ text-decoration: underline;
+}
+.ask-form-body {
+ display: flex;
+ flex-direction: column;
+ gap: 16px;
+}
+/* 多题：题与题之间有分隔，题号与「可多选」提示 */
+.ask-form-body > .ask-q + .ask-q:not(.is-other) {
+ padding-top: 14px;
+ border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.ask-q-no {
+ margin-right: 6px;
+ color: #8fb4ff;
+ font-weight: 600;
+}
+.ask-q-kind {
+ margin-left: 8px;
+ padding: 1px 7px;
+ border-radius: 999px;
+ font-size: 11.5px;
+ font-weight: 500;
+ color: #c9d6f2;
+ background: rgba(143, 180, 255, 0.12);
+ vertical-align: 1px;
+}
+.ask-q.is-missing {
+ border-radius: 8px;
+ box-shadow: -3px 0 0 0 #fca5a5;
+ padding-left: 9px;
+}
+.ask-opt-card {
+ display: flex;
+ flex-direction: column;
+ align-items: stretch;
+}
+.ask-opt-card > .ask-opt-more {
+ align-self: flex-start;
+ margin: 2px 0 0 38px;
+}
+.ask-opt-desc.is-clamped {
+ display: -webkit-box;
+ -webkit-line-clamp: 3;
+ -webkit-box-orient: vertical;
+ overflow: hidden;
+}
 .ask-form-block {
  display: flex;
  flex-direction: column;
- gap: 6px;
+ gap: 8px;
 }
-.ask-form-label {
+.ask-form-label,
+.ask-field-cap {
+ font-size: 13.5px;
+ font-weight: 600;
+ color: #e5e5e5;
+ line-height: 1.5;
+}
+.ask-req {
+ font-weight: 400;
  font-size: 12px;
  color: #a3a3a3;
 }
-.ask-form-bar {
+.ask-q.is-missing > .ask-form-label,
+.ask-q.is-missing > .ask-field-cap {
+ color: #fca5a5;
+}
+.ask-form-bar,
+.ask-options.is-chips {
  display: flex;
  flex-direction: row;
  flex-wrap: wrap;
  gap: 8px;
 }
-.ask-chip {
+.ask-options.is-rows {
+ display: flex;
+ flex-direction: column;
+ gap: 8px;
+}
+.ask-opt {
  appearance: none;
  -webkit-appearance: none;
- border: 1px solid rgba(255, 255, 255, 0.12);
+ display: flex;
+ align-items: flex-start;
+ gap: 10px;
+ max-width: 100%;
+ box-sizing: border-box;
+ border: 1px solid rgba(255, 255, 255, 0.14);
  background: #262626;
  color: #e5e5e5;
- border-radius: 999px;
- padding: 6px 12px;
- font-size: 13px;
- line-height: 1.3;
+ font: inherit;
+ font-size: 14px;
+ line-height: 1.45;
+ text-align: left;
+ white-space: normal;
+ overflow-wrap: anywhere;
  cursor: pointer;
 }
-.ask-chip:hover {
- background: #333;
- border-color: rgba(255, 255, 255, 0.2);
+.ask-options.is-rows .ask-opt {
+ width: 100%;
+ min-height: 44px;
+ padding: 10px 12px;
+ border-radius: 10px;
 }
-.ask-chip.is-selected {
- background: #fafafa;
- color: #171717;
- border-color: #fafafa;
+.ask-opt.ask-chip {
+ min-height: 36px;
+ padding: 7px 14px 7px 10px;
+ border-radius: 18px;
+ align-items: center;
 }
-.ask-chip.is-multi.is-selected::before {
- content: "✓ ";
+.ask-opt:hover {
+ background: #303030;
+ border-color: rgba(255, 255, 255, 0.24);
+}
+.ask-opt:focus-visible,
+.ask-form-submit:focus-visible,
+.ask-form-cancel:focus-visible {
+ outline: 2px solid #8fb4ff;
+ outline-offset: 2px;
+}
+.ask-opt-mark {
+ flex: 0 0 auto;
+ width: 16px;
+ height: 16px;
+ margin-top: 2px;
+ border: 1.5px solid rgba(255, 255, 255, 0.45);
+ border-radius: 50%;
+ box-sizing: border-box;
+ position: relative;
+}
+.ask-chip .ask-opt-mark {
+ margin-top: 0;
+}
+.ask-opt.is-multi .ask-opt-mark {
+ border-radius: 4px;
+}
+.ask-opt-text {
+ display: flex;
+ flex-direction: column;
+ gap: 3px;
+ flex: 1 1 auto;
+}
+.ask-opt-label {
+ color: inherit;
+ font-weight: 500;
+}
+.ask-chip .ask-opt-label {
+ font-weight: 400;
+}
+.ask-opt-desc {
+ font-size: 12.5px;
+ color: #a3a3a3;
+ line-height: 1.5;
+ white-space: pre-line;
+}
+.ask-opt.is-selected {
+ background: rgba(143, 180, 255, 0.14);
+ border-color: #8fb4ff;
+ color: #fafafa;
+}
+.ask-opt.is-selected .ask-opt-mark {
+ border-color: #8fb4ff;
+ background: #8fb4ff;
+ box-shadow: inset 0 0 0 3px #1c1c1c;
+}
+.ask-opt.is-multi.is-selected .ask-opt-mark {
+ box-shadow: none;
+}
+.ask-opt.is-multi.is-selected .ask-opt-mark::after {
+ content: "";
+ position: absolute;
+ left: 4px;
+ top: 1px;
+ width: 4px;
+ height: 8px;
+ border: solid #1c1c1c;
+ border-width: 0 2px 2px 0;
+ transform: rotate(45deg);
+}
+.ask-opt.is-selected .ask-opt-desc {
+ color: #c9d6f2;
+}
+.ask-picked {
+ font-size: 12px;
+ color: #a3a3a3;
+ min-height: 0;
+}
+.ask-picked:empty {
+ display: none;
+}
+.ask-form-hint {
+ padding-bottom: 2px;
 }
 .ask-form-field {
  display: flex;
@@ -722,6 +917,11 @@ body.sidebar-open .btn.icon-btn {
  color: #a3a3a3;
  pointer-events: auto;
 }
+.ask-form-field.is-other .ask-field-cap {
+ font-weight: 500;
+ color: #b5b5b5;
+ font-size: 13px;
+}
 .ask-form-field input,
 .ask-form-field textarea {
  display: block;
@@ -729,57 +929,108 @@ body.sidebar-open .btn.icon-btn {
  box-sizing: border-box;
  border: 1px solid rgba(255, 255, 255, 0.12) !important;
  border-radius: 8px;
- padding: 8px 10px !important;
+ padding: 9px 11px !important;
  font: inherit;
  font-size: 14px !important;
- line-height: 1.45;
+ line-height: 1.5;
  color: #fafafa !important;
  background: #262626 !important;
  outline: none;
  resize: vertical;
- min-height: 40px;
- max-height: 160px;
+ min-height: 42px;
+ max-height: 240px;
  pointer-events: auto;
  user-select: text;
+ -webkit-user-select: text;
 }
 .ask-form-field textarea {
  min-height: 64px;
 }
 .ask-form-field input:focus,
 .ask-form-field textarea:focus {
- border-color: rgba(255, 255, 255, 0.28) !important;
+ border-color: #8fb4ff !important;
+}
+.ask-form-err {
+ font-size: 12.5px;
+ color: #fca5a5;
+ line-height: 1.5;
+}
+.ask-form-status {
+ align-self: center;
+ font-size: 12px;
+ line-height: 1.4;
+ padding: 2px 8px;
+ border-radius: 999px;
+ background: rgba(255, 255, 255, 0.08);
+ color: #d4d4d4;
+}
+.ask-form-status[data-kind="stale"],
+.ask-form-status[data-kind="cancelled"] {
+ color: #a3a3a3;
+}
+.ask-form-status[data-kind="error"] {
+ background: rgba(239, 68, 68, 0.15);
+ color: #fca5a5;
+}
+/* 底部区：进度 / 状态 / 按钮在同一处，贴底；锁定后只换文字，不把内容往下挤 */
+.ask-form-foot {
+ position: sticky;
+ bottom: 0;
+ z-index: 1;
+ display: flex;
+ flex-direction: row;
+ flex-wrap: wrap;
+ align-items: center;
+ gap: 8px 12px;
+ min-height: 44px;
+ margin: 0 -16px;
+ padding: 10px 16px 12px;
+ background: #1c1c1c;
+ border-top: 1px solid rgba(255, 255, 255, 0.06);
+ border-radius: 0 0 12px 12px;
+ box-sizing: border-box;
 }
 .ask-form-actions {
  display: flex;
  flex-direction: row;
+ flex-wrap: wrap;
  justify-content: flex-end;
  align-items: center;
  gap: 8px;
+ margin-left: auto;
+}
+.ask-keyhint {
+ font-size: 12px;
+ color: #737373;
+}
+.ask-keyhint[hidden] {
+ display: none;
+}
+.ask-form.is-done .ask-keyhint {
+ display: none;
+}
+.ask-form-submit,
+.ask-form-cancel {
+ appearance: none;
+ min-height: 36px;
+ border-radius: 8px;
+ padding: 7px 16px;
+ font-size: 13.5px;
+ font-weight: 600;
+ cursor: pointer;
 }
 .ask-form-submit {
- appearance: none;
  border: none;
  background: #fafafa;
  color: #171717;
- border-radius: 8px;
- padding: 6px 14px;
- font-size: 13px;
- font-weight: 600;
- cursor: pointer;
 }
 .ask-form-submit:hover {
  background: #e5e5e5;
 }
 .ask-form-cancel {
- appearance: none;
  border: 1px solid rgba(255, 255, 255, 0.16);
  background: transparent;
  color: #a3a3a3;
- border-radius: 8px;
- padding: 6px 14px;
- font-size: 13px;
- font-weight: 600;
- cursor: pointer;
 }
 .ask-form-cancel:hover {
  color: #fafafa;
@@ -787,8 +1038,80 @@ body.sidebar-open .btn.icon-btn {
  background: #262626;
 }
 .ask-form.is-done {
- opacity: 0.55;
+ pointer-events: auto;
+}
+.ask-form.is-done .ask-form-body,
+.ask-form.is-done .ask-form-bar {
  pointer-events: none;
+}
+/* 已结束：未选的项变淡，已选的项保持清楚，能看出当时选了什么 */
+.ask-form.is-done .ask-opt:not(.is-selected),
+.ask-form.is-done .ask-form-field {
+ opacity: 0.55;
+}
+.ask-form.is-done .ask-opt-more,
+.ask-form.is-done .ask-more {
+ pointer-events: auto;
+ opacity: 1;
+}
+.ask-form.is-done .ask-form-actions {
+ display: none;
+}
+.ask-form-status[data-kind="sending"] {
+ color: #c9d6f2;
+ background: rgba(143, 180, 255, 0.12);
+}
+/* 旧版胶囊（兼容旧 DOM / 其他调用方） */
+.ask-chip:not(.ask-opt) {
+ appearance: none;
+ -webkit-appearance: none;
+ border: 1px solid rgba(255, 255, 255, 0.12);
+ background: #262626;
+ color: #e5e5e5;
+ border-radius: 999px;
+ padding: 6px 12px;
+ font-size: 13px;
+ line-height: 1.3;
+ cursor: pointer;
+ white-space: normal;
+ overflow-wrap: anywhere;
+ text-align: left;
+ max-width: 100%;
+}
+@media (max-width: 600px) {
+ .ask-form {
+  width: 100%;
+  padding: 12px 12px 0;
+ }
+ .ask-form-foot {
+  margin: 0 -12px;
+  padding: 10px 12px calc(12px + env(safe-area-inset-bottom, 0px));
+ }
+ .ask-form-actions {
+  flex: 1 1 100%;
+ }
+ .ask-form-submit,
+ .ask-form-cancel {
+  min-height: 44px;
+  flex: 1 1 0;
+ }
+ .ask-opt-card > .ask-opt-more {
+  margin-left: 12px;
+  min-height: 36px;
+ }
+ .ask-opt.ask-chip {
+  min-height: 44px;
+ }
+}
+@media (pointer: coarse) {
+ .ask-keyhint {
+  display: none;
+ }
+ .ask-opt-text,
+ .ask-text {
+  -webkit-user-select: text;
+  user-select: text;
+ }
 }
 
 .msg-actions {
