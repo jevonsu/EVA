@@ -1,8 +1,8 @@
 """Eva → remote card-auth control-plane client.
 
 Supports multi-environment gateways (e.g. company intranet + public egress):
-  AUTH_CONTROL_URL=http://10.11.11.41:8090
-  AUTH_CONTROL_URLS=公司内网=http://10.11.11.41:8090,外出公网=http://cardserver.hn.takin.cc
+  AUTH_CONTROL_URL=http://192.0.2.10:8090
+  AUTH_CONTROL_URLS=公司内网=http://192.0.2.10:8090,外出公网=http://auth.example.com
 
 Login / session-check fail over across reachable bases when the preferred
 address is unreachable (common when switching office ↔ travel networks).
@@ -78,7 +78,7 @@ def _warn_throttled(key: str, message: str) -> None:
 def _get_client() -> httpx.AsyncClient:
     """Reuse one AsyncClient per event loop (connect pool + DNS cache).
 
-    trust_env=False: 鉴权网关多为内网地址（如 http://10.11.11.41:8090）。
+    trust_env=False: 鉴权网关多为内网地址（如 http://192.0.2.10:8090）。
     若遵循系统 HTTP(S)_PROXY，请求会被代理劫持并常表现为 502，
     与备份环境「直连网关」行为不一致。控制面请求必须直连，不走代理。
     """
@@ -154,8 +154,8 @@ def parse_control_presets() -> list[dict[str, str]]:
     """Parse AUTH_CONTROL_URL + AUTH_CONTROL_URLS into ordered unique presets.
 
     AUTH_CONTROL_URLS examples:
-      公司内网=http://10.11.11.41:8090,外出公网=http://cardserver.hn.takin.cc
-      http://10.11.11.41:8090,http://cardserver.hn.takin.cc
+      公司内网=http://192.0.2.10:8090,外出公网=http://auth.example.com
+      http://192.0.2.10:8090,http://auth.example.com
     """
     settings = get_settings()
     raw_multi = (getattr(settings, "auth_control_urls", None) or "").strip()
@@ -568,8 +568,8 @@ async def remote_login(
     bases = control_url_candidates(preferred) if try_fallbacks else ([preferred] if preferred else [])
     if not bases:
         return None, (
-            "请填写鉴权服务地址（网关），例如公司内网 http://10.11.11.41:8090 "
-            "或外出公网 http://cardserver.hn.takin.cc"
+            "请填写鉴权服务地址（网关），例如公司内网 http://192.0.2.10:8090 "
+            "或外出公网 http://auth.example.com"
         )
 
     last_net_err = ""

@@ -15,6 +15,7 @@ from app.memory.session import SessionStore, get_session_store, suggest_session_
 from app.memory.store import MemoryStore, get_memory_store
 from app.models.schemas import ChatResponse, ToolCallRecord
 from app.tools.registry import ToolRegistry, get_tool_registry
+from app.tools.protection import preserve_turn_context
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +230,7 @@ class Agent:
                 break
         return out[:max_paths]
 
+    @preserve_turn_context
     async def chat(
         self,
         message: str,
@@ -482,7 +484,7 @@ class Agent:
         try:
             lookback = 4 if self._is_followup_deixis(message) else 2
             intent_force |= self.tools.on_demand_cores_from_history(
-                history, lookback=lookback
+                history, lookback=lookback, current_message=message
             )
         except Exception:
             logger.exception("on-demand core sticky from history failed")
@@ -1086,6 +1088,7 @@ class Agent:
         near_limit_nudge_sent = False
         office_nudge_sent = False
         turn_tools: list[dict[str, Any]] | None = None
+        last_terminal_state: str | None = None
 
         while True:
             phase_limit = phase_start + max(1, max_rounds)
@@ -1140,6 +1143,12 @@ class Agent:
                             if (t.get("function") or {}).get("name") != "ask_user"
                         ]
                     turn_tools = openai_tools
+                terminal_state = self.tools.terminal_availability(
+                    openai_tools, use_tools=use_tools
+                )
+                if terminal_state != last_terminal_state:
+                    logger.info("EVA_TERMINAL_STATE session=%s state=%s", session_id, terminal_state)
+                    last_terminal_state = terminal_state
                 self._emit_progress(
                     on_progress,
                     {
@@ -1277,6 +1286,11 @@ class Agent:
                                 _ok_tool = False
                         except Exception:
                             pass
+                        if name == "terminal":
+                            logger.info(
+                                "EVA_TERMINAL_RESULT session=%s state=%s",
+                                session_id, "tool_error" if not _ok_tool else "returned",
+                            )
                         self._emit_progress(
                             on_progress,
                             {

@@ -1,0 +1,33 @@
+{
+  "id": "imagine_prompt",
+  "name": "Grok提示词",
+  "description": "生成或检查 Grok Imagine 图像/视频提示词（文生图、图生图、图生视频、文生视频、参考图生视频；人物/产品/其他表单、辣椒模式、角度/镜头/景别、保持/修改、时间轴关键帧、目标比例与参数建议）。与侧栏「Grok提示词」网页工具同一套规则；只生成文字，不调用生成接口。",
+  "version": "0.2.0",
+  "tools": [],
+  "agentos_meta": {
+    "role": "primary",
+    "tag": "Grok提示词",
+    "group": "media",
+    "how_to_call": "帮我写 Grok 提示词 / 文生图提示词 / 图生视频提示词 / 检查这段提示词",
+    "scene_keywords": [
+      "Grok提示词",
+      "grok提示词",
+      "Grok Imagine",
+      "grok imagine",
+      "Imagine",
+      "提示词",
+      "生图提示词",
+      "视频提示词",
+      "出图提示词",
+      "文生图",
+      "图生图",
+      "图生视频",
+      "文生视频",
+      "参考图生视频",
+      "参考图",
+      "提示词检查",
+      "镜头角度",
+      "prompt"
+    ]
+  }
+}

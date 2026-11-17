@@ -656,35 +656,85 @@ class ToolRegistry:
         history: list[dict[str, Any]] | None,
         *,
         lookback: int = 2,
+        current_message: str = "",
     ) -> set[str]:
-        """Re-offer workflow/schedule/integrations/llms used in recent tool turns.
+        """Recall this session's last 2 (at most 4) tool-bearing replies.
 
-        Skips chat-only assistant messages so a later 「搞一下那个」 still sees
-        the last task tools, without keeping them on every RP turn forever.
+        Chat-only replies do not consume the tool-turn budget. All recall is
+        nevertheless bounded to the latest 8 assistant replies, so idle chat
+        cannot pin tools forever. Newer tool work consumes the same budget;
+        an explicit new-task marker cuts off older work immediately. This is
+        only a routing hint: disabled/unregistered/path-blocked tools still
+        cannot enter the visible toolset. No cross-session cache is kept.
         """
         if not history or lookback <= 0:
             return set()
+
+        def new_task(text: Any) -> bool:
+            return isinstance(text, str) and bool(re.match(
+                r"^\s*(?:新任务|开始新任务|另一个任务|换个任务|换个话题|另外一件事)"
+                r"(?:[：:，,。！!？?\s]|$)", text
+            ))
+
+        if new_task(current_message):
+            return set()
         found: set[str] = set()
         seen_asst = 0
+        seen_work = 0
+        budget = min(4, lookback)
         for m in reversed(history):
+            if m.get("role") == "user" and new_task(m.get("content")):
+                break
             if m.get("role") != "assistant":
                 continue
             seen_asst += 1
+            if seen_asst > 8:
+                break
             meta = m.get("metadata") if isinstance(m.get("metadata"), dict) else {}
+            names: set[str] = set()
             for tc in meta.get("tool_calls") or []:
-                if not isinstance(tc, dict):
-                    continue
-                n = str(tc.get("name") or "").strip()
-                if n in cls._ON_DEMAND_CORES:
-                    found.add(n)
-            used = str(meta.get("tools_used") or "")
-            if used:
-                for n in cls._ON_DEMAND_CORES:
-                    if n in used:
-                        found.add(n)
-            if seen_asst >= lookback:
+                if isinstance(tc, dict):
+                    fn = tc.get("function")
+                    name = tc.get("name") or (fn.get("name") if isinstance(fn, dict) else "")
+                    if isinstance(name, str) and name.strip():
+                        names.add(name.strip())
+            # Legacy summaries are stored as "terminal(); workspace()".
+            used = meta.get("tools_used")
+            if isinstance(used, str):
+                names.update(re.findall(r"(?<![\w])([A-Za-z_][A-Za-z_0-9]*)\s*\(", used))
+                if not names:
+                    names.update(re.findall(r"[A-Za-z_][A-Za-z_0-9]*", used))
+            if not names:
+                continue
+            seen_work += 1
+            found.update(names & cls._ON_DEMAND_CORES)
+            if seen_work >= budget:
                 break
         return found
+
+    def terminal_availability(
+        self, offered: list[dict[str, Any]] | None, *, use_tools: bool
+    ) -> str:
+        """Fixed diagnostic code only; never expose config, prompts or commands."""
+        if not use_tools:
+            return "turn_tools_off"
+        try:
+            from app.config_store import get_config_store
+            from app.tools.protection import is_tool_blocked
+
+            store = get_config_store()
+            if "terminal" in store.disabled_tools():
+                return "tool_config_disabled"
+            if "terminal" in {str(x).lower() for x in store.disabled_skills()}:
+                return "skill_config_disabled"
+            if is_tool_blocked("terminal"):
+                return "path_blocked"
+            if not self.get("terminal"):
+                return "not_registered"
+            names = {(t.get("function") or {}).get("name") for t in offered or []}
+            return "available" if "terminal" in names else "not_recalled"
+        except Exception:
+            return "diagnostic_unavailable"
 
     def _named_tools_in_query(self, query: str) -> set[str]:
         """Force-include tools whose names appear as tokens, not substrings.

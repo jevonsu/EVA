@@ -183,6 +183,7 @@ def skill_package_exists(name: str) -> bool:
 # ---- Release gates (F01 / F02) ----------------------------------------------
 
 import contextvars
+from functools import wraps
 
 # Tool *actions* that need a human in the loop: never on unattended paths
 # (scheduled tasks, workflows, webhooks). Checked as "<tool>:<action>".
@@ -291,6 +292,29 @@ def get_turn_user_message() -> str | None:
 
 def get_turn_session_id() -> str | None:
     return _turn_session_id_cv.get()
+
+
+def preserve_turn_context(func):
+    """Restore caller context on every chat exit, including cancel/early return.
+
+    Inherit outer restrictions (e.g. webhook); do not clear them. A token is
+    captured before Agent.chat changes any value. This also protects nested
+    calls and sequential calls in the same asyncio task, not only new tasks.
+    """
+    @wraps(func)
+    async def wrapped(*args, **kwargs):
+        variables = (
+            _blocked_tools_cv, _turn_user_message_cv,
+            _turn_session_id_cv, _turn_id_cv,
+        )
+        tokens = [(var, var.set(var.get())) for var in variables]
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            for var, token in reversed(tokens):
+                var.reset(token)
+
+    return wrapped
 
 
 def create_tool_disabled_payload(action: str = "create_tool") -> dict[str, Any]:
