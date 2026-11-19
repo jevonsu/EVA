@@ -399,6 +399,37 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             return json.dumps(out, ensure_ascii=False)
 
         if act in ("recall", "search", "get"):
+            if item_id:
+                item = await store.get(item_id, include_hidden=True)
+                if item is None:
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "action": "get",
+                            "error": "not_found",
+                            "id": item_id,
+                        },
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "action": "get",
+                        "id": item.id,
+                        "item": {
+                            "id": item.id,
+                            "content": item.content,
+                            "kind": item.kind,
+                            "tags": item.tags,
+                            "status": item.status,
+                            "confidence": item.confidence,
+                            "valid_to": item.valid_to,
+                            "created_at": item.created_at.isoformat(),
+                        },
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
             q = (query or content or "").strip()
             lim = max(1, min(int(limit or 10), 50))
             if q:

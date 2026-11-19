@@ -277,10 +277,9 @@ class SessionStore:
                     m["created_at"] = stamp
             data["messages"].extend(messages)
             self._ensure_message_ids(data["messages"])
-            cap = int(max_history if max_history is not None else self.max_history)
-            cap = max(4, cap)
-            if len(data["messages"]) > cap * 2:
-                data["messages"] = data["messages"][-cap:]
+            # Do not hard-delete here. Raw history is trimmed only after a
+            # successful session evolution (set_evolution(..., trim_to=...)).
+            # max_history still caps what is sent to the model via get_messages.
             data["updated_at"] = _now().isoformat()
             if title and not data.get("title"):
                 data["title"] = title[:80]

@@ -34,7 +34,57 @@ logger = logging.getLogger("app.services.process_control")
 TOKEN_TTL = 300.0
 CREATE_NO_WINDOW = 0x08000000
 _tokens: dict[str, dict[str, Any]] = {}
-_tok_lock = threading.Lock()
+_tok_lock = threading.RLock()
+_tok_loaded = False
+
+
+def _tokens_path() -> Path:
+    from app.config import PROJECT_ROOT
+
+    d = Path(PROJECT_ROOT).resolve() / "data"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "process_kill_tokens.json"
+
+
+def _ensure_tokens_loaded() -> None:
+    """Load unexpired tokens persisted by a previous EVA run (restart within TTL).
+    Identity (pid + create_time + cmdline fingerprint) is still re-checked at kill time."""
+    global _tok_loaded
+    with _tok_lock:
+        if _tok_loaded:
+            return
+        _tok_loaded = True
+        try:
+            path = _tokens_path()
+            if not path.exists():
+                return
+            raw = json.loads(path.read_text(encoding="utf-8") or "{}")
+            now = time.time()
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if isinstance(v, dict) and float(v.get("expires") or 0) > now and k not in _tokens:
+                        _tokens[k] = v
+        except Exception:
+            logger.exception("load kill tokens failed")
+
+
+def _save_tokens() -> None:
+    with _tok_lock:
+        try:
+            now = time.time()
+            live = {k: v for k, v in _tokens.items() if float(v.get("expires") or 0) > now}
+            path = _tokens_path()
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(live, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception:
+            logger.exception("save kill tokens failed")
+
+
+def _pop_token(key: str) -> None:
+    with _tok_lock:
+        if _tokens.pop((key or "").strip(), None) is not None:
+            _save_tokens()
 
 # ---------------------------------------------------------------- deny lists
 _WIN_CRITICAL = {
@@ -111,7 +161,14 @@ CONSENT = re.compile(
     r"\byes\b|\bok\b|\bokay\b|\bconfirm\b|\bgo ahead\b",
     re.I,
 )
-NEGATION = re.compile(r"不|别|勿|否|取消|算了|等等|先等|暂停|停一下|\bno\b|\bnot\b|\bdon'?t\b|\bcancel\b|\bstop\b", re.I)
+# 「不」只在构成否定词时才算否定（「不错」「没问题，不客气」不算）；
+# 「别/勿/否」同理只认常见否定搭配，避免误伤「同意结束」之类的确认文字。
+NEGATION = re.compile(
+    r"不要|不用|不同意|不行|不可以|不能|不必|不需要|不想|不准|不许|不杀|不结束|不关|不停|不好|"
+    r"先不|还是不|暂时不|不了|别|勿|否决|拒绝|取消|算了|等等|先等|暂停|停一下|"
+    r"\bno\b|\bnot\b|\bdon'?t\b|\bcancel\b|\bstop\b",
+    re.I,
+)
 
 
 def _psutil():
@@ -396,6 +453,7 @@ def _turn() -> tuple[str | None, str | None, str | None]:
 def _issue_token(info: dict[str, Any]) -> str:
     turn_id, sid, _ = _turn()
     tok = secrets.token_urlsafe(9)
+    _ensure_tokens_loaded()
     with _tok_lock:
         now = time.time()
         for k in [k for k, v in _tokens.items() if v["expires"] < now]:
@@ -408,8 +466,10 @@ def _issue_token(info: dict[str, Any]) -> str:
             "session_id": sid,
             "turn_id": turn_id,
             "children": sorted(c["pid"] for c in info.get("children") or []),
+            "issued": now,
             "expires": now + TOKEN_TTL,
         }
+        _save_tokens()
     return tok
 
 
@@ -459,8 +519,9 @@ def query(pid: int | None = None, name: str = "", port: int | None = None) -> di
         out["tell_user"] = notice_text(info)
         out["next_step"] = (
             "把 tell_user 原样告诉用户（已附确认卡片），然后结束本轮等用户回答。"
-            "不要在本轮调用 kill，也不要假设用户同意。用户下一轮明确同意后，"
-            "再调用 action=kill，带 pid、confirm_token，以及用户选的 scope（process=只结束该进程；tree=连同子进程树）。"
+            "不要在本轮调用 kill，也不要假设用户同意。用户在卡片上点「同意」或回复「同意/取消」后，"
+            "系统会直接执行或取消并把结果告诉用户，你不需要也不要再次询问。"
+            "只有用户在之后另行明确同意时，才调用 action=kill，带 pid、confirm_token、scope。"
         )
         return out
     if not name and not port:
@@ -530,6 +591,19 @@ def confirm_form(info: dict[str, Any]) -> dict[str, Any]:
         ],
         "cancellable": True,
     }
+
+
+def tree_only_form(form: dict[str, Any], what: str, ctx: dict[str, Any]) -> dict[str, Any]:
+    """Terminal job / EVA service stop always ends the whole tree: one agree option."""
+    pid = form.get("kill_pid")
+    form["kill_ctx"] = dict(ctx, scope="tree")
+    for f in form.get("fields") or []:
+        if isinstance(f, dict) and f.get("id") == "choice":
+            f["options"] = [
+                {"value": "tree", "label": f"同意停止{what}（PID {pid}，连同子进程）"},
+                {"value": "cancel", "label": "取消，不要停止"},
+            ]
+    return form
 
 
 # ------------------------------------------------------------- kill
@@ -636,12 +710,12 @@ def kill(pid: int, confirm_token: str, scope: str = "process") -> dict[str, Any]
     turn_id, sid, msg = _turn()
     pid = int(pid or 0)
     base_audit = {"pid": pid, "session_id": sid, "consent": (msg or "")[:200], "scope_requested": scope}
+    _ensure_tokens_loaded()
     with _tok_lock:
         tok = _tokens.get((confirm_token or "").strip())
     def refuse(err: str, *, drop: bool = False, **extra) -> dict[str, Any]:
         if drop:
-            with _tok_lock:
-                _tokens.pop((confirm_token or "").strip(), None)
+            _pop_token(confirm_token)
         _audit({**base_audit, "result": "refused", "reason": err})
         return {"ok": False, "killed": False, "error": err, **extra}
 
@@ -663,6 +737,14 @@ def kill(pid: int, confirm_token: str, scope: str = "process") -> dict[str, Any]
             "用户本轮没有明确同意（或包含否定/取消）。不要假设同意；如用户拒绝，就不要结束。",
             need_user_consent=True,
         )
+    eff_scope = _scope_from_message(msg, scope)
+    return _execute_kill(pid, (confirm_token or "").strip(), tok, eff_scope, base_audit, refuse)
+
+
+def _execute_kill(pid: int, key: str, tok: dict[str, Any], eff_scope: str,
+                  base_audit: dict[str, Any], refuse) -> dict[str, Any]:
+    """Shared by model kill() and the server-side form-consent path.
+    Re-checks identity, hard-deny and tree growth, then terminates."""
     info = describe(pid)
     from app.services.proc_tree import matches
 
@@ -670,16 +752,19 @@ def kill(pid: int, confirm_token: str, scope: str = "process") -> dict[str, Any]
         return refuse("进程已退出，或 PID 已被别的程序复用（身份核对未通过），未结束任何进程。", drop=True)
     if info.get("hard_denied"):
         return refuse(info["deny_reason"], drop=True)
-    eff_scope = _scope_from_message(msg, scope)
     kids_now = sorted(c["pid"] for c in info.get("children") or [])
     if eff_scope == "tree" and set(kids_now) - set(tok.get("children") or []):
         return refuse(
             "子进程比告知时多了，影响范围变化，需要重新告知用户。",
             drop=True, need_requery=True, children_now=kids_now,
         )
-    # consume token
+    # consume token atomically (a double submit must not kill twice)
     with _tok_lock:
-        _tokens.pop((confirm_token or "").strip(), None)
+        claimed = _tokens.pop(key, None) is not None
+        if claimed:
+            _save_tokens()
+    if not claimed:
+        return refuse("这次确认已经执行过或已被取消，没有重复结束。", already_used=True)
     targets = [pid]
     if eff_scope == "tree":
         prot = _protected_self()
@@ -713,9 +798,76 @@ def kill(pid: int, confirm_token: str, scope: str = "process") -> dict[str, Any]
     return out
 
 
-def revoke_session_tokens(session_id: str | None) -> int:
+def revoke_session_tokens(session_id: str | None, pid: int | None = None) -> int:
+    """Revoke a session's tokens (all, or only those for one pid)."""
+    _ensure_tokens_loaded()
     with _tok_lock:
-        ks = [k for k, v in _tokens.items() if v.get("session_id") == session_id]
+        ks = [
+            k for k, v in _tokens.items()
+            if v.get("session_id") == session_id and (pid is None or int(v.get("pid") or 0) == int(pid))
+        ]
         for k in ks:
             _tokens.pop(k, None)
+        if ks:
+            _save_tokens()
     return len(ks)
+
+
+def find_session_token(session_id: str | None, pid: int) -> tuple[str | None, dict[str, Any] | None]:
+    """Newest token (expired ones included, so callers can say "expired")
+    issued in this session for this pid. Never returned to the user/model."""
+    if not session_id:
+        return None, None
+    _ensure_tokens_loaded()
+    with _tok_lock:
+        rows = [
+            (k, v) for k, v in _tokens.items()
+            if v.get("session_id") == session_id and int(v.get("pid") or 0) == int(pid)
+        ]
+    if not rows:
+        return None, None
+    rows.sort(key=lambda kv: float(kv[1].get("issued") or kv[1].get("expires") or 0))
+    return rows[-1]
+
+
+def kill_by_form_consent(
+    session_id: str | None,
+    pid: int,
+    choice: str,
+    *,
+    force_scope: str | None = None,
+    consent_text: str = "",
+) -> dict[str, Any]:
+    """Server-side execution after the user submitted the kill_confirm card
+    (or replied 同意 to it). The submission itself is the explicit consent, so
+    the model never needs the token and cannot loop re-asking. All identity /
+    expiry / session / hard-deny / tree-growth checks still apply."""
+    pid = int(pid or 0)
+    ch = (choice or "").strip().lower()
+    base_audit = {
+        "pid": pid, "session_id": session_id, "path": "form_consent",
+        "consent": f"form:{ch} {consent_text or ''}"[:200], "scope_requested": force_scope or ch,
+    }
+    key, tok = find_session_token(session_id, pid)
+
+    def refuse(err: str, *, drop: bool = False, **extra) -> dict[str, Any]:
+        if drop and key:
+            _pop_token(key)
+        _audit({**base_audit, "result": "refused", "reason": err})
+        return {"ok": False, "killed": False, "pid": pid, "error": err, **extra}
+
+    if ch not in ("process", "tree"):
+        return refuse("没有选择结束方式。", bad_choice=True)
+    if not session_id or not pid:
+        return refuse("缺少会话或 PID，未结束任何进程。")
+    if not tok:
+        return refuse(
+            "这张确认卡已经失效（已执行过、已取消，或已超过 5 分钟），没有结束任何进程。",
+            expired=True, need_requery=True,
+        )
+    if float(tok.get("expires") or 0) < time.time():
+        return refuse("确认已超过 5 分钟有效期，没有结束任何进程。", drop=True, expired=True, need_requery=True)
+    if tok.get("session_id") != session_id:
+        return refuse("令牌属于另一个会话。", drop=True)
+    eff_scope = force_scope if force_scope in ("process", "tree") else ch
+    return _execute_kill(pid, key or "", tok, eff_scope, base_audit, refuse)

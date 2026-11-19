@@ -63,7 +63,9 @@ def evolution_settings(agent_cfg: dict[str, Any] | None) -> dict[str, Any]:
         max_history = int(cfg.get("max_history_messages") or 0)
     except (TypeError, ValueError):
         max_history = 0
-    # Session trims at max_history*2; trigger must fire before that or evolution never runs.
+    # Persistence no longer hard-deletes at max_history*2; evolution still
+    # trims to keep_messages after a successful compact. Keep trigger below
+    # a generous ceiling so compression remains frequent.
     if max_history > 0:
         ceiling = max(8, int(max_history) * 2 - 1)
         if trigger >= ceiling:
@@ -168,8 +170,11 @@ def render_evolution_block(evo: dict[str, Any] | None, *, max_chars: int = 2200)
 
     lines = [
         "SESSION NOTES (this conversation only — not SOPs or standing rules):",
-        "Working scratch after old turns were compressed. Prefer knowledge base for procedures "
-        "and pinned memory for durable prefs. If those disagree with an item here, they win.",
+        "Valid task state for continuing this conversation: goals, decisions, open items, "
+        "artifacts, and current stage. Prefer knowledge base for general procedures "
+        "and pinned memory for durable prefs. If those disagree with an item here on a "
+        "procedure, kb wins. When continuing a multi-step task, treat these notes as "
+        "the current task state.",
         "User corrections in this conversation still override older notes below.",
         "",
     ]
@@ -209,28 +214,9 @@ def should_evolve(
 
 
 def _compact_messages_for_prompt(messages: list[dict[str, Any]], *, max_chars: int = 6000) -> str:
-    parts: list[str] = []
-    total = 0
-    for m in messages:
-        role = m.get("role") or "?"
-        if role == "system":
-            continue
-        content = str(m.get("content") or "").strip()
-        if not content and m.get("metadata"):
-            meta = m.get("metadata") or {}
-            content = f"(tools: {meta.get('tools_used') or '…'})"
-        if not content:
-            continue
-        # drop huge blobs
-        if len(content) > 800:
-            content = content[:800] + "…"
-        line = f"{role}: {content}"
-        if total + len(line) > max_chars:
-            parts.append("…(earlier messages truncated for compression)…")
-            break
-        parts.append(line)
-        total += len(line) + 1
-    return "\n".join(parts)
+    from app.agent.context_continuity import compact_messages_newest_first
+
+    return compact_messages_newest_first(messages, max_chars=max_chars)
 
 
 async def evolve_session_context(

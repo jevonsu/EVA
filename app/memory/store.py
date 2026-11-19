@@ -20,6 +20,7 @@ from app.storage.lifecycle import (
     STATUS_STAGING,
     clamp_confidence,
     compute_valid_to,
+    is_expired_by_valid_to,
     is_visible_row,
     normalize_status,
 )
@@ -177,6 +178,8 @@ def render_memory_context(
     limit: int = 5,
     max_chars: int = 1800,
     max_pin: int = 6,
+    session_id: str | None = None,
+    working_limit: int = 3,
 ) -> str:
     """Build the system-prompt memory block from already-loaded rows.
 
@@ -190,7 +193,8 @@ def render_memory_context(
     q_tokens = _tokenize(q) if q else set()
     suppress = list(suppress_terms or [])
 
-    # Never inject staging into standing or match blocks
+    raw_items = list(items)
+    # Never inject staging into standing or match blocks (working quota is separate)
     items = [
         row
         for row in items
@@ -242,13 +246,14 @@ def render_memory_context(
     count = 0
     budget = max(400, int(max_chars))
 
-    def _add(kind: str, content: str, score: float | None = None) -> bool:
+    def _add(kind: str, content: str, score: float | None = None, item_id: str = "") -> bool:
         nonlocal used, count
         body = format_memory_body(content)
         if not body or looks_broken_note(body):
             return True
         score_s = f" score={score:.1f}" if score is not None else ""
-        line = f"- [{kind}]{score_s} {body}"
+        id_s = f" id={item_id}" if str(item_id or "").strip() else ""
+        line = f"- [{kind}]{id_s}{score_s} {body}"
         if used + len(line) + 1 > budget and count > 0:
             return False
         lines.append(line)
@@ -262,6 +267,7 @@ def render_memory_context(
             if not _add(
                 str(row.get("kind") or "rule"),
                 str(row.get("content") or ""),
+                item_id=str(row.get("id") or ""),
             ):
                 break
 
@@ -273,6 +279,44 @@ def render_memory_context(
                 str(row.get("kind") or "note"),
                 str(row.get("content") or ""),
                 s,
+                item_id=str(row.get("id") or ""),
+            ):
+                break
+
+    used_ids = {r.get("id") for r in standing} | {r.get("id") for _, r in extras}
+    work_cap = max(0, int(working_limit or 0))
+    sid = str(session_id or "").strip()
+    working: list[dict[str, Any]] = []
+    if work_cap:
+        for row in reversed(raw_items):
+            st = str(row.get("status") or "").strip().lower()
+            kind = str(row.get("kind") or "").strip().lower()
+            row_sid = str(row.get("session_id") or "").strip()
+            is_work = (
+                st == STATUS_STAGING
+                or kind in CP_STAGING_KINDS
+                or is_staging_kind(kind)
+                or (sid and row_sid == sid and not is_pin_row(row))
+            )
+            if not is_work or row.get("id") in used_ids:
+                continue
+            body = str(row.get("content") or "")
+            if looks_broken_note(body):
+                continue
+            working.append(row)
+            used_ids.add(row.get("id"))
+            if len(working) >= work_cap:
+                break
+        working.reverse()
+    if working:
+        lines.append(
+            "Working memory (session/staging, not gold — get by id= for the full note):"
+        )
+        for row in working:
+            if not _add(
+                str(row.get("kind") or "note"),
+                str(row.get("content") or ""),
+                item_id=str(row.get("id") or ""),
             ):
                 break
 
@@ -347,7 +391,9 @@ class MemoryStore:
             "supersedes_id": getattr(row, "supersedes_id", None),
         }
 
-    def _load_all_sync(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
+    def _load_all_sync(
+        self, *, include_archived: bool = False, include_staging: bool = False
+    ) -> list[dict[str, Any]]:
         with db_connect() as conn:
             rows = conn.execute(
                 select(memories_t).order_by(memories_t.c.created_at.asc())
@@ -355,7 +401,38 @@ class MemoryStore:
         out = [self._row_dict(r) for r in rows]
         if include_archived:
             return out
-        return [r for r in out if is_visible_row(r, include_archived=False)]
+        visible: list[dict[str, Any]] = []
+        for r in out:
+            st = str(r.get("status") or "").strip().lower()
+            if include_staging and st == STATUS_STAGING and not is_expired_by_valid_to(r):
+                visible.append(r)
+                continue
+            if is_visible_row(r, include_archived=False):
+                visible.append(r)
+        return visible
+
+    async def get(
+        self, memory_id: str, *, include_hidden: bool = True
+    ) -> MemoryItem | None:
+        """Fetch one note by id. Explicit get includes staging (and other hidden statuses)."""
+        mid = (memory_id or "").strip()
+        if not mid:
+            return None
+
+        def _do() -> dict[str, Any] | None:
+            with db_connect() as conn:
+                row = conn.execute(
+                    select(memories_t).where(memories_t.c.id == mid)
+                ).first()
+            if not row:
+                return None
+            d = self._row_dict(row)
+            if not include_hidden and not is_visible_row(d, include_archived=False):
+                return None
+            return d
+
+        d = await run_db(_do)
+        return self._to_item(d) if d else None
 
     def _to_item(self, d: dict[str, Any], score: float | None = None) -> MemoryItem:
         created = d.get("created_at") or _now().isoformat()
@@ -794,8 +871,15 @@ class MemoryStore:
         max_chars: int = 1800,
         max_pin: int = 6,
         suppress_terms: list[str] | None = None,
+        session_id: str | None = None,
+        working_limit: int = 3,
     ) -> str:
-        items = await run_db(lambda: self._load_all_sync(include_archived=False))
+        items = await run_db(
+            lambda: self._load_all_sync(
+                include_archived=False,
+                include_staging=bool(session_id) or int(working_limit or 0) > 0,
+            )
+        )
         return render_memory_context(
             items,
             query,
@@ -803,6 +887,8 @@ class MemoryStore:
             limit=limit,
             max_chars=max_chars,
             max_pin=max_pin,
+            session_id=session_id,
+            working_limit=working_limit,
         )
 
 

@@ -105,12 +105,15 @@ async def handle(
                 result = {"ok": False, "error": "任务已结束", **{k: st.get(k) for k in ("id", "status", "exit_code")}}
             elif not (confirm_token or "").strip():
                 q = await asyncio.to_thread(pc.query, pid=int(st["pid"]))
+                if isinstance(q.get("form"), dict):
+                    # card submit → server-side kill of the whole job tree
+                    pc.tree_only_form(q["form"], "后台任务", {"tool": "terminal", "job_id": job_id})
                 result = {
                     "ok": False,
                     "need_confirm": True,
                     "job": {k: st.get(k) for k in ("id", "command", "pid")},
                     **{k: q.get(k) for k in ("tell_user", "confirm_token", "form", "token_expires_in_sec", "process", "error") if k in q},
-                    "next_step": "把 tell_user 告诉用户并结束本轮；用户下一轮明确同意后再 action=kill 带 job_id 和 confirm_token。",
+                    "next_step": "把 tell_user 告诉用户并结束本轮（已附确认卡片）；用户点卡片「同意」或回复同意/取消后系统会直接执行或取消，不要再次询问。",
                 }
             else:
                 result = await asyncio.to_thread(pc.kill, int(st["pid"]), confirm_token, "tree")
@@ -187,14 +190,16 @@ async def handle(
                     result = {"ok": True, "already": svc.get("status"), "service": svc}
                 elif not (confirm_token or "").strip():
                     q = await asyncio.to_thread(pc.query, pid=int(svc["pid"]))
+                    if isinstance(q.get("form"), dict):
+                        pc.tree_only_form(q["form"], "服务", {"tool": "terminal", "service_id": svc.get("id")})
                     result = {
                         "ok": False,
                         "need_confirm": True,
                         "service": {k: svc.get(k) for k in ("id", "name", "command", "ports", "pid")},
                         **{k: q.get(k) for k in ("tell_user", "confirm_token", "form", "token_expires_in_sec", "process") if k in q},
                         "next_step": (
-                            "把 tell_user 告诉用户并结束本轮；用户下一轮明确同意后，"
-                            "再调用 action=stop_service，带 service_id 和 confirm_token。"
+                            "把 tell_user 告诉用户并结束本轮（已附确认卡片）；用户点卡片「同意」或回复同意/取消后，"
+                            "系统会直接停止或取消并告诉用户，不要再次询问。"
                         ),
                     }
                 else:

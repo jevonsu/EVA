@@ -39,12 +39,15 @@ GROUNDING_INSTRUCTION = (
 # Long-term memory instruction injected into system prompt
 MEMORY_INSTRUCTION = (
     "Memory (tool `memory`): short preference/habit/fact only — not procedures. "
-    "Only matched snippets plus explicit pins are injected, never the full store. "
-    "Pinned lines are standing prefs; truncated long notes are pointers, not the rule. "
+    "Only matched snippets plus explicit pins (and a small session working-memory quota) "
+    "are injected, never the full store. "
+    "Pinned lines are standing prefs; truncated long notes are pointers (they include id=). "
     "If memory conflicts with kb, follow kb (get the page). "
-    "Missing fact → action=recall. "
-    "Persist 记住/保存/别忘了: control prefs → standing memory; "
-    "facts/notes without TTL → staging (not gold); evidence → staging+TTL; "
+    "Missing or truncated fact → memory action=get with that id=, or action=recall with a query. "
+    "Persist 记住/保存/别忘了: control prefs (preference/constraint/goal/strategy/habit/rule) "
+    "→ standing memory; short facts/notes without TTL → active fact memory "
+    "(injectable, not certified gold); evidence/inferred/scratch → staging+TTL "
+    "(not auto-injected; fetch by id= still works); "
     "long structured docs → kb staging + link_ref; repeatable multi-step → workflow; "
     "tabular business records → an installed data skill if any, not memory. "
     "Do not invent certified/gold knowledge; human review approve for 正式认定. "
@@ -76,8 +79,12 @@ KB_HIT_INSTRUCTION = (
 )
 
 GROUNDING_STACK = (
-    "SOURCE PRIORITY: kb procedures > pinned short memory prefs > session notes. "
-    "Session evolution is this-conversation scratch, not SOP and not fresher than kb or tools. "
+    "SOURCE PRIORITY: kb procedures > pinned short memory prefs > "
+    "this-session TASK STATE / SESSION NOTES. "
+    "SESSION NOTES and TASK STATE are valid working memory for this conversation's "
+    "goals, steps, artifacts, and tool outcomes. They are not SOPs and must not "
+    "rewrite kb procedures, but when continuing a multi-step task treat them as "
+    "the current task state. "
     "Do not let a slightly edited memory rewrite a knowledge-base procedure. "
     "Never paste handler.py / skill source / raw tool JSON into the user-visible reply "
     "unless the user asked to see the code. After running a skill, say what it did in "
@@ -286,6 +293,36 @@ class Agent:
             session_id = session["session_id"]
 
         history = await self.sessions.get_messages(session_id, limit=max_history)
+        try:
+            # New sessions are created after set_turn_context: bind the real id
+            # (kill confirm tokens are per session) without changing the turn id.
+            from app.tools.protection import (
+                get_turn_id,
+                get_turn_session_id,
+                set_turn_context,
+            )
+
+            if get_turn_session_id() != session_id:
+                set_turn_context(message, session_id, turn_id=get_turn_id())
+        except Exception:
+            logger.exception("bind turn session failed")
+
+        # Kill / stop-service confirm card: the user's answer is executed (or
+        # cancelled) here, server-side. The model never sees the token, so it
+        # must not be asked to act on it (that caused endless re-asking).
+        try:
+            _kc = await self._handle_kill_confirm_reply(
+                session_id=session_id,
+                message=message,
+                history=history,
+                form_reply=form_reply,
+                max_history=max_history,
+            )
+        except Exception:
+            logger.exception("kill-confirm reply handling failed")
+            _kc = None
+        if _kc is not None:
+            return _kc
 
         if isinstance(form_reply, dict):
             try:
@@ -297,7 +334,7 @@ class Agent:
 
                 from app.agent.ask_form import form_reply_is_stale
 
-                if form_reply_is_stale(last_assistant_form(history), form_reply):
+                if form_reply_is_stale(last_assistant_form(history, any_age=True), form_reply):
                     ack = (
                         "那个问题已经过期（之后有了新的消息），没有按它执行。"
                         "需要的话请在最新的问题里选，或直接告诉我。"
@@ -319,7 +356,7 @@ class Agent:
                 if is_form_cancel(form_reply):
                     ack = "好，已取消。没有创建技能，也没有保存配置。"
                     try:
-                        _prev = last_assistant_form(history) or {}
+                        _prev = last_assistant_form(history, any_age=True) or {}
                         if _prev.get("purpose") == "kill_confirm":
                             from app.services.process_control import revoke_session_tokens
 
@@ -342,7 +379,7 @@ class Agent:
                         model=getattr(self.llm, "model", "") or "",
                     )
 
-                prev_form = last_assistant_form(history)
+                prev_form = last_assistant_form(history, any_age=True)
                 extra = str(
                     form_reply.get("other") or form_reply.get("note") or ""
                 ).strip()
@@ -433,10 +470,11 @@ class Agent:
             active_llm = _route(_feats, fallback=self.llm, allow_cli=False) or self.llm
 
         tight_ctx = self._is_tight_ctx_llm(active_llm)
+        # Tight window only shrinks the prompt; persistence still uses max_history.
         if tight_ctx:
-            max_history = min(max_history, 8)
-            if len(history) > max_history:
-                history = history[-max_history:]
+            prompt_max_history = min(max_history, 8)
+            if len(history) > prompt_max_history:
+                history = history[-prompt_max_history:]
         evo_settings = None
         session_full: dict[str, Any] | None = None
         try:
@@ -801,6 +839,17 @@ class Agent:
         )
         if evo_block:
             system_parts.append(evo_block)
+        try:
+            from app.agent.context_continuity import render_task_state_block
+
+            ts_block = render_task_state_block(
+                ((session_full or {}).get("metadata") or {}).get("task_state"),
+                max_chars=400 if tight_ctx else 800,
+            )
+            if ts_block:
+                system_parts.append(ts_block)
+        except Exception:
+            logger.exception("Load session task_state failed")
         if image_only:
             if vision_native and has_imgs:
                 system_parts.append(
@@ -999,6 +1048,8 @@ class Agent:
                 max_chars=800 if tight_ctx else 1800,
                 max_pin=4 if tight_ctx else 6,
                 suppress_terms=kb_terms,
+                session_id=session_id,
+                working_limit=2 if tight_ctx else 3,
             )
             if snippet:
                 system_parts.append(snippet)
@@ -1009,13 +1060,18 @@ class Agent:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": "\n\n".join(system_parts)}
         ]
-        # Rebuild history without nested system prompts
+        # Rebuild history without nested system prompts.
+        # Restore recent tool process from metadata as a text block (not role=tool).
         hist_clip = 1200 if tight_ctx else 0
-        for m in history:
-            role = m.get("role")
-            if role == "system":
-                continue
-            messages.append(self._sanitize_message(m, max_content=hist_clip))
+        from app.agent.context_continuity import history_messages_for_llm
+
+        messages.extend(
+            history_messages_for_llm(
+                history,
+                max_content=hist_clip,
+                recent_tool_turns=1 if tight_ctx else 2,
+            )
+        )
 
         # Persist plain text in session; send multimodal content to LLM when supported
         user_msg = {
@@ -1834,25 +1890,27 @@ class Agent:
                         allow_list_fields=False,
                     )
                     paths = [p for p in paths if not self._is_upload_path(p)]
+                from app.agent.context_continuity import (
+                    clip_tool_result_for_storage,
+                    redact_sensitive_tool_text,
+                    redact_tool_args,
+                )
+
+                safe_result = redact_sensitive_tool_text(t.result or "")
                 compact_calls.append(
                     {
                         "name": t.name,
-                        "arguments": (
-                            {
-                                k: (
-                                    v
-                                    if not isinstance(v, str) or len(v) <= 80
-                                    else v[:80] + "…"
-                                )
-                                for k, v in (t.arguments or {}).items()
-                            }
-                            if isinstance(t.arguments, dict)
-                            else {}
+                        "arguments": redact_tool_args(
+                            t.arguments if isinstance(t.arguments, dict) else {},
+                            max_str=80,
                         ),
                         "media_paths": paths,
-                        # 保留短结果摘要；完整结果可能很大
+                        # UI keeps a short redacted summary; result_llm is for next-turn context.
                         "result": self._summarize_tool_result_for_ui(
-                            t.name, t.result or ""
+                            t.name, safe_result
+                        ),
+                        "result_llm": clip_tool_result_for_storage(
+                            t.name, safe_result, limit=2000
                         ),
                     }
                 )
@@ -1883,6 +1941,23 @@ class Agent:
             title=suggest_session_title(message),
             max_history=max_history,
         )
+        try:
+            from app.agent.context_continuity import build_task_state
+
+            prev_ts = ((session_full or {}).get("metadata") or {}).get("task_state")
+            new_ts = build_task_state(
+                prev=prev_ts if isinstance(prev_ts, dict) else {},
+                user_message=message,
+                assistant=final_content,
+                tool_records=tool_records,
+                paths=list(media_paths or []) + list(path_hints or []),
+                is_followup=self._is_followup_deixis(message),
+            )
+            await self.sessions.update_metadata(
+                session_id, {"task_state": new_ts}, merge=True
+            )
+        except Exception:
+            logger.exception("Update session task_state failed")
         try:
             from app.services.skill_spec import has_spec_card
             from app.services.skill_lifecycle import persist_pending_skill_create
@@ -2520,6 +2595,19 @@ class Agent:
             )
             if evo_block:
                 system_parts.append(evo_block)
+            ts_block = None
+            try:
+                from app.agent.context_continuity import render_task_state_block
+
+                ts_block = render_task_state_block(
+                    ((sess or {}).get("metadata") or {}).get("task_state"),
+                    max_chars=800,
+                )
+            except Exception:
+                logger.exception("Load session task_state failed (stream)")
+                ts_block = None
+            if ts_block:
+                system_parts.append(ts_block)
         except Exception:
             logger.exception("Load session evolution failed (stream)")
         retrieve_query = (filter_query or message).strip()
@@ -2544,6 +2632,8 @@ class Agent:
                 max_chars=1800,
                 max_pin=6,
                 suppress_terms=kb_terms,
+                session_id=session_id,
+                working_limit=3,
             )
             if snippet:
                 system_parts.append(snippet)
@@ -2553,10 +2643,9 @@ class Agent:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": "\n\n".join(system_parts)}
         ]
-        for m in history:
-            if m.get("role") == "system":
-                continue
-            messages.append(self._sanitize_message(m))
+        from app.agent.context_continuity import history_messages_for_llm
+
+        messages.extend(history_messages_for_llm(history, recent_tool_turns=2))
         messages.append({"role": "user", "content": message})
 
         parts: list[str] = []
@@ -2580,6 +2669,22 @@ class Agent:
             max_history=max_history,
         )
         try:
+            from app.agent.context_continuity import build_task_state
+
+            sess_now = await self.sessions.get(session_id)
+            prev_ts = ((sess_now or {}).get("metadata") or {}).get("task_state")
+            new_ts = build_task_state(
+                prev=prev_ts if isinstance(prev_ts, dict) else {},
+                user_message=message,
+                assistant=full,
+                is_followup=self._is_followup_deixis(message),
+            )
+            await self.sessions.update_metadata(
+                session_id, {"task_state": new_ts}, merge=True
+            )
+        except Exception:
+            logger.exception("Update session task_state failed (stream)")
+        try:
             await self._maybe_evolve_session(
                 session_id,
                 agent_cfg=agent_cfg,
@@ -2600,6 +2705,183 @@ class Agent:
             return get_config_store().get_agent()
         except Exception:
             return {}
+
+    _KILL_CANCEL_RE = re.compile(
+        r"取消|算了|不要|不用|不同意|不行|不可以|别|不杀|不结束|不停|不关|\bcancel\b|\bno\b",
+        re.I,
+    )
+
+    async def _handle_kill_confirm_reply(
+        self,
+        *,
+        session_id: str,
+        message: str,
+        history: list[dict[str, Any]],
+        form_reply: Any,
+        max_history: int,
+    ) -> ChatResponse | None:
+        """Answer to a kill_confirm card (process_control / terminal stop).
+
+        Card submit (choice=process|tree) or a short typed 同意 right after the
+        card counts as explicit consent → kill server-side with the token stored
+        for (session, pid); identity / expiry / session / hard-deny checks stay
+        in process_control. choice=cancel / typed 取消 → revoke, no questions.
+        Returns None when this turn is not such an answer.
+        """
+        import asyncio
+
+        from app.agent.ask_form import (
+            form_reply_is_stale,
+            is_form_cancel,
+            last_assistant_form,
+            new_form_id,
+        )
+
+        typed = not isinstance(form_reply, dict)
+        if typed:
+            # typed answer: only right after the card (newest assistant message)
+            form = last_assistant_form(history)
+        else:
+            form = last_assistant_form(history, any_age=True)
+            if form_reply_is_stale(form, form_reply):
+                return None  # generic stale handling below
+        if not isinstance(form, dict) or form.get("purpose") != "kill_confirm":
+            return None
+        try:
+            pid = int(form.get("kill_pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if not pid:
+            return None
+        ctx = form.get("kill_ctx") if isinstance(form.get("kill_ctx"), dict) else {}
+        force_scope = "tree" if ctx.get("scope") == "tree" else None
+
+        from app.services import process_control as pc
+
+        text = (message or "").strip()
+        if typed:
+            if not text or len(text) > 40:
+                return None
+            if self._KILL_CANCEL_RE.search(text):
+                choice = "cancel"
+            elif pc.user_consents(text):
+                choice = pc._scope_from_message(text, "process")
+            else:
+                return None  # something else: let the model handle it
+        else:
+            choice = "cancel" if is_form_cancel(form_reply) else str(form_reply.get("choice") or "").strip().lower()
+            if choice not in ("process", "tree", "cancel"):
+                return None
+
+        model_name = getattr(self.llm, "model", "") or ""
+        form_id = str(form.get("id") or "")
+        what = "停止" if ctx.get("tool") == "terminal" else "结束"
+        new_form: dict[str, Any] | None = None
+        kill_meta: dict[str, Any] = {"pid": pid, "choice": choice}
+
+        if choice == "cancel":
+            pc.revoke_session_tokens(session_id, pid)
+            reply = f"好，已取消，没有{what}任何进程（PID {pid} 保持运行）。"
+            kill_meta["result"] = "cancelled"
+        else:
+            blocked = False
+            try:
+                from app.tools.protection import is_action_blocked
+
+                blocked = is_action_blocked("process_control", "kill")
+            except Exception:
+                blocked = False
+            if blocked:
+                res: dict[str, Any] = {
+                    "ok": False,
+                    "error": "结束进程在当前路径（定时任务/工作流/Webhook）被禁用。",
+                }
+            else:
+                res = await asyncio.to_thread(
+                    pc.kill_by_form_consent,
+                    session_id,
+                    pid,
+                    choice,
+                    force_scope=force_scope,
+                    consent_text=text,
+                )
+            kill_meta["result"] = "killed" if res.get("killed") else "refused"
+            kill_meta["detail"] = {
+                k: res.get(k)
+                for k in ("targets", "exited", "still_running", "forced", "graceful", "error", "scope")
+                if k in res
+            }
+            if res.get("killed"):
+                if ctx.get("job_id"):
+                    try:
+                        from app.services.terminal_exec import mark_job_killed
+
+                        mark_job_killed(str(ctx["job_id"]))
+                    except Exception:
+                        logger.exception("mark_job_killed failed")
+                targets = res.get("targets") or [pid]
+                extra_n = len([t for t in targets if t != pid])
+                how = (
+                    "已温和退出"
+                    if pid in (res.get("graceful") or [])
+                    else "温和结束没有响应，已强制结束"
+                )
+                reply = (
+                    f"已按你的确认{what} PID {pid}「{res.get('name') or form.get('title') or ''}」"
+                    + (f"及 {extra_n} 个子进程" if extra_n else "")
+                    + f"，{how}。"
+                )
+                still = [x for x in (res.get("still_running") or []) if x != pid]
+                if still:
+                    reply += f"仍有子进程未退出：{', '.join(map(str, still))}。"
+                if res.get("note"):
+                    reply += str(res["note"])
+            elif res.get("need_requery") and not form.get("reissued"):
+                # expired / lost after restart / tree grew: re-inform ONCE
+                q = await asyncio.to_thread(pc.query, pid=pid)
+                if isinstance(q.get("form"), dict):
+                    new_form = q["form"]
+                    if ctx.get("tool") == "terminal":
+                        pc.tree_only_form(
+                            new_form,
+                            "后台任务" if ctx.get("job_id") else "服务",
+                            {k: v for k, v in ctx.items() if k != "scope"},
+                        )
+                    new_form["reissued"] = True
+                    new_form["id"] = new_form_id()
+                    reply = (
+                        f"{res.get('error') or '确认已失效'}"
+                        "我已重新核对这个进程的信息，请在下面的新卡片里再确认一次（5 分钟内有效）。"
+                    )
+                else:
+                    reply = (
+                        f"{res.get('error') or '确认已失效'}重新核对时："
+                        f"{q.get('tell_user') or q.get('error') or '进程已不存在'}，没有{what}任何进程。"
+                    )
+            elif res.get("need_requery"):
+                reply = (
+                    f"{res.get('error') or '确认已失效'}为避免反复确认，这次不再弹卡片；"
+                    f"如果仍要{what}，请直接告诉我（例如「{what} PID {pid}」）。"
+                )
+            else:
+                reply = f"没有{what} PID {pid}：{res.get('error') or '未知原因'}"
+
+        meta: dict[str, Any] = {"kill_confirm": kill_meta}
+        if new_form:
+            meta["form"] = new_form
+        else:
+            meta["form_resolved"] = form_id or True
+        user_text = text or ("取消" if choice == "cancel" else "同意")
+        await self.sessions.append_messages(
+            session_id,
+            [
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": reply, "metadata": meta},
+            ],
+            title=suggest_session_title(user_text),
+            max_history=max_history,
+        )
+        return ChatResponse(session_id=session_id, reply=reply, model=model_name, form=new_form)
 
     @staticmethod
     def _sanitize_message(m: dict[str, Any], max_content: int = 0) -> dict[str, Any]:

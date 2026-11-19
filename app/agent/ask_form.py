@@ -758,14 +758,27 @@ def format_form_reply(form: dict[str, Any] | None, values: dict[str, Any] | None
     return "，".join(bits).strip()
 
 
-def last_assistant_form(history: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+def last_assistant_form(
+    history: list[dict[str, Any]] | None, *, any_age: bool = False
+) -> dict[str, Any] | None:
+    """Latest open form.
+
+    Default: only if the newest assistant message carries it (old behaviour,
+    used by intake heuristics). any_age=True (form-reply handling): skip
+    assistant messages without a form, so a plain text reply after the card
+    does not make it "stale"; only a newer form (id mismatch) does. A form
+    already answered (metadata.form_resolved) is no longer open.
+    """
     for m in reversed(history or []):
         if m.get("role") != "assistant":
             continue
         meta = m.get("metadata") or {}
         if isinstance(meta, dict) and isinstance(meta.get("form"), dict):
             return meta.get("form")
-        return None
+        if not any_age:
+            return None
+        if isinstance(meta, dict) and meta.get("form_resolved"):
+            return None
     return None
 
 
