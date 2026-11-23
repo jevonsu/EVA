@@ -320,7 +320,11 @@ class Agent:
             )
         except Exception:
             logger.exception("kill-confirm reply handling failed")
-            _kc = None
+            # Never send an already submitted authorization back to the model.
+            _kc = ChatResponse(
+                session_id=session_id, model=getattr(self.llm, "model", "") or "",
+                reply="确认处理发生异常，执行结果未知；不会自动重试或再次询问同意。请核实进程状态。",
+            )
         if _kc is not None:
             return _kc
 
@@ -1868,6 +1872,9 @@ class Agent:
                     pending_form["id"] = new_form_id()  # 每张表单一个问题 id：前端回传，过期回复不会套到新问题上
                 except Exception:
                     pass
+            if pending_form.get("purpose") != "kill_confirm":
+                from app.services.process_control import revoke_session_tokens
+                revoke_session_tokens(session_id)
             llm_meta["form"] = pending_form
 
         # Persist user + final assistant (and compact tool summary if any)
@@ -2533,6 +2540,7 @@ class Agent:
         use_memory: bool = True,
         model: str | None = None,
         session_title: str | None = None,
+        form_reply: Any = None,
     ) -> AsyncIterator[str]:
         """Simple streaming path without tool calls."""
         if not self.llm.is_configured:
@@ -2540,21 +2548,6 @@ class Agent:
 
         agent_cfg = self._agent_cfg()
         max_history = int(agent_cfg.get("max_history_messages") or self.settings.max_history_messages)
-        from app.agent.persona import build_persona_prompt, use_compact_persona
-        from app.tools.intent_routing import force_tools_from_text, is_image_only_turn
-
-        image_only = is_image_only_turn(message)
-        persona_prompt = build_persona_prompt(
-            agent_cfg,
-            compact=use_compact_persona(
-                message,
-                intent_force=force_tools_from_text(message),
-                image_only=image_only,
-                tools=self.tools,
-            ),
-            user_display_name=_resolve_user_display_name(),
-        )
-
         title = (
             (session_title or "").strip()
             or suggest_session_title(message)
@@ -2570,6 +2563,35 @@ class Agent:
             session_id = session["session_id"]
 
         history = await self.sessions.get_messages(session_id, limit=max_history)
+        # The token-stream endpoint has no model tools, but confirmed process
+        # actions must still share the deterministic non-streaming handler.
+        try:
+            confirmed = await self._handle_kill_confirm_reply(
+                session_id=session_id, message=message, history=history,
+                form_reply=form_reply, max_history=max_history,
+            )
+        except Exception:
+            logger.exception("stream confirmation handling failed")
+            yield "确认处理失败，执行状态未知；不会自动重试或重新询问同意。"
+            return
+        if confirmed is not None:
+            yield confirmed.reply
+            return
+        from app.agent.persona import build_persona_prompt, use_compact_persona
+        from app.tools.intent_routing import force_tools_from_text, is_image_only_turn
+
+        image_only = is_image_only_turn(message)
+        persona_prompt = build_persona_prompt(
+            agent_cfg,
+            compact=use_compact_persona(
+                message,
+                intent_force=force_tools_from_text(message),
+                image_only=image_only,
+                tools=self.tools,
+            ),
+            user_display_name=_resolve_user_display_name(),
+        )
+
         filter_query = self._context_query(history, message, recent_user_turns=2)
 
         system_parts = [persona_prompt]
@@ -2712,176 +2734,131 @@ class Agent:
     )
 
     async def _handle_kill_confirm_reply(
-        self,
-        *,
-        session_id: str,
-        message: str,
-        history: list[dict[str, Any]],
-        form_reply: Any,
-        max_history: int,
+        self, *, session_id: str, message: str, history: list[dict[str, Any]],
+        form_reply: Any, max_history: int,
     ) -> ChatResponse | None:
-        """Answer to a kill_confirm card (process_control / terminal stop).
-
-        Card submit (choice=process|tree) or a short typed 同意 right after the
-        card counts as explicit consent → kill server-side with the token stored
-        for (session, pid); identity / expiry / session / hard-deny checks stay
-        in process_control. choice=cancel / typed 取消 → revoke, no questions.
-        Returns None when this turn is not such an answer.
+        """Resolve the exact open process card, not the newest text message.
+        Only persisted session/form/PID authorizations execute. Once recognized,
+        failures are final replies, never an invitation for the model to retry.
         """
         import asyncio
-
-        from app.agent.ask_form import (
-            form_reply_is_stale,
-            is_form_cancel,
-            last_assistant_form,
-            new_form_id,
-        )
-
-        typed = not isinstance(form_reply, dict)
-        if typed:
-            # typed answer: only right after the card (newest assistant message)
-            form = last_assistant_form(history)
-        else:
-            form = last_assistant_form(history, any_age=True)
-            if form_reply_is_stale(form, form_reply):
-                return None  # generic stale handling below
-        if not isinstance(form, dict) or form.get("purpose") != "kill_confirm":
-            return None
-        try:
-            pid = int(form.get("kill_pid") or 0)
-        except (TypeError, ValueError):
-            pid = 0
-        if not pid:
-            return None
-        ctx = form.get("kill_ctx") if isinstance(form.get("kill_ctx"), dict) else {}
-        force_scope = "tree" if ctx.get("scope") == "tree" else None
-
+        from app.agent.ask_form import is_form_cancel, last_assistant_form
         from app.services import process_control as pc
 
+        form = last_assistant_form(history, any_age=True)
+        submitted = isinstance(form_reply, dict)
         text = (message or "").strip()
-        if typed:
-            if not text or len(text) > 40:
+        form_id = str((form or {}).get("id") or "")
+        is_kill = isinstance(form, dict) and form.get("purpose") == "kill_confirm"
+        reply = None
+        resolve = False
+        choice = ""
+        detail: dict[str, Any] = {}
+        if submitted:
+            rid = str(form_reply.get("_form_id") or "")
+            if not is_kill:
+                # Old kill-card submits after resolution must not trigger new actions.
+                old_kill = any(
+                    ((m.get("metadata") or {}).get("form") or {}).get("purpose") == "kill_confirm"
+                    and ((m.get("metadata") or {}).get("form") or {}).get("id") == rid
+                    for m in history if m.get("role") == "assistant"
+                )
+                if not old_kill:
+                    return None  # ordinary ask_user is never process authorization
+                reply = "这张结束确认卡已处理或被更新的问题取代，未重复执行。"
+            elif not rid or rid != form_id:
+                reply = "确认卡已过期或不匹配，未执行，也没有取消其他卡片。"
+            else:
+                choice = "cancel" if is_form_cancel(form_reply) else str(form_reply.get("choice") or "").lower()
+                allowed = {str(o.get("value")) for f in form.get("fields", [])
+                           if f.get("id") == "choice" for o in f.get("options", [])}
+                if choice not in allowed and choice != "cancel":
+                    reply = "没有有效的结束方式，未执行；请使用原确认卡的选项。"
+                elif choice != "cancel" and pc.classify_confirm_reply(text) == "cancel":
+                    # Conflicting free text is not permission to execute.
+                    choice = "cancel"
+        else:
+            if not is_kill:
+                # A repeated typed agreement after a resolved process action is
+                # an acknowledgement, never a reason to query/confirm again.
+                if form is None and pc.classify_confirm_reply(text) in ("agree", "cancel"):
+                    for m in reversed(history):
+                        meta = m.get("metadata") or {}
+                        if m.get("role") == "assistant" and (meta.get("form") or meta.get("form_resolved")):
+                            if meta.get("kill_confirm") and meta.get("form_resolved"):
+                                return ChatResponse(session_id=session_id, reply="这次结束授权已经处理，不会重复执行。",
+                                                    model=getattr(self.llm, "model", "") or "")
+                            break
                 return None
-            if self._KILL_CANCEL_RE.search(text):
+            decision = pc.classify_confirm_reply(text)
+            if decision == "cancel":
                 choice = "cancel"
-            elif pc.user_consents(text):
+            elif decision == "agree":
                 choice = pc._scope_from_message(text, "process")
+                # A tree-only terminal card always authorizes its displayed tree.
+                if (form.get("kill_ctx") or {}).get("scope") == "tree":
+                    choice = "tree"
             else:
-                return None  # something else: let the model handle it
-        else:
-            choice = "cancel" if is_form_cancel(form_reply) else str(form_reply.get("choice") or "").strip().lower()
-            if choice not in ("process", "tree", "cancel"):
-                return None
-
-        model_name = getattr(self.llm, "model", "") or ""
-        form_id = str(form.get("id") or "")
-        what = "停止" if ctx.get("tool") == "terminal" else "结束"
-        new_form: dict[str, Any] | None = None
-        kill_meta: dict[str, Any] = {"pid": pid, "choice": choice}
-
-        if choice == "cancel":
-            pc.revoke_session_tokens(session_id, pid)
-            reply = f"好，已取消，没有{what}任何进程（PID {pid} 保持运行）。"
-            kill_meta["result"] = "cancelled"
-        else:
-            blocked = False
-            try:
-                from app.tools.protection import is_action_blocked
-
-                blocked = is_action_blocked("process_control", "kill")
-            except Exception:
-                blocked = False
-            if blocked:
-                res: dict[str, Any] = {
-                    "ok": False,
-                    "error": "结束进程在当前路径（定时任务/工作流/Webhook）被禁用。",
-                }
-            else:
-                res = await asyncio.to_thread(
-                    pc.kill_by_form_consent,
-                    session_id,
-                    pid,
-                    choice,
-                    force_scope=force_scope,
-                    consent_text=text,
-                )
-            kill_meta["result"] = "killed" if res.get("killed") else "refused"
-            kill_meta["detail"] = {
-                k: res.get(k)
-                for k in ("targets", "exited", "still_running", "forced", "graceful", "error", "scope")
-                if k in res
-            }
-            if res.get("killed"):
-                if ctx.get("job_id"):
-                    try:
-                        from app.services.terminal_exec import mark_job_killed
-
-                        mark_job_killed(str(ctx["job_id"]))
-                    except Exception:
-                        logger.exception("mark_job_killed failed")
-                targets = res.get("targets") or [pid]
-                extra_n = len([t for t in targets if t != pid])
-                how = (
-                    "已温和退出"
-                    if pid in (res.get("graceful") or [])
-                    else "温和结束没有响应，已强制结束"
-                )
-                reply = (
-                    f"已按你的确认{what} PID {pid}「{res.get('name') or form.get('title') or ''}」"
-                    + (f"及 {extra_n} 个子进程" if extra_n else "")
-                    + f"，{how}。"
-                )
-                still = [x for x in (res.get("still_running") or []) if x != pid]
-                if still:
-                    reply += f"仍有子进程未退出：{', '.join(map(str, still))}。"
-                if res.get("note"):
-                    reply += str(res["note"])
-            elif res.get("need_requery") and not form.get("reissued"):
-                # expired / lost after restart / tree grew: re-inform ONCE
-                q = await asyncio.to_thread(pc.query, pid=pid)
-                if isinstance(q.get("form"), dict):
-                    new_form = q["form"]
-                    if ctx.get("tool") == "terminal":
-                        pc.tree_only_form(
-                            new_form,
-                            "后台任务" if ctx.get("job_id") else "服务",
-                            {k: v for k, v in ctx.items() if k != "scope"},
-                        )
-                    new_form["reissued"] = True
-                    new_form["id"] = new_form_id()
-                    reply = (
-                        f"{res.get('error') or '确认已失效'}"
-                        "我已重新核对这个进程的信息，请在下面的新卡片里再确认一次（5 分钟内有效）。"
-                    )
+                # Questions are conversation, not authorization. Do not mark resolved.
+                if pc.CONSENT.search(text):
+                    reply = "这段回复带有疑问或条件，未执行结束；原确认卡仍有效。"
                 else:
-                    reply = (
-                        f"{res.get('error') or '确认已失效'}重新核对时："
-                        f"{q.get('tell_user') or q.get('error') or '进程已不存在'}，没有{what}任何进程。"
-                    )
-            elif res.get("need_requery"):
-                reply = (
-                    f"{res.get('error') or '确认已失效'}为避免反复确认，这次不再弹卡片；"
-                    f"如果仍要{what}，请直接告诉我（例如「{what} PID {pid}」）。"
-                )
-            else:
-                reply = f"没有{what} PID {pid}：{res.get('error') or '未知原因'}"
+                    return None
 
-        meta: dict[str, Any] = {"kill_confirm": kill_meta}
-        if new_form:
-            meta["form"] = new_form
-        else:
+        ctx = (form or {}).get("kill_ctx") or {}
+        pid = int((form or {}).get("kill_pid") or 0)
+        if not submitted and choice not in ("", "cancel"):
+            mentioned = {int(x) for pattern in (r"(?i)\bpid\s*[:：=]?\s*(\d+)",
+                         r"进程\s*[:：=]?\s*(\d+)", r"(\d+)\s*号进程")
+                         for x in re.findall(pattern, text)}
+            if mentioned and mentioned != {pid}:
+                reply = "回复中的 PID 与待确认进程不一致，未执行；请重新查询正确的进程。"
+        if reply is None:
+            try:
+                if choice == "cancel":
+                    count = pc.revoke_session_tokens(session_id, pid, form_id)
+                    reply = ("已取消这次结束授权，没有执行结束。" if count else
+                             "本次授权已经处理、正在处理或不匹配，不能再次撤销；请核实进程状态。")
+                    resolve = True
+                else:
+                    from app.tools.protection import is_action_blocked
+                    blocked = is_action_blocked("process_control", "kill")
+                    if ctx.get("tool") == "terminal":
+                        blocked = blocked or is_action_blocked("terminal", "kill") or is_action_blocked("terminal", "stop_service")
+                    if blocked:
+                        detail = {"ok": False, "error": "当前路径禁止结束进程，未执行。"}
+                    else:
+                        detail = await asyncio.to_thread(
+                            pc.kill_by_form_consent, session_id, pid, choice, form_id=form_id,
+                            force_scope="tree" if ctx.get("scope") == "tree" else None,
+                            consent_text=text,
+                        )
+                    resolve = True
+                    if detail.get("killed"):
+                        if ctx.get("job_id"):
+                            from app.services.terminal_exec import mark_job_killed
+                            mark_job_killed(str(ctx["job_id"]))
+                        reply = f"已确认结束 PID {pid}「{detail.get('name') or ''}」。"
+                        if detail.get("note"):
+                            reply += str(detail["note"])
+                    else:
+                        reply = f"未报告 PID {pid} 停止成功：{detail.get('error') or '进程状态未知'}"
+            except Exception:
+                logger.exception("claimed kill-confirm reply failed; do not return to model")
+                resolve = True
+                reply = "确认处理失败，进程执行状态未知；本次不会自动重试，也不会再次询问同意。请核实状态。"
+        meta: dict[str, Any] = {"kill_confirm": {"pid": pid, "choice": choice,
+            "ok": bool(detail.get("ok")), "unknown": detail.get("unknown", [])}}
+        if resolve:
             meta["form_resolved"] = form_id or True
-        user_text = text or ("取消" if choice == "cancel" else "同意")
         await self.sessions.append_messages(
-            session_id,
-            [
-                {"role": "user", "content": user_text},
-                {"role": "assistant", "content": reply, "metadata": meta},
-            ],
-            title=suggest_session_title(user_text),
-            max_history=max_history,
+            session_id, [{"role": "user", "content": text or choice},
+                         {"role": "assistant", "content": reply, "metadata": meta}],
+            title=suggest_session_title(text), max_history=max_history,
         )
-        return ChatResponse(session_id=session_id, reply=reply, model=model_name, form=new_form)
+        return ChatResponse(session_id=session_id, reply=reply,
+                            model=getattr(self.llm, "model", "") or "",
+                            resolved_form_id=form_id if resolve else None)
 
     @staticmethod
     def _sanitize_message(m: dict[str, Any], max_content: int = 0) -> dict[str, Any]:

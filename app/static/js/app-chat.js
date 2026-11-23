@@ -590,7 +590,7 @@ L.markSessionRead = markSessionRead;
  const role =
  m.role === "user" || m.role === "assistant" ? m.role : "system";
  if (role === "system") continue;
- appendMessage(role, m.content || "", extrasFromStored(m, m === lastVis));
+ appendMessage(role, m.content || "", extrasFromStored(m, m === lastVis, messages));
  }
  setStatus("");
  requestAnimationFrame(() => L.scrollMessages(true));
@@ -660,7 +660,7 @@ L.markSessionRead = markSessionRead;
       const role =
        m.role === "user" || m.role === "assistant" ? m.role : "system";
       if (role === "system") continue;
-      appendMessage(role, m.content || "", extrasFromStored(m, m === lastVis));
+      appendMessage(role, m.content || "", extrasFromStored(m, m === lastVis, messages));
      }
     } catch (_) {}
     await loadSessions();
@@ -684,7 +684,7 @@ L.markSessionRead = markSessionRead;
      const role =
       m.role === "user" || m.role === "assistant" ? m.role : "system";
      if (role === "system") continue;
-     appendMessage(role, m.content || "", extrasFromStored(m, m === lastVis));
+     appendMessage(role, m.content || "", extrasFromStored(m, m === lastVis, msgs));
     }
     setStatus("后台生成已完成", "ok");
     await loadSessions();
@@ -956,6 +956,7 @@ L.markSessionRead = markSessionRead;
    llm_name: finalData.llm_name || "",
    deputy_reason: finalData.deputy_reason || "",
    form: finalData.form || null,
+   form_resolved: finalData.resolved_form_id || null,
   },
  });
 
@@ -1167,8 +1168,20 @@ L.markSessionRead = markSessionRead;
  await applyChatResult(finalData, message, startTime);
  }
 
- function extrasFromStored(m, isTail) {
+ function latestOpenKillFormId(messages) {
+  for (const m of [...(messages || [])].reverse()) {
+   if (m.role !== "assistant") continue;
+   const meta = m.metadata || {};
+   if (meta.form) return meta.form.purpose === "kill_confirm" ? meta.form.id : null;
+   if (meta.form_resolved) return null;
+  }
+  return null;
+ }
+
+ function extrasFromStored(m, isTail, history) {
   const meta = m.metadata || {};
+  const openKill = meta.form?.purpose === "kill_confirm" &&
+   meta.form.id === latestOpenKillFormId(history);
   return {
    tool_calls: extractToolCalls(m),
    usage: m.usage || null,
@@ -1180,7 +1193,7 @@ L.markSessionRead = markSessionRead;
    used_deputy: !!meta.used_deputy,
    llm_name: meta.llm_name || "",
    ask_deputy: !!(isTail && meta.ask_deputy),
-   form: isTail ? meta.form || null : null,
+   form: (isTail || openKill) ? meta.form || null : null,
   };
  }
 

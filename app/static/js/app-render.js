@@ -1588,11 +1588,15 @@
   delete wrap.dataset.doneText;
  }
 
- /** 只有最新一条助手消息里的表单可以提交；更早的（已被新消息取代）视为过期 */
+ /** 普通表单只认最新消息；进程确认保留到更新卡片或服务端处理结果出现。 */
  function askFormIsLatest(wrap) {
   const msg = wrap && wrap.closest ? wrap.closest(".msg") : null;
   const root = els.messages;
   if (!msg || !root || !msg.isConnected) return false;
+  if (wrap.dataset.purpose === "kill_confirm") {
+   const cards = [...root.querySelectorAll(".ask-form")];
+   return cards[cards.length - 1] === wrap;
+  }
   const all = [...root.querySelectorAll(".msg.user, .msg.assistant")].filter(
    // 这张表单上次发送失败留下的那条用户消息不算「之后的新消息」，否则无法重提
    (el) => !el.classList.contains("typing-msg") && !(el.dataset && el.dataset.askRetryOf)
@@ -1601,11 +1605,12 @@
  }
 
  /** 新消息出现后，把旧的未答表单标为过期（不可再提交，内容仍可读） */
- function expireOpenAskForms(exceptWrap) {
+ function expireOpenAskForms(exceptWrap, preserveKill = false) {
   const root = els.messages;
   if (!root) return;
   root.querySelectorAll(".ask-form:not(.is-done)").forEach((w) => {
-   if (w !== exceptWrap) lockAskForm(w, "stale", "已过期：之后有了新消息");
+   if (preserveKill && w.dataset.purpose === "kill_confirm") return;
+   if (w !== exceptWrap) lockAskForm(w, "stale", "已过期：出现了更新的问题");
   });
  }
 
@@ -1842,6 +1847,7 @@
   wrap.addEventListener("keydown", (e) => e.stopPropagation());
   wrap.addEventListener("keyup", (e) => e.stopPropagation());
   if (form.id) wrap.dataset.formId = String(form.id);
+  wrap.dataset.purpose = String(form.purpose || "");
 
   const title = String(form.title || "").trim();
   const hint = String(form.prompt || "").trim();
@@ -2216,8 +2222,14 @@
  function appendMessage(role, content, extra = null) {
  const empty = els.messages.querySelector(".empty, .home-welcome");
  if (empty) empty.remove();
- // 用户直接发了新消息：之前没答的表单作废（后端也会拒绝过期回复）
- if (role === "user" && !extra?.fromStore) expireOpenAskForms();
+ // 普通表单随新消息失效；进程确认由服务端绑定的操作状态决定。
+ if (role === "user" && !extra?.fromStore) expireOpenAskForms(null, true);
+ if (role === "assistant" && extra?.metadata?.form_resolved) {
+  const resolved = String(extra.metadata.form_resolved);
+  els.messages?.querySelectorAll(".ask-form").forEach((w) => {
+   if (w.dataset.formId === resolved) lockAskForm(w, "done", "已处理");
+  });
+ }
  // 有实际消息后：退出空态欢迎，输入框保持底栏
  setHomeHeroMode(false);
 
