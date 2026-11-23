@@ -145,15 +145,32 @@ def guess_port(command: str) -> int | None:
 
 def _status_of(rec: dict[str, Any]) -> str:
     """Live status by pid identity. Never kills anything."""
-    from app.services.proc_tree import matches
+    from app.services.proc_tree import matches, _CT_TOLERANCE
 
     if rec.get("status") in ("stopped",):
         return "stopped"
     pid = int(rec.get("pid") or 0)
     if pid and matches(pid, create_time=rec.get("create_time"), fp=rec.get("fp") or None):
+        rec.pop("status_note", None)
         return "running"
     if rec.get("status") == "running":
-        return "exited"
+        # matches() also returns False for AccessDenied. Keep the last known
+        # running record/protection unless exit or PID reuse is actually proven.
+        from app.services import process_control as pc
+        try:
+            ps = pc._psutil()
+            try:
+                proc = ps.Process(pid)
+                if not proc.is_running():
+                    return "exited"
+                if rec.get("create_time") is not None and abs(proc.create_time() - float(rec["create_time"])) > _CT_TOLERANCE:
+                    return "exited"
+            except ps.NoSuchProcess:
+                return "exited"
+        except Exception:
+            logger.warning("service pid=%s identity/status unavailable; keep protection", pid)
+        rec["status_note"] = "进程状态或身份无法核实（可能权限不足）；保留上次运行状态，未确认退出。"
+        return "running"
     return str(rec.get("status") or "exited")
 
 
@@ -206,7 +223,7 @@ def _public(rec: dict[str, Any], *, tail: int = 0) -> dict[str, Any]:
     out = {k: rec.get(k) for k in (
         "id", "name", "command", "cwd", "root", "pid", "status", "ports", "log_path",
         "session_id", "created_by", "autostart", "in_job", "started_at", "ended_at",
-        "last_exit", "create_time",
+        "last_exit", "create_time", "status_note",
     )}
     if rec.get("status") == "running" and rec.get("pid"):
         out["listening"] = listening_ports(int(rec["pid"]))
@@ -455,8 +472,10 @@ def start_service_sync_safe(*args, **kwargs) -> dict[str, Any]:
 
 
 def stop_service(key: str) -> dict[str, Any]:
-    """Kill a registered service tree — only after pid identity check."""
-    from app.services.proc_tree import kill_tree, matches
+    """Internal service stop; never equate failed inspection with an exit.
+    Interactive skill calls still go through process_control's authorization."""
+    from app.services import process_control as pc
+    from app.services.proc_tree import matches
 
     with _reg_lock:
         rows = _load()
@@ -466,17 +485,30 @@ def stop_service(key: str) -> dict[str, Any]:
         if rec.get("status") != "running":
             return {"ok": True, "already": rec.get("status"), "service": _public(rec)}
         pid = int(rec.get("pid") or 0)
-        if not matches(pid, create_time=rec.get("create_time"), fp=rec.get("fp") or None):
-            rec["status"] = "exited"
-            rec["ended_at"] = _now()
-            _save(rows)
-            return {
-                "ok": True,
-                "already": "exited",
-                "note": "进程已不在（或 pid 已被别的程序复用），未结束任何进程，只更新了状态。",
-                "service": _public(rec),
-            }
-        report = kill_tree(pid, create_time=rec.get("create_time"))
+        try:
+            ps = pc._psutil()
+            try:
+                ps.Process(pid)
+            except ps.NoSuchProcess:
+                rec["status"] = "exited"
+                rec["ended_at"] = _now()
+                _save(rows)
+                return {"ok": True, "already": "exited", "service": _public(rec)}
+            info = pc.describe(pid)
+            if not info.get("ok") or not matches(pid, create_time=rec.get("create_time"), fp=rec.get("fp") or None):
+                raise ValueError("进程身份无法核实或 PID 已复用，未执行结束。")
+            if info.get("hard_denied"):
+                raise ValueError(info.get("deny_reason") or "受保护进程不允许结束。")
+            protected = pc._protected_self()
+            targets = [c["pid"] for c in info.get("children", []) if c["pid"] not in protected] + [pid]
+            report = pc._terminate(targets)
+            if not set(targets) <= set(report["exited"]) or report.get("unknown") or report.get("still_running"):
+                return {"ok": False, "error": "服务仍在运行或状态未知，未标记 stopped。",
+                        "report": report, "service": _public(rec)}
+        except Exception:
+            logger.exception("service stop failed; preserve registry state")
+            return {"ok": False, "error": "服务停止失败（权限不足、身份核验失败或状态未知），未标记 stopped。",
+                    "service": _public(rec)}
         rec["status"] = "stopped"
         rec["ended_at"] = _now()
         _save(rows)

@@ -334,6 +334,7 @@ class ChatRunManager:
                 "llm_name": getattr(result, "llm_name", None),
                 "deputy_reason": getattr(result, "deputy_reason", None),
                 "form": getattr(result, "form", None),
+                "resolved_form_id": getattr(result, "resolved_form_id", None),
             }
             run["status"] = "completed"
             run["result"] = result_data

@@ -23,7 +23,6 @@ import os
 import re
 import secrets
 import subprocess
-import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -33,58 +32,7 @@ logger = logging.getLogger("app.services.process_control")
 
 TOKEN_TTL = 300.0
 CREATE_NO_WINDOW = 0x08000000
-_tokens: dict[str, dict[str, Any]] = {}
-_tok_lock = threading.RLock()
-_tok_loaded = False
-
-
-def _tokens_path() -> Path:
-    from app.config import PROJECT_ROOT
-
-    d = Path(PROJECT_ROOT).resolve() / "data"
-    d.mkdir(parents=True, exist_ok=True)
-    return d / "process_kill_tokens.json"
-
-
-def _ensure_tokens_loaded() -> None:
-    """Load unexpired tokens persisted by a previous EVA run (restart within TTL).
-    Identity (pid + create_time + cmdline fingerprint) is still re-checked at kill time."""
-    global _tok_loaded
-    with _tok_lock:
-        if _tok_loaded:
-            return
-        _tok_loaded = True
-        try:
-            path = _tokens_path()
-            if not path.exists():
-                return
-            raw = json.loads(path.read_text(encoding="utf-8") or "{}")
-            now = time.time()
-            if isinstance(raw, dict):
-                for k, v in raw.items():
-                    if isinstance(v, dict) and float(v.get("expires") or 0) > now and k not in _tokens:
-                        _tokens[k] = v
-        except Exception:
-            logger.exception("load kill tokens failed")
-
-
-def _save_tokens() -> None:
-    with _tok_lock:
-        try:
-            now = time.time()
-            live = {k: v for k, v in _tokens.items() if float(v.get("expires") or 0) > now}
-            path = _tokens_path()
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(live, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, path)
-        except Exception:
-            logger.exception("save kill tokens failed")
-
-
-def _pop_token(key: str) -> None:
-    with _tok_lock:
-        if _tokens.pop((key or "").strip(), None) is not None:
-            _save_tokens()
+from app.services import process_actions as actions
 
 # ---------------------------------------------------------------- deny lists
 _WIN_CRITICAL = {
@@ -183,13 +131,27 @@ def mask_secrets(text: str) -> str:
     return _SECRET_LONG.sub("***", s)
 
 
-def user_consents(message: str | None) -> bool:
+def classify_confirm_reply(message: str | None) -> str:
+    """Explicit consent only; questions/conditions are not authorization."""
     msg = (message or "").strip()
     if not msg:
-        return False
+        return "ambiguous"
+    # A request not to ask again is not a refusal to perform the action.
+    msg = re.sub(r"(?:不要|不用|别)(?:再|重复)(?:询问|问|确认)(?:我|了|是否同意)?", "", msg).strip()
     if NEGATION.search(msg):
-        return False
-    return bool(CONSENT.search(msg))
+        return "cancel"
+    if re.search(r"[?？]|吗|呢|是否|能否|要不要|如果|假如|除非|考虑|再确认|不确定|暂缓|告诉|解释|什么|为什么|怎么|如何|查一下|查看|\bif\b|\bunless\b|\bmaybe\b|\bwhat\b|\bwhy\b|\bhow\b", msg, re.I):
+        return "ambiguous"
+    affirmative = r"(?:我)?(?:同意|确认|可以|好的|没问题|结束吧|杀吧|关掉吧|yes\b|ok\b|confirm\b|go ahead\b)"
+    if re.fullmatch(affirmative + r"[，,。.!！\s]*", msg, re.I):
+        return "agree"
+    if re.match("^" + affirmative, msg, re.I) and re.search(r"结束|停止|终止|关闭|杀掉|关掉|\bkill\b|\bterminate\b", msg, re.I):
+        return "agree"
+    return "ambiguous"
+
+
+def user_consents(message: str | None) -> bool:
+    return classify_confirm_reply(message) == "agree"
 
 
 def _base(name: str) -> str:
@@ -450,26 +412,18 @@ def _turn() -> tuple[str | None, str | None, str | None]:
         return None, None, None
 
 
-def _issue_token(info: dict[str, Any]) -> str:
+def _issue_token(info: dict[str, Any], form_id: str) -> str:
     turn_id, sid, _ = _turn()
-    tok = secrets.token_urlsafe(9)
-    _ensure_tokens_loaded()
-    with _tok_lock:
-        now = time.time()
-        for k in [k for k, v in _tokens.items() if v["expires"] < now]:
-            _tokens.pop(k, None)
-        _tokens[tok] = {
-            "pid": info["pid"],
-            "create_time": info.get("create_time"),
-            "fp": info.get("fp"),
-            "name": info.get("name"),
-            "session_id": sid,
-            "turn_id": turn_id,
-            "children": sorted(c["pid"] for c in info.get("children") or []),
-            "issued": now,
-            "expires": now + TOKEN_TTL,
-        }
-        _save_tokens()
+    if not sid or not turn_id or info.get("create_time") is None or not info.get("fp"):
+        raise ValueError("缺少会话或进程身份快照，不能签发结束授权。")
+    tok = secrets.token_urlsafe(24)
+    now = time.time()
+    actions.issue(tok, {
+        "pid": info["pid"], "create_time": info["create_time"], "fp": info["fp"],
+        "name": info.get("name"), "session_id": sid, "turn_id": turn_id,
+        "children": sorted(c["pid"] for c in info.get("children") or []),
+        "issued": now, "expires": now + TOKEN_TTL, "form_id": form_id,
+    })
     return tok
 
 
@@ -511,11 +465,13 @@ def query(pid: int | None = None, name: str = "", port: int | None = None) -> di
             out["can_kill"] = False
             out["tell_user"] = f"PID {pid} 不允许结束：{info['deny_reason']}"
             return out
-        tok = _issue_token(info)
+        form = confirm_form(info)
+        form["id"] = "q" + secrets.token_hex(12)
+        tok = _issue_token(info, form["id"])
         out["can_kill"] = True
         out["confirm_token"] = tok
         out["token_expires_in_sec"] = int(TOKEN_TTL)
-        out["form"] = confirm_form(info)
+        out["form"] = form
         out["tell_user"] = notice_text(info)
         out["next_step"] = (
             "把 tell_user 原样告诉用户（已附确认卡片），然后结束本轮等用户回答。"
@@ -658,64 +614,72 @@ def _wait_gone(procs: list, timeout: float) -> tuple[list, list]:
 
 
 def _terminate(pids: list[int]) -> dict[str, Any]:
-    """Gentle first (Windows: taskkill without /F → WM_CLOSE; POSIX: SIGTERM),
-    wait up to 5s, then force. Reports which pids exited."""
+    """Only observed exits (including NoSuchProcess) are reported as exited.
+    AccessDenied and failed status checks remain unknown, never successful."""
     ps = _psutil()
-    procs = []
+    procs, exited, unknown = [], set(), set()
     errors: dict[int, str] = {}
     for pid in pids:
         try:
             procs.append(ps.Process(pid))
         except ps.NoSuchProcess:
-            pass
+            exited.add(pid)
         except Exception as exc:
-            errors[pid] = str(exc)
+            unknown.add(pid)
+            errors[pid] = "无法核实进程（可能权限不足）：" + str(exc)
     soft_sent = 0
-    for p in procs:
+    for proc in procs:
         try:
             if os.name == "nt":
-                # no /F: asks GUI windows to close (WM_CLOSE). Console/windowless
-                # processes refuse ("can only be terminated forcefully").
-                r = subprocess.run(["taskkill", "/PID", str(p.pid)], capture_output=True,
+                r = subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True,
                                    creationflags=CREATE_NO_WINDOW, timeout=10, check=False)
                 if r.returncode == 0:
                     soft_sent += 1
             else:
-                p.terminate()
+                proc.terminate()
                 soft_sent += 1
-        except ps.AccessDenied:
-            errors[p.pid] = "权限不足（属于其他用户或需要管理员），EVA 不会提权"
+        except ps.NoSuchProcess:
+            exited.add(proc.pid)
         except Exception as exc:
-            errors[p.pid] = str(exc)
+            errors[proc.pid] = "温和结束失败（不会自动提权）：" + str(exc)
     gone, alive = _wait_gone(procs, 5 if soft_sent else 0.5)
     forced = []
-    for p in alive:
+    for proc in alive:
         try:
-            p.kill()
-            forced.append(p.pid)
+            proc.kill()
+            forced.append(proc.pid)
         except ps.NoSuchProcess:
-            pass
-        except ps.AccessDenied:
-            errors[p.pid] = "权限不足（属于其他用户或需要管理员），EVA 不会提权"
+            exited.add(proc.pid)
         except Exception as exc:
-            errors[p.pid] = str(exc)
-    gone2, alive2 = _wait_gone(alive, 3)
-    still = [p.pid for p in alive2 if p.is_running() and p.status() != getattr(ps, "STATUS_ZOMBIE", "zombie")]
-    exited = sorted(set(pids) - set(still))
-    return {"exited": exited, "still_running": still, "forced": forced,
-            "graceful": sorted(p.pid for p in gone), "errors": {str(k): v for k, v in errors.items()}}
+            errors[proc.pid] = "强制结束失败（可能权限不足，不会自动提权）：" + str(exc)
+    _wait_gone(alive, 3)
+    still = set()
+    for proc in procs:
+        try:
+            if not proc.is_running() or proc.status() == getattr(ps, "STATUS_ZOMBIE", "zombie"):
+                exited.add(proc.pid)
+            else:
+                exited.discard(proc.pid)
+                still.add(proc.pid)
+        except ps.NoSuchProcess:
+            exited.add(proc.pid)
+        except Exception as exc:
+            exited.discard(proc.pid)
+            unknown.add(proc.pid)
+            errors[proc.pid] = "无法核实退出状态（可能权限不足）：" + str(exc)
+    return {"exited": sorted(exited), "still_running": sorted(still), "unknown": sorted(unknown),
+            "forced": forced, "graceful": sorted(p.pid for p in gone if p.pid in exited),
+            "errors": {str(k): v for k, v in errors.items()}}
 
 
 def kill(pid: int, confirm_token: str, scope: str = "process") -> dict[str, Any]:
     turn_id, sid, msg = _turn()
     pid = int(pid or 0)
     base_audit = {"pid": pid, "session_id": sid, "consent": (msg or "")[:200], "scope_requested": scope}
-    _ensure_tokens_loaded()
-    with _tok_lock:
-        tok = _tokens.get((confirm_token or "").strip())
+    tok = actions.get((confirm_token or "").strip())
     def refuse(err: str, *, drop: bool = False, **extra) -> dict[str, Any]:
         if drop:
-            _pop_token(confirm_token)
+            actions.revoke(sid or "", pid, (tok or {}).get("form_id"))
         _audit({**base_audit, "result": "refused", "reason": err})
         return {"ok": False, "killed": False, "error": err, **extra}
 
@@ -725,7 +689,7 @@ def kill(pid: int, confirm_token: str, scope: str = "process") -> dict[str, Any]
         return refuse("确认令牌已过期（5 分钟）。请重新查询并告知用户。", drop=True, need_requery=True)
     if tok["pid"] != pid:
         return refuse("令牌不是给这个 PID 的。每次确认只对应一个明确的 PID。", need_requery=True)
-    if tok.get("session_id") and sid and tok["session_id"] != sid:
+    if not sid or tok.get("session_id") != sid:
         return refuse("令牌属于另一个会话。", drop=True)
     if turn_id is None or tok.get("turn_id") == turn_id:
         return refuse(
@@ -743,131 +707,89 @@ def kill(pid: int, confirm_token: str, scope: str = "process") -> dict[str, Any]
 
 def _execute_kill(pid: int, key: str, tok: dict[str, Any], eff_scope: str,
                   base_audit: dict[str, Any], refuse) -> dict[str, Any]:
-    """Shared by model kill() and the server-side form-consent path.
-    Re-checks identity, hard-deny and tree growth, then terminates."""
-    info = describe(pid)
+    """Claim durably BEFORE validation/execution; any failure is terminal.
+    A crash/exception may leave state=executing, but can never replay the kill."""
+    if not actions.claim(key):
+        current = actions.get(key) or {}
+        state = current.get("state", "missing")
+        error = ("本次授权正在处理或上次处理中断，实际结果未知；不会重复执行。"
+                 if state == "executing" else "这次授权已处理、已取消、已更新或已过期；不会重复执行。")
+        return {"ok": False, "killed": False, "pid": pid, "already_used": True,
+                "state": state, "error": error}
+    result = None
+    try:
+        result = _perform_kill(pid, tok, eff_scope)
+    except Exception:
+        logger.exception("confirmed process action failed; outcome unknown")
+        result = {"ok": False, "killed": False, "pid": pid, "unknown": [pid],
+                  "error": "结束操作发生异常，进程状态未知；本次授权不再重试。"}
+    finally:
+        if result is not None:
+            # Failure to persist must propagate to the caller, NOT retry. The
+            # committed executing claim still prevents a second execution.
+            actions.finish(key, result)
+    _audit({**base_audit, "result": "killed" if result.get("ok") else "failed", "detail": result})
+    return result
+
+
+def _perform_kill(pid: int, tok: dict[str, Any], eff_scope: str) -> dict[str, Any]:
     from app.services.proc_tree import matches
 
+    def fail(error: str, **extra):
+        return {"ok": False, "killed": False, "pid": pid, "error": error, **extra}
+
+    info = describe(pid)
     if not info.get("ok") or not matches(pid, create_time=tok.get("create_time"), fp=tok.get("fp")):
-        return refuse("进程已退出，或 PID 已被别的程序复用（身份核对未通过），未结束任何进程。", drop=True)
+        return fail("进程已退出或 PID 身份已变化，未执行结束。")
     if info.get("hard_denied"):
-        return refuse(info["deny_reason"], drop=True)
+        return fail(info["deny_reason"])
     kids_now = sorted(c["pid"] for c in info.get("children") or [])
     if eff_scope == "tree" and set(kids_now) - set(tok.get("children") or []):
-        return refuse(
-            "子进程比告知时多了，影响范围变化，需要重新告知用户。",
-            drop=True, need_requery=True, children_now=kids_now,
-        )
-    # consume token atomically (a double submit must not kill twice)
-    with _tok_lock:
-        claimed = _tokens.pop(key, None) is not None
-        if claimed:
-            _save_tokens()
-    if not claimed:
-        return refuse("这次确认已经执行过或已被取消，没有重复结束。", already_used=True)
+        return fail("子进程比告知时多，影响范围变化；请重新查询后另行确认。")
     targets = [pid]
     if eff_scope == "tree":
         prot = _protected_self()
         targets = [k for k in kids_now if k not in prot] + [pid]
-    result = _terminate(targets)
+    detail = _terminate(targets)
+    ok = set(targets) <= set(detail["exited"]) and not detail.get("unknown") and not detail.get("still_running")
+    out = {"ok": ok, "killed": ok, "pid": pid, "name": info.get("name"),
+           "scope": eff_scope, "targets": targets, **detail}
+    if not ok:
+        out["error"] = "部分进程仍在运行或状态无法核实；没有报告停止成功。"
+        if detail.get("errors"):
+            out["error"] += "；" + "；".join(detail["errors"].values())
     origin = info.get("_origin") or {}
-    if origin.get("kind") == "service" and pid in result["exited"]:
+    if ok and origin.get("kind") == "service":
         try:
             from app.services.service_manager import mark_stopped
 
-            mark_stopped(origin.get("id"), by="kill_process")
+            updated = mark_stopped(origin.get("id"), by="kill_process")
+            out["note"] = "登记表已标记为 stopped。" if updated else "进程已退出，但没有找到服务登记。"
         except Exception:
             logger.exception("service registry update failed")
-    ok = pid in result["exited"]
-    _audit({**base_audit, "name": info.get("name"), "cmdline": info.get("cmdline"),
-            "scope": eff_scope, "targets": targets, "result": "killed" if ok else "failed",
-            "detail": result, "eva_origin": origin.get("kind")})
-    out = {
-        "ok": ok,
-        "killed": ok,
-        "pid": pid,
-        "name": info.get("name"),
-        "scope": eff_scope,
-        "targets": targets,
-        **result,
-    }
-    if not ok:
-        out["error"] = "进程没有退出" + ("：" + "；".join(result["errors"].values()) if result["errors"] else "")
-    if origin.get("kind") == "service":
-        out["note"] = "这是 EVA 登记服务，登记表已标记为 stopped。"
+            out["note"] = "进程已退出，但登记表更新失败。"
     return out
 
 
-def revoke_session_tokens(session_id: str | None, pid: int | None = None) -> int:
-    """Revoke a session's tokens (all, or only those for one pid)."""
-    _ensure_tokens_loaded()
-    with _tok_lock:
-        ks = [
-            k for k, v in _tokens.items()
-            if v.get("session_id") == session_id and (pid is None or int(v.get("pid") or 0) == int(pid))
-        ]
-        for k in ks:
-            _tokens.pop(k, None)
-        if ks:
-            _save_tokens()
-    return len(ks)
+def revoke_session_tokens(session_id: str | None, pid: int | None = None,
+                          form_id: str | None = None) -> int:
+    return actions.revoke(session_id or "", pid, form_id)
 
 
-def find_session_token(session_id: str | None, pid: int) -> tuple[str | None, dict[str, Any] | None]:
-    """Newest token (expired ones included, so callers can say "expired")
-    issued in this session for this pid. Never returned to the user/model."""
-    if not session_id:
-        return None, None
-    _ensure_tokens_loaded()
-    with _tok_lock:
-        rows = [
-            (k, v) for k, v in _tokens.items()
-            if v.get("session_id") == session_id and int(v.get("pid") or 0) == int(pid)
-        ]
-    if not rows:
-        return None, None
-    rows.sort(key=lambda kv: float(kv[1].get("issued") or kv[1].get("expires") or 0))
-    return rows[-1]
+def kill_by_form_consent(session_id: str | None, pid: int, choice: str, *,
+                         form_id: str = "", force_scope: str | None = None,
+                         consent_text: str = "") -> dict[str, Any]:
+    """Only the exact persisted session/form/PID snapshot can authorize a kill."""
+    def refuse(error: str, **extra):
+        return {"ok": False, "killed": False, "pid": pid, "error": error, **extra}
 
-
-def kill_by_form_consent(
-    session_id: str | None,
-    pid: int,
-    choice: str,
-    *,
-    force_scope: str | None = None,
-    consent_text: str = "",
-) -> dict[str, Any]:
-    """Server-side execution after the user submitted the kill_confirm card
-    (or replied 同意 to it). The submission itself is the explicit consent, so
-    the model never needs the token and cannot loop re-asking. All identity /
-    expiry / session / hard-deny / tree-growth checks still apply."""
-    pid = int(pid or 0)
-    ch = (choice or "").strip().lower()
-    base_audit = {
-        "pid": pid, "session_id": session_id, "path": "form_consent",
-        "consent": f"form:{ch} {consent_text or ''}"[:200], "scope_requested": force_scope or ch,
-    }
-    key, tok = find_session_token(session_id, pid)
-
-    def refuse(err: str, *, drop: bool = False, **extra) -> dict[str, Any]:
-        if drop and key:
-            _pop_token(key)
-        _audit({**base_audit, "result": "refused", "reason": err})
-        return {"ok": False, "killed": False, "pid": pid, "error": err, **extra}
-
-    if ch not in ("process", "tree"):
-        return refuse("没有选择结束方式。", bad_choice=True)
-    if not session_id or not pid:
-        return refuse("缺少会话或 PID，未结束任何进程。")
+    if not session_id or not form_id or choice not in ("process", "tree"):
+        return refuse("缺少有效的会话、确认卡或结束方式，未执行。")
+    key, tok = actions.find(session_id, pid, form_id)
     if not tok:
-        return refuse(
-            "这张确认卡已经失效（已执行过、已取消，或已超过 5 分钟），没有结束任何进程。",
-            expired=True, need_requery=True,
-        )
-    if float(tok.get("expires") or 0) < time.time():
-        return refuse("确认已超过 5 分钟有效期，没有结束任何进程。", drop=True, expired=True, need_requery=True)
-    if tok.get("session_id") != session_id:
-        return refuse("令牌属于另一个会话。", drop=True)
-    eff_scope = force_scope if force_scope in ("process", "tree") else ch
-    return _execute_kill(pid, key or "", tok, eff_scope, base_audit, refuse)
+        return refuse("没有与这张卡绑定的授权（旧版卡片也不再有效），请重新查询。")
+    if tok["expires"] < time.time():
+        return refuse("确认已超过 5 分钟有效期，未执行；请重新查询后另行确认。")
+    return _execute_kill(pid, key, tok, force_scope or choice,
+                         {"pid": pid, "session_id": session_id, "path": "form_consent",
+                          "form_id": form_id, "consent": "form:" + choice}, refuse)

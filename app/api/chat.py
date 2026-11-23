@@ -197,6 +197,7 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
                 use_memory=body.use_memory,
                 model=body.model,
                 session_title=body.session_title,
+                form_reply=(body.metadata or {}).get("form_reply"),
             ):
                 for line in chunk.split("\n"):
                     yield f"data: {line}\n"
