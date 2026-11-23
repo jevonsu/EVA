@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.knowledge.store import get_knowledge_store
@@ -201,3 +203,109 @@ async def delete_page(page_id: str) -> dict[str, Any]:
     if not ok:
         raise HTTPException(404, "Page not found")
     return {"ok": True, "id": page_id}
+
+
+@router.get("/export")
+async def export_kb(
+    collection: str | None = None,
+    ids: str = "",
+    include_archived: bool = Query(True),
+) -> Response:
+    """Download a portable .evakb zip (manifest + catalog + pages)."""
+    from app.knowledge.pack import build_export_zip, export_content_disposition
+    from app.memory.human_gate import ACTOR_UI, append_audit
+
+    store = get_knowledge_store()
+    await store.ensure_seed()
+    page_ids = [x.strip() for x in (ids or "").split(",") if x.strip()] or None
+    coll = (collection or "").strip() or None
+    try:
+        blob, fname, manifest = await build_export_zip(
+            store,
+            collection=coll,
+            page_ids=page_ids,
+            include_archived=include_archived,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    append_audit(
+        "kb_export",
+        actor=ACTOR_UI,
+        item_type="kb",
+        item_id="",
+        detail={
+            "page_count": manifest.get("page_count"),
+            "collection": coll,
+            "ids": page_ids,
+        },
+    )
+    return Response(
+        content=blob,
+        media_type="application/zip",
+        headers={"Content-Disposition": export_content_disposition(fname)},
+    )
+
+
+@router.post("/import")
+async def import_kb(
+    file: UploadFile = File(...),
+    conflict: str = Query(
+        "skip",
+        description="skip | overwrite | keep_both",
+    ),
+) -> dict[str, Any]:
+    """Import .evakb/.zip pack, or a plain .md/.txt/.json knowledge file.
+
+    Large packs: zip validation runs in a worker thread; DB writes stay async.
+    """
+    from app.knowledge import pack as kb_pack
+    from app.memory.human_gate import ACTOR_UI, append_audit
+
+    store = get_knowledge_store()
+    await store.ensure_seed()
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "空文件")
+    if len(raw) > kb_pack.MAX_ZIP_BYTES:
+        raise HTTPException(
+            400, f"文件过大（上限 {kb_pack.MAX_ZIP_BYTES // (1024 * 1024)}MB）"
+        )
+    fname = file.filename or "upload"
+    conflict_l = (conflict or "skip").strip().lower()
+    if conflict_l not in ("skip", "overwrite", "keep_both"):
+        raise HTTPException(400, "conflict 仅支持 skip / overwrite / keep_both")
+
+    # Pre-validate zip structure off the event loop (CPU/IO bound).
+    if raw[:2] == b"PK" or fname.lower().endswith((".zip", ".evakb")):
+        try:
+            await asyncio.to_thread(kb_pack._read_zip_members, raw)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    try:
+        result = await kb_pack.import_pack_bytes(
+            store,
+            raw,
+            filename=fname,
+            conflict=conflict_l,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+    counts = result.get("counts") or {}
+    append_audit(
+        "kb_import",
+        actor=ACTOR_UI,
+        item_type="kb",
+        item_id="",
+        detail={
+            "filename": fname,
+            "conflict": conflict_l,
+            "counts": counts,
+            "failed": [
+                {"id": x.get("id"), "reason": x.get("reason")}
+                for x in (result.get("failed") or [])[:20]
+            ],
+        },
+    )
+    return result

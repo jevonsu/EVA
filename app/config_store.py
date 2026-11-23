@@ -420,6 +420,12 @@ class ConfigStore:
             data["integrations"] = pub_map
         data.pop("skills_catalog", None)
         data.pop("tools_catalog", None)
+        fo_sec = data.get("llm_failover")
+        if isinstance(fo_sec, dict):
+            fo_sec = dict(fo_sec)
+            tok = str(fo_sec.pop("push_token", "") or "")
+            fo_sec["push_token_set"] = bool(tok)
+            data["llm_failover"] = fo_sec
         return data
 
     def replace(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -488,6 +494,18 @@ class ConfigStore:
                         )
                     merged_integ[str(iid)] = row
                 incoming["integrations"] = merged_integ
+
+            # llm_failover: never lose the push token / section on a full save
+            cur_fo = current.get("llm_failover")
+            inc_fo = incoming.get("llm_failover")
+            if isinstance(cur_fo, dict):
+                if not isinstance(inc_fo, dict):
+                    incoming["llm_failover"] = deepcopy(cur_fo)
+                else:
+                    inc_fo.pop("push_token_set", None)
+                    tok = str(inc_fo.get("push_token") or "")
+                    if not tok or _is_masked(tok):
+                        inc_fo["push_token"] = cur_fo.get("push_token", "")
 
             self._data = incoming
             self._write_unlocked()

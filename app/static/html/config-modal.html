@@ -467,6 +467,15 @@
  <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>刷新</span>
  </button>
  </div>
+ <div class="cfg-tool-cluster">
+ <button type="button" class="cfg-tool" id="btnExportKb" title="导出当前分类或全部为 .evakb">
+ <span data-ipk="download" data-ipk-class="ipk-xs"></span><span>导出</span>
+ </button>
+ <button type="button" class="cfg-tool" id="btnImportKb" title="导入 .evakb / .zip / .md / .txt / .json">
+ <span data-ipk="upload" data-ipk-class="ipk-xs"></span><span>导入</span>
+ </button>
+ <input type="file" id="kbImportInput" class="hidden" accept=".evakb,.zip,.md,.markdown,.txt,.json,application/zip,application/json,text/markdown,text/plain" />
+ </div>
  <div class="cfg-tool-cluster cfg-tool-cluster-end">
  <button type="button" class="cfg-tool is-primary" id="btnNewKbPage">
  <span data-ipk="plus" data-ipk-class="ipk-xs"></span><span>新建页</span>

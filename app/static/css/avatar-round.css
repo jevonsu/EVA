@@ -1,0 +1,108 @@
+/* ===== av1: 头像统一正圆（聊天消息 / 侧栏 / 顶栏 / 人设预览；含非方图与字母回退） =====
+   最后加载，只约束尺寸与裁切，不改颜色。 */
+.msg > .msg-main > .msg-avatar,
+.sidebar .brand .logo.logo-menu,
+#btnLogoMenu,
+.agent-avatar-preview,
+[data-panel="agent"] .agent-avatar-col .agent-avatar-preview {
+  box-sizing: border-box !important;
+  aspect-ratio: 1 / 1;
+  flex-grow: 0 !important;
+  flex-shrink: 0 !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  position: relative;
+  overflow: hidden;
+}
+/* 图片：绝对铺满后按圆裁切，避免网格自动行高把竖图撑高 */
+.msg > .msg-main > .msg-avatar img,
+.sidebar .brand .logo.logo-menu img,
+#btnLogoMenu img,
+.agent-avatar-preview img,
+.topbar #btnMenu.topbar-avatar-btn img {
+  position: absolute !important;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  aspect-ratio: 1 / 1;
+  object-fit: cover !important;
+  object-position: center;
+  border-radius: 50% !important;
+  display: block;
+  margin: 0 !important;
+}
+
+/* 消息头像 */
+.msg > .msg-main > .msg-avatar {
+  flex-basis: 50px !important;
+  width: 50px !important; height: 50px !important;
+  min-width: 50px !important; min-height: 50px !important;
+  max-width: 50px !important; max-height: 50px !important;
+}
+/* 助手头像：扮演角标放在圆外，因此外框可见溢出；裁切交给图片自身圆角 */
+.msg.assistant > .msg-main > .msg-avatar { overflow: visible; }
+@media (max-width: 900px) {
+  .msg > .msg-main > .msg-avatar {
+    flex-basis: 44px !important;
+    width: 44px !important; height: 44px !important;
+    min-width: 44px !important; min-height: 44px !important;
+    max-width: 44px !important; max-height: 44px !important;
+  }
+}
+
+/* 侧栏头像（含折叠窄栏） */
+.sidebar .brand .logo.logo-menu,
+body.sidebar-collapsed .sidebar .brand .logo.logo-menu {
+  width: 44px !important; height: 44px !important;
+  min-width: 44px !important; min-height: 44px !important;
+  max-width: 44px !important; max-height: 44px !important;
+  flex-basis: 44px !important;
+}
+
+/* 顶栏头像按钮：点按区 44×44 圆形，图片 32×32 居中正圆 */
+.topbar #btnMenu.topbar-avatar-btn {
+  box-sizing: border-box !important;
+  position: relative;
+  width: 32px !important; height: 32px !important;
+  min-width: 32px !important; min-height: 32px !important;
+  flex: 0 0 32px !important;
+  aspect-ratio: 1 / 1;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  overflow: hidden;
+}
+@media (max-width: 900px) {
+  .topbar #btnMenu.topbar-avatar-btn {
+    width: 44px !important; height: 44px !important;
+    min-width: 44px !important; min-height: 44px !important;
+    flex-basis: 44px !important;
+    overflow: visible;
+  }
+  .topbar #btnMenu.topbar-avatar-btn img {
+    inset: 6px;
+    width: 32px !important; height: 32px !important;
+  }
+}
+
+/* 人设头像预览（设定 → 人设） */
+.agent-avatar-preview {
+  width: 56px !important; height: 56px !important;
+  min-width: 56px !important; min-height: 56px !important;
+  max-width: 56px !important; max-height: 56px !important;
+  flex: 0 0 auto !important;
+}
+[data-panel="agent"] .agent-avatar-col .agent-avatar-preview {
+  width: 64px !important; height: 64px !important;
+  min-width: 64px !important; min-height: 64px !important;
+  max-width: 64px !important; max-height: 64px !important;
+}
+@media (max-width: 600px) {
+  [data-panel="agent"] .agent-avatar-col .agent-avatar-preview {
+    width: 52px !important; height: 52px !important;
+    min-width: 52px !important; min-height: 52px !important;
+    max-width: 52px !important; max-height: 52px !important;
+  }
+}

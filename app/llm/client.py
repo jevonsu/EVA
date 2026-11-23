@@ -153,6 +153,13 @@ class LLMClient:
         self.cli_command = ""
         self.cli_args = ""
         self.cli_cwd = ""
+        # failover (app.llm.failover): store-default client may be wrapped in
+        # a primary/backup chain; chain members set _no_failover.
+        self._is_store_default = False
+        self._no_failover = False
+        self._connect_timeout: float | None = None
+        self._read_timeout: float | None = None
+        self._max_retries: int | None = None
 
         # Explicit construction (test endpoint / from_llm_config) — use only args
         if not _from_store or any(
@@ -171,6 +178,7 @@ class LLMClient:
             return
 
         # Default path: only the UI-configured default LLM
+        self._is_store_default = True
         cfg = self._load_default_from_store()
         if not cfg:
             self.provider = ""
@@ -227,7 +235,10 @@ class LLMClient:
         http_kwargs: dict[str, Any] = {
             "follow_redirects": True,
             "trust_env": False,
-            "timeout": httpx.Timeout(300.0, connect=20.0),
+            "timeout": httpx.Timeout(
+                float(self._read_timeout or 300.0),
+                connect=float(self._connect_timeout or 20.0),
+            ),
         }
         if self.use_proxy:
             from app.services.model_meta import resolve_app_proxy_url
@@ -243,14 +254,20 @@ class LLMClient:
             except UnicodeEncodeError as exc:
                 raise RuntimeError("代理地址含非英文字符，无法使用") from exc
             http_kwargs["proxy"] = proxy
-            http_kwargs["timeout"] = httpx.Timeout(120.0, connect=20.0)
+            http_kwargs["timeout"] = httpx.Timeout(
+                float(self._read_timeout or 120.0),
+                connect=float(self._connect_timeout or 20.0),
+            )
         self._http = httpx.AsyncClient(**http_kwargs)
-        self._client = AsyncOpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            timeout=http_kwargs["timeout"],
-            http_client=self._http,
-        )
+        oa_kwargs: dict[str, Any] = {
+            "api_key": self.api_key,
+            "base_url": self.base_url,
+            "timeout": http_kwargs["timeout"],
+            "http_client": self._http,
+        }
+        if self._max_retries is not None:
+            oa_kwargs["max_retries"] = int(self._max_retries)
+        self._client = AsyncOpenAI(**oa_kwargs)
 
     @staticmethod
     def _load_default_from_store() -> dict[str, Any] | None:
@@ -472,6 +489,22 @@ class LLMClient:
             }
         )
 
+    def _failover_primary(self):
+        """(cfg, primary_row) when this call should go through the primary/backup chain."""
+        if self._no_failover:
+            return None, None
+        try:
+            from app.llm import failover as _fo
+
+            cfg = _fo.get_cfg()
+            if not cfg.get("enabled"):
+                return None, None
+            prow = _fo.applies_to(self, cfg)
+            return (cfg, prow) if prow else (None, None)
+        except Exception:
+            logger.exception("LLM failover config error; calling model directly")
+            return None, None
+
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -481,6 +514,35 @@ class LLMClient:
         temperature: float = 0.7,
         tool_choice: str | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        cfg, prow = self._failover_primary()
+        if prow is not None:
+            from app.llm import failover as _fo
+
+            return await _fo.run_chat(
+                self, prow, cfg, messages,
+                tools=tools, model=model, temperature=temperature, tool_choice=tool_choice,
+            )
+        if self.is_cli:
+            return await self._cli_chat(messages)
+        try:
+            return await self._raw_chat(
+                messages, tools=tools, model=model, temperature=temperature, tool_choice=tool_choice,
+            )
+        except RuntimeError:
+            raise
+        except Exception as extra:
+            raise _explain_llm_http_error(extra) from extra
+
+    async def _raw_chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        temperature: float = 0.7,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """One call to this row only; transport errors are raised unchanged."""
         if self.is_cli:
             return await self._cli_chat(messages)
         used_model = model or self.model
@@ -501,12 +563,7 @@ class LLMClient:
         except TypeError:
             # Older / strict gateways reject unexpected kwargs
             kwargs.pop("temperature", None)
-            try:
-                resp = await self._client.chat.completions.create(**kwargs)
-            except Exception as extra:
-                raise _explain_llm_http_error(extra) from extra
-        except Exception as extra:
-            raise _explain_llm_http_error(extra) from extra
+            resp = await self._client.chat.completions.create(**kwargs)
         try:
             return self._recover_text_tool_calls(self._completion_to_dict(resp))
         except AttributeError as exc:
@@ -521,6 +578,36 @@ class LLMClient:
         *,
         model: str | None = None,
         temperature: float = 0.7,
+    ) -> AsyncIterator[str]:
+        cfg, prow = self._failover_primary()
+        if prow is not None:
+            from app.llm import failover as _fo
+
+            async for piece in _fo.run_stream(
+                self, prow, cfg, messages, model=model, temperature=temperature
+            ):
+                yield piece
+            return
+        async for piece in self._stream_impl(messages, model=model, temperature=temperature, wrap=True):
+            yield piece
+
+    async def _raw_stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        model: str | None = None,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[str]:
+        async for piece in self._stream_impl(messages, model=model, temperature=temperature, wrap=False):
+            yield piece
+
+    async def _stream_impl(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        model: str | None = None,
+        temperature: float = 0.7,
+        wrap: bool = True,
     ) -> AsyncIterator[str]:
         if self.is_cli:
             result = await self._cli_chat(messages)
@@ -540,6 +627,8 @@ class LLMClient:
         try:
             stream = await self._client.chat.completions.create(**stream_kw)
         except Exception as extra:
+            if not wrap:
+                raise
             raise _explain_llm_http_error(extra) from extra
         async for chunk in stream:
             if isinstance(chunk, str):
@@ -582,6 +671,8 @@ class LLMClient:
                 "error": err,
                 "model": self.model or "",
             }
+        prev_nf = self._no_failover
+        self._no_failover = True  # test this row itself, never the backup
         try:
             result = await self.chat(
                 [{"role": "user", "content": "ping"}],
@@ -594,6 +685,8 @@ class LLMClient:
             }
         except Exception as exc:
             return {"ok": False, "error": str(exc), "model": self.model}
+        finally:
+            self._no_failover = prev_nf
 
 
 _llm: LLMClient | None = None

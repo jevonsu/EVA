@@ -60,6 +60,7 @@ class ChatResponse(BaseModel):
     llm_name: str | None = None
     deputy_reason: str | None = None
     form: dict[str, Any] | None = None
+    resolved_form_id: str | None = None
     media_paths: list[str] = Field(default_factory=list)
 
 

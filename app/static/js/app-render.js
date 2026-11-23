@@ -1475,10 +1475,26 @@
  return actions;
  }
 
+ // ======== 提问表单（ask_user / 确认卡）========
+ // 显示：问题、选项标签、说明都完整可读（长文本换行，不靠悬停提示）；只有超长说明折叠，且有明确的「展开」按钮。
+ // 提交：只认最新一张、未提交的表单；回传 _form_id，后端据此拒绝过期回复。
+ const ASK_OTHER_IDS = { other: 1, note: 1 };
+ const ASK_SKIP_LABELS = { 补充: 1, 补充说明: 1, 请选择: 1, 单选: 1, 多选: 1, 其他: 1, 其它: 1 };
+ const ASK_LONG_HINT = 360; // 超过这个字数的说明默认折叠（可展开）
+ const ASK_LONG_DESC = 220;
+
+ function optFullText(o) {
+  return String((o && (o.full || o.label)) || (o && o.value) || "").trim();
+ }
+
  function choiceLabel(field, value) {
   const v = String(value ?? "");
   const hit = (field.options || []).find((o) => String(o.value) === v);
-  return (hit && hit.label) || v;
+  return hit ? optFullText(hit) : v;
+ }
+
+ function askQuestionFields(form) {
+  return (form?.fields || []).filter((f) => f && f.id && !ASK_OTHER_IDS[f.id]);
  }
 
  function formatAskFormReply(form, values) {
@@ -1486,7 +1502,12 @@
    const lab = String(form.title || "连接信息").replace(/^「|」还没配好$/g, "");
    return "已填写「" + (lab || "这项能力") + "」的连接信息";
   }
-  const skip = { 补充: 1, 补充说明: 1, 请选择: 1, 单选: 1, 多选: 1 };
+  // 多个问题时带上问题名，避免「A，B」看不出哪个答哪个
+  const many = askQuestionFields(form).length > 1;
+  const named = (label, text) => {
+   const name = String(label || "").trim();
+   return many && name && !ASK_SKIP_LABELS[name] ? name + "：" + text : text;
+  };
   const bits = [];
   (form?.fields || []).forEach((field) => {
    if (!field || !field.id) return;
@@ -1509,47 +1530,161 @@
     const labels = picked.map((v) => choiceLabel(field, v)).filter(Boolean);
     const name = String(field.label || "").trim();
     const joined = labels.join("、");
-    bits.push(name && !skip[name] ? name + " " + joined : joined);
+    bits.push(name && !ASK_SKIP_LABELS[name] ? name + "：" + joined : joined);
     return;
    }
    if (raw == null || String(raw).trim() === "") return;
-   let text = String(raw).trim();
+   const text = String(raw).trim();
    if (type === "choice" || type === "single") {
-    bits.push(choiceLabel(field, text));
+    bits.push(named(field.label, choiceLabel(field, text)));
+    return;
+   }
+   if (ASK_OTHER_IDS[field.id]) {
+    bits.push((bits.length ? "补充：" : "") + text);
     return;
    }
    const label = String(field.label || "").trim();
-   bits.push(label && !skip[label] ? label + " " + text : text);
+   bits.push(label && !ASK_SKIP_LABELS[label] ? label + "：" + text : text);
   });
-  return bits.join("，").trim();
+  return bits.join("\n").trim();
+ }
+
+ function setAskStatus(wrap, kind, text) {
+  if (!wrap) return;
+  let st = wrap.querySelector(".ask-form-status");
+  if (!st) {
+   st = document.createElement("div");
+   st.className = "ask-form-status";
+   st.setAttribute("role", "status");
+   // 状态放在底部操作区原位（不插到卡片顶部，避免内容整体下移）
+   const foot = wrap.querySelector(".ask-form-foot");
+   if (foot) foot.insertBefore(st, foot.firstChild);
+   else wrap.appendChild(st);
+  }
+  st.dataset.kind = kind;
+  st.textContent = text;
+ }
+
+ function lockAskForm(wrap, kind, text) {
+  if (!wrap) return;
+  wrap.classList.add("is-done");
+  if (kind) wrap.dataset.state = kind;
+  wrap.querySelectorAll("button, input, textarea").forEach((el) => {
+   if (el.classList.contains("ask-more")) return; // 已结束的卡片仍可展开阅读全文
+   el.disabled = true;
+  });
+  if (text) setAskStatus(wrap, kind || "done", text);
  }
 
  function unlockAskForm(wrap) {
   if (!wrap) return;
   wrap.classList.remove("is-done");
+  delete wrap.dataset.state;
   wrap.querySelectorAll("button, input, textarea").forEach((el) => {
    el.disabled = false;
   });
+  const st = wrap.querySelector(".ask-form-status");
+  if (st) st.remove();
+  delete wrap.dataset.doneText;
+ }
+
+ /** 普通表单只认最新消息；进程确认保留到更新卡片或服务端处理结果出现。 */
+ function askFormIsLatest(wrap) {
+  const msg = wrap && wrap.closest ? wrap.closest(".msg") : null;
+  const root = els.messages;
+  if (!msg || !root || !msg.isConnected) return false;
+  if (wrap.dataset.purpose === "kill_confirm") {
+   const cards = [...root.querySelectorAll(".ask-form")];
+   return cards[cards.length - 1] === wrap;
+  }
+  const all = [...root.querySelectorAll(".msg.user, .msg.assistant")].filter(
+   // 这张表单上次发送失败留下的那条用户消息不算「之后的新消息」，否则无法重提
+   (el) => !el.classList.contains("typing-msg") && !(el.dataset && el.dataset.askRetryOf)
+  );
+  return all[all.length - 1] === msg;
+ }
+
+ /** 新消息出现后，把旧的未答表单标为过期（不可再提交，内容仍可读） */
+ function expireOpenAskForms(exceptWrap, preserveKill = false) {
+  const root = els.messages;
+  if (!root) return;
+  root.querySelectorAll(".ask-form:not(.is-done)").forEach((w) => {
+   if (preserveKill && w.dataset.purpose === "kill_confirm") return;
+   if (w !== exceptWrap) lockAskForm(w, "stale", "已过期：出现了更新的问题");
+  });
+ }
+
+ /** 发送失败（出现错误提示、没有新回复）时恢复表单，方便重提 */
+ function watchAskSend(p, wrap, anchor) {
+  if (!p || typeof p.then !== "function") return;
+  p.then(
+   () => {
+    if (!wrap || !wrap.isConnected || state.detachWatch) return;
+    const msg = wrap.closest(".msg");
+    // 只看这次发送之后新出现的消息（上一次失败留下的提示不算）
+    let n = msg ? msg.nextElementSibling : null;
+    if (anchor && anchor.isConnected && anchor.parentElement === (msg && msg.parentElement)) n = anchor.nextElementSibling;
+    const n0 = n;
+    let sawAssistant = false;
+    let sawError = false;
+    while (n) {
+     if (n.classList.contains("msg") && n.classList.contains("assistant")) sawAssistant = true;
+     if (n.classList.contains("msg") && n.classList.contains("system")) sawError = true;
+     n = n.nextElementSibling;
+    }
+    if (sawError && !sawAssistant) {
+     for (let m = n0; m; m = m.nextElementSibling) {
+      if (m.classList.contains("msg") && m.classList.contains("user")) m.dataset.askRetryOf = "1";
+     }
+     unlockAskForm(wrap);
+     setAskStatus(wrap, "error", "刚才没发出去，你的选择还在，可以再提交一次");
+     return;
+    }
+    if (wrap.dataset.state === "sending") {
+     wrap.dataset.state = wrap.dataset.doneKind || "submitted";
+     setAskStatus(wrap, wrap.dataset.state, wrap.dataset.doneText || "已提交");
+    }
+   },
+   () => {}
+  );
+ }
+
+ function sendAskReply(form, wrap, payload) {
+  if (typeof L.send !== "function") return;
+  const msg = wrap && wrap.closest(".msg");
+  const anchor = msg && msg.parentElement ? msg.parentElement.lastElementChild : null;
+  watchAskSend(L.send(payload), wrap, anchor);
  }
 
  function cancelAskForm(form, wrap) {
   if (state.busy || (wrap && wrap.classList.contains("is-done"))) return;
+  if (wrap && !askFormIsLatest(wrap)) {
+   lockAskForm(wrap, "stale", "已过期：之后有了新消息");
+   return;
+  }
   if (wrap) {
-   wrap.classList.add("is-done");
-   wrap.querySelectorAll("button, input, textarea").forEach((el) => {
-    el.disabled = true;
-   });
+   wrap.dataset.doneKind = "cancelled";
+   wrap.dataset.doneText = "已取消";
   }
-  if (typeof L.send === "function") {
-   L.send({
-    message: "取消",
-    metadata: { form_reply: { _cancel: true } },
-   });
-  }
+  lockAskForm(wrap, "sending", "正在取消…");
+  const reply = { _cancel: true };
+  if (form && form.id) reply._form_id = String(form.id);
+  sendAskReply(form, wrap, { message: "取消", metadata: { form_reply: reply } });
  }
 
  function submitAskForm(form, values, wrap) {
-  if (state.busy) return;
+  if (state.busy) {
+   showToast("上一条还在处理，稍等再提交", "warn");
+   return;
+  }
+  if (wrap && wrap.classList.contains("is-done")) return;
+  if (wrap && !askFormIsLatest(wrap)) {
+   lockAskForm(wrap, "stale", "已过期：之后有了新消息");
+   showToast("这个问题已过期，请看最新的消息", "warn");
+   return;
+  }
+  const reply = Object.assign({}, values);
+  if (form && form.id) reply._form_id = String(form.id);
   if (form.kind === "integ") {
    const filled = (form.fields || []).some((f) => {
     const v = values[f.id];
@@ -1560,27 +1695,18 @@
     return;
    }
    const text = formatAskFormReply(form, values);
-   if (wrap) {
-    wrap.classList.add("is-done");
-    wrap.querySelectorAll("button, input, textarea").forEach((el) => {
-     el.disabled = true;
-    });
-   }
-   if (typeof L.send === "function") {
-    L.send({ message: text, metadata: { form_reply: values } });
-   }
+   markSending(wrap, "已提交");
+   sendAskReply(form, wrap, { message: text, metadata: { form_reply: reply } });
    return;
   }
   if (form.kind === "deputy") {
    const pick = String(values.choice || "");
    const useDeputy = pick === "deputy" || pick === "1";
-   if (wrap) wrap.classList.add("is-done");
-   if (typeof L.send === "function") {
-    L.send({
-     message: useDeputy ? "用副模型做上一件" : "用主模型继续上一件",
-     metadata: { use_deputy: useDeputy, skip_deputy: !useDeputy },
-    });
-   }
+   markSending(wrap, "已选择");
+   sendAskReply(form, wrap, {
+    message: useDeputy ? "用副模型做上一件" : "用主模型继续上一件",
+    metadata: { use_deputy: useDeputy, skip_deputy: !useDeputy },
+   });
    return;
   }
   let text = formatAskFormReply(form, values);
@@ -1590,15 +1716,15 @@
   }
   const pending = String(form.pending_user || "").trim();
   if (pending) text = "原需求：" + pending + "\n" + text;
-  if (wrap) {
-   wrap.classList.add("is-done");
-   wrap.querySelectorAll("button, input, textarea").forEach((el) => {
-    el.disabled = true;
-   });
-  }
-  if (typeof L.send === "function") {
-   L.send({ message: text, metadata: { form_reply: values } });
-  }
+  markSending(wrap, "已提交");
+  sendAskReply(form, wrap, { message: text, metadata: { form_reply: reply } });
+ }
+
+ function markSending(wrap, doneText) {
+  if (!wrap) return;
+  wrap.dataset.doneKind = "submitted";
+  wrap.dataset.doneText = doneText;
+  lockAskForm(wrap, "sending", "正在发送…");
  }
 
  function renderIntegNeededForm(form) {
@@ -1653,48 +1779,108 @@
   return wrap;
  }
 
- function renderAskForm(form) {
+ /** 可折叠的长文本：默认显示前一部分，「展开全文」按钮始终可见（手机可点），不靠悬停 */
+ function askLongText(className, text, limit, opts) {
+  const box = document.createElement("div");
+  box.className = className;
+  const body = document.createElement("div");
+  body.className = "ask-text";
+  const lines = String(text || "").split("\n");
+  lines.forEach((line, i) => {
+   if (i) body.appendChild(document.createElement("br"));
+   body.appendChild(document.createTextNode(line));
+  });
+  box.appendChild(body);
+  if (!(opts && opts.noFold) && String(text || "").length > limit) {
+   box.classList.add("is-folded");
+   const more = document.createElement("button");
+   more.type = "button";
+   more.className = "ask-more";
+   more.textContent = "展开全文";
+   more.setAttribute("aria-expanded", "false");
+   more.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const open = box.classList.toggle("is-folded") === false;
+    more.textContent = open ? "收起" : "展开全文";
+    more.setAttribute("aria-expanded", open ? "true" : "false");
+   });
+   box.appendChild(more);
+  }
+  return box;
+ }
+
+ let askSeq = 0;
+ // 作用 / 后果类说明（删除、付款、结束进程等）不折叠
+ const ASK_RISK_RE = /删除|删掉|清空|结束进程|终止|强制|付款|支付|扣费|收费|转账|发送|发出|覆盖|不可恢复|不可撤销|无法恢复|kill|delete|remove|overwrite|payment/i;
+
+ /** 后端把超长标签拆成「短标签…」+ 说明时，恢复成完整原文作标题，说明只留真正的补充 */
+ function optDisplay(opt) {
+  let label = String((opt && (opt.label || opt.value)) || "").trim();
+  let desc = String((opt && opt.desc) || "").trim();
+  const full = String((opt && opt.full) || "").trim();
+  if (full && full !== label) {
+   const head = label.replace(/…$/, "");
+   const cont = full.startsWith(head) ? full.slice(head.length).replace(/^[，。；,;：:\s]+/, "") : "";
+   if (cont && desc.startsWith(cont)) desc = desc.slice(cont.length).trim();
+   else if (cont && cont.startsWith(desc)) desc = ""; // 说明被截到上限时只剩原文续写部分
+   label = full;
+  }
+  return { label, desc };
+ }
+
+ function renderAskForm(form, opts) {
   if (!form || typeof form !== "object") return null;
+  const readonly = !!(opts && opts.readonly);
   if (form.kind === "integ" && !(form.fields && form.fields.length)) {
-   return renderIntegNeededForm(form);
+   const el = renderIntegNeededForm(form);
+   if (readonly) lockAskForm(el, "done", "已结束");
+   return el;
   }
   if (!Array.isArray(form.fields) || !form.fields.length) return null;
+  const uid = "askf" + ++askSeq;
   const wrap = document.createElement("div");
   wrap.className = "ask-form";
+  wrap.setAttribute("role", "group");
   wrap.addEventListener("mousedown", (e) => e.stopPropagation());
   wrap.addEventListener("click", (e) => e.stopPropagation());
   wrap.addEventListener("keydown", (e) => e.stopPropagation());
   wrap.addEventListener("keyup", (e) => e.stopPropagation());
+  if (form.id) wrap.dataset.formId = String(form.id);
+  wrap.dataset.purpose = String(form.purpose || "");
 
   const title = String(form.title || "").trim();
   const hint = String(form.prompt || "").trim();
   if (title) {
    const h = document.createElement("div");
    h.className = "ask-form-title";
+   h.id = uid + "-t";
    h.textContent = title;
    wrap.appendChild(h);
+   wrap.setAttribute("aria-labelledby", h.id);
   }
   if (hint && hint !== title) {
-   const p = document.createElement("div");
-   p.className = "ask-form-hint";
-   p.textContent = hint;
+   // 结束进程等确认卡：说明就是决定依据，不折叠
+   const p = askLongText("ask-form-hint", hint, ASK_LONG_HINT, { noFold: form.purpose === "kill_confirm" });
+   if (!title) {
+    p.id = uid + "-t";
+    wrap.setAttribute("aria-labelledby", p.id);
+   }
    wrap.appendChild(p);
   }
   const howto = String(form.howto || "").trim();
-  if (howto) {
-   const box = document.createElement("div");
-   box.className = "ask-form-howto";
-   howto.split("\n").forEach((line) => {
-    const d = document.createElement("div");
-    d.textContent = line;
-    box.appendChild(d);
-   });
-   wrap.appendChild(box);
-  }
+  if (howto) wrap.appendChild(askLongText("ask-form-howto", howto, ASK_LONG_HINT * 2));
+
+  const body = document.createElement("div");
+  body.className = "ask-form-body";
+  wrap.appendChild(body);
 
   const values = {};
   const isDeputy = form.kind === "deputy";
-  let hasInputs = false;
+  const err = document.createElement("div");
+  err.className = "ask-form-err";
+  err.setAttribute("role", "alert");
+  err.hidden = true;
 
   const fieldFilled = (f) => {
    const v = values[f.id];
@@ -1702,109 +1888,290 @@
    return String(v || "").trim() !== "";
   };
 
+  const showErr = (text) => {
+   err.textContent = text;
+   err.hidden = !text;
+  };
+
   const trySubmit = () => {
    if (state.busy || wrap.classList.contains("is-done")) return;
-   const otherFilled = ["other", "note"].some((id) => {
+   const otherFilled = Object.keys(ASK_OTHER_IDS).some((id) => {
     const v = values[id];
     return v != null && String(v).trim() !== "";
    });
    const missing = (form.fields || []).filter(
-    (f) => f.required && f.id !== "other" && !fieldFilled(f)
+    (f) => f.required && !ASK_OTHER_IDS[f.id] && !fieldFilled(f)
    );
    if (missing.length && !otherFilled) {
-    showToast("请先选一项或填一下，或写在「其他」", "warn");
+    const names = missing
+     .map((f) => String(f.label || "").trim())
+     .filter((s) => s && !ASK_SKIP_LABELS[s]);
+    showErr(names.length ? "还没回答：" + names.join("；") + "（也可以只写补充）" : "请先选一项，或在补充里写一句");
+    missing.forEach((f) => {
+     const q = body.querySelector('.ask-q[data-fid="' + CSS.escape(f.id) + '"]');
+     if (q) q.classList.add("is-missing");
+    });
+    const tgt = body.querySelector(".ask-q.is-missing");
+    if (tgt) {
+     const fc = tgt.querySelector('.ask-opt[tabindex="0"], .ask-opt, input, textarea');
+     try {
+      if (fc) fc.focus({ preventScroll: true });
+     } catch (_) {}
+     tgt.scrollIntoView({ block: "nearest" });
+    }
     return;
    }
+   showErr("");
    submitAskForm(form, values, wrap);
   };
 
-  const renderChips = (field, multi) => {
-   const block = document.createElement("div");
-   block.className = "ask-form-block";
+  // 真正多题时才给题目编号；单题不加装饰（不显示「已答 n/m」进度，避免被误解为还有下一个表单）
+  const qFields = (form.fields || []).filter((f) => f && f.id && !ASK_OTHER_IDS[f.id]);
+  const multiQ = qFields.length > 1;
+  const qNo = multiQ ? (f) => { const k = qFields.indexOf(f); return k >= 0 ? k + 1 + "." : ""; } : null;
+  const qCaption = (field, multi, id) => {
    const name = String(field.label || "").trim();
-   if (name && name !== "请选择") {
-    const cap = document.createElement("div");
-    cap.className = "ask-form-label";
-    cap.textContent = name + (multi ? "（可多选）" : "");
-    block.appendChild(cap);
+   if (!name || ASK_SKIP_LABELS[name] || name === "choice") {
+    if (!multi) return null;
    }
-   const bar = document.createElement("div");
-   bar.className = "ask-form-bar";
+   const cap = document.createElement("div");
+   cap.className = "ask-form-label";
+   cap.id = id;
+   const nm = name && !ASK_SKIP_LABELS[name] ? name : "";
+   if (qNo) {
+    const no = document.createElement("span");
+    no.className = "ask-q-no";
+    no.textContent = qNo(field) ;
+    if (no.textContent) cap.appendChild(no);
+   }
+   cap.appendChild(document.createTextNode(nm));
+   if (multi) {
+    const t = document.createElement("span");
+    t.className = "ask-q-kind";
+    t.textContent = nm ? "可多选" : "可多选";
+    cap.appendChild(t);
+   }
+   return cap;
+  };
+
+  const renderChoices = (field, multi) => {
+   const block = document.createElement("div");
+   block.className = "ask-form-block ask-q";
+   block.dataset.fid = field.id;
+   const capId = uid + "-" + field.id + "-l";
+   const cap = qCaption(field, multi, capId);
+   if (cap) block.appendChild(cap);
+   const help = String(field.help || "").trim();
+   if (help) block.appendChild(askLongText("ask-q-help", help, ASK_LONG_DESC));
+   const options = field.options || [];
+   // 短选项用紧凑的胶囊；任何一项较长或带说明时，改成整行选项，全文换行显示
+   const long = options.some((o) => optFullText(o).length > 16 || String(o.desc || "").trim());
+   const noFold = form.purpose === "kill_confirm";
+   const list = document.createElement("div");
+   list.className = "ask-options" + (long ? " is-rows" : " is-chips");
+   list.setAttribute("role", multi ? "group" : "radiogroup");
+   if (cap) list.setAttribute("aria-labelledby", capId);
    if (multi) values[field.id] = [];
-   (field.options || []).forEach((opt) => {
+   const btns = [];
+   const sync = () => {
+    const cur = values[field.id];
+    btns.forEach((b) => {
+     const on = multi ? (cur || []).includes(b.dataset.value) : cur === b.dataset.value;
+     b.classList.toggle("is-selected", on);
+     b.setAttribute("aria-checked", on ? "true" : "false");
+     if (b.parentElement && b.parentElement.classList.contains("ask-opt-card")) b.parentElement.classList.toggle("is-selected", on);
+     if (!multi) b.tabIndex = on || (!cur && b === btns[0]) ? 0 : -1;
+    });
+    block.classList.toggle("is-missing", false);
+    const sum = block.querySelector(".ask-picked");
+    if (sum && multi) sum.textContent = cur && cur.length ? "已选 " + cur.length + " 项" : "还没选";
+   };
+   options.forEach((opt, i) => {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "ask-chip" + (multi ? " is-multi" : "");
-    btn.textContent = opt.label || String(opt.value || "");
+    btn.className = "ask-opt" + (long ? "" : " ask-chip") + (multi ? " is-multi" : "");
+    btn.setAttribute("role", multi ? "checkbox" : "radio");
+    btn.setAttribute("aria-checked", "false");
+    btn.dataset.value = String(opt.value ?? i + 1);
+    const mark = document.createElement("span");
+    mark.className = "ask-opt-mark";
+    mark.setAttribute("aria-hidden", "true");
+    btn.appendChild(mark);
+    const txt = document.createElement("span");
+    txt.className = "ask-opt-text";
+    const shown = optDisplay(opt);
+    const lab = document.createElement("span");
+    lab.className = "ask-opt-label";
+    lab.textContent = shown.label; // 标题就是完整原文，不另编短标题
+    txt.appendChild(lab);
+    const desc = shown.desc;
+    let foldBtn = null;
+    if (desc) {
+     const d = document.createElement("span");
+     d.className = "ask-opt-desc";
+     d.id = uid + "-" + field.id + "-d" + i;
+     d.textContent = desc;
+     txt.appendChild(d);
+     btn.setAttribute("aria-describedby", d.id);
+     // 很长的补充说明默认收成 3 行，有单独的「展开说明」按钮；作用/后果类说明不折叠
+     if (long && desc.length > ASK_LONG_DESC && !noFold && !ASK_RISK_RE.test(shown.label + desc)) {
+      d.classList.add("is-clamped");
+      foldBtn = document.createElement("button");
+      foldBtn.type = "button";
+      foldBtn.className = "ask-more ask-opt-more";
+      foldBtn.textContent = "展开说明";
+      foldBtn.setAttribute("aria-expanded", "false");
+      foldBtn.setAttribute("aria-controls", d.id);
+      foldBtn.addEventListener("mousedown", (e) => e.preventDefault());
+      foldBtn.addEventListener("click", (e) => {
+       e.preventDefault();
+       e.stopPropagation();
+       const open = d.classList.toggle("is-clamped") === false;
+       foldBtn.textContent = open ? "收起说明" : "展开说明";
+       foldBtn.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+     }
+    }
+    btn.appendChild(txt);
     btn.addEventListener("mousedown", (e) => e.preventDefault());
     btn.addEventListener("click", (e) => {
      e.preventDefault();
      e.stopPropagation();
      if (state.busy || wrap.classList.contains("is-done")) return;
-     const val = String(opt.value);
+     const val = btn.dataset.value;
      if (multi) {
       const cur = Array.isArray(values[field.id]) ? values[field.id].slice() : [];
-      const i = cur.indexOf(val);
-      if (i >= 0) cur.splice(i, 1);
+      const k = cur.indexOf(val);
+      if (k >= 0) cur.splice(k, 1);
       else cur.push(val);
       values[field.id] = cur;
-      btn.classList.toggle("is-selected", i < 0);
      } else {
       values[field.id] = val;
-      bar.querySelectorAll(".ask-chip").forEach((b) => b.classList.remove("is-selected"));
-      btn.classList.add("is-selected");
-      if (isDeputy) submitAskForm(form, values, wrap);
      }
+     sync();
+     showErr("");
+     if (!multi && isDeputy) submitAskForm(form, values, wrap);
     });
-    bar.appendChild(btn);
+    if (!multi) {
+     btn.addEventListener("keydown", (e) => {
+      const k = e.key;
+      if (!["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft"].includes(k)) return;
+      e.preventDefault();
+      const j = btns.indexOf(btn);
+      const nx = btns[(j + (k === "ArrowDown" || k === "ArrowRight" ? 1 : btns.length - 1)) % btns.length];
+      if (nx) {
+       nx.focus();
+       nx.click();
+      }
+     });
+    }
+    btns.push(btn);
+    if (long) {
+     const card = document.createElement("div");
+     card.className = "ask-opt-card";
+     card.appendChild(btn);
+     if (foldBtn) card.appendChild(foldBtn);
+     list.appendChild(card);
+    } else list.appendChild(btn);
    });
-   block.appendChild(bar);
-   wrap.appendChild(block);
+   block.appendChild(list);
+   if (multi) {
+    const sum = document.createElement("div");
+    sum.className = "ask-picked";
+    sum.setAttribute("aria-live", "polite");
+    block.appendChild(sum);
+   }
+   sync();
+   body.appendChild(block);
   };
 
-  form.fields.forEach((field) => {
-   if (!field || !field.id) return;
-   const type = field.type || "text";
-   if (type === "choice" || type === "single") {
-    renderChips(field, false);
-    return;
-   }
-   if (type === "multi") {
-    renderChips(field, true);
-    return;
-   }
-   hasInputs = true;
+  const inputs = [];
+  const renderInput = (field, type) => {
+   const isOther = !!ASK_OTHER_IDS[field.id];
    const lab = document.createElement("label");
-   lab.className = "ask-form-field";
+   lab.className = "ask-form-field ask-q" + (isOther ? " is-other" : "");
+   lab.dataset.fid = field.id;
    const cap = document.createElement("span");
-   cap.textContent = field.label || field.id;
+   cap.className = "ask-field-cap";
+   if (!isOther && qNo && qNo(field)) {
+    const no = document.createElement("span");
+    no.className = "ask-q-no";
+    no.textContent = qNo(field);
+    cap.appendChild(no);
+   }
+   cap.appendChild(document.createTextNode(isOther ? "补充说明（可选）" : String(field.label || field.id)));
+   if (field.required && !isOther) {
+    const req = document.createElement("span");
+    req.className = "ask-req";
+    req.textContent = " 必填";
+    cap.appendChild(req);
+   }
    lab.appendChild(cap);
-   const input =
-    type === "textarea"
-     ? document.createElement("textarea")
-     : document.createElement("input");
+   const help = String(field.help || "").trim();
+   if (help) lab.appendChild(askLongText("ask-q-help", help, ASK_LONG_DESC));
+   const input = type === "textarea" ? document.createElement("textarea") : document.createElement("input");
    if (input.tagName === "INPUT") {
-    input.type =
-     type === "password" || field.secret ? "password" : "text";
-   } else input.rows = 3;
-   input.placeholder = field.placeholder || "点这里输入";
+    input.type = type === "password" || field.secret ? "password" : "text";
+   } else input.rows = isOther ? 2 : 3;
+   input.placeholder = isOther
+    ? "上面没有合适的，或想补充 / 修改，写在这里（可不填）"
+    : field.placeholder || "点这里输入";
    input.autocomplete = "off";
    if (input.type === "password") input.autocomplete = "new-password";
    input.addEventListener("focus", (e) => e.stopPropagation());
    input.addEventListener("input", () => {
     values[field.id] = input.value;
+    lab.classList.remove("is-missing");
+    showErr("");
    });
    input.addEventListener("keydown", (e) => {
     e.stopPropagation();
-    if (e.key === "Enter" && input.tagName === "INPUT" && !e.shiftKey) {
-     e.preventDefault();
-     trySubmit();
+    if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
+    if (input.tagName === "TEXTAREA") {
+     // 多行：Enter 换行；Ctrl/⌘+Enter 提交
+     if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      trySubmit();
+     }
+     return;
     }
+    if (e.shiftKey) return;
+    e.preventDefault();
+    // 单行：还有下一个输入框就跳过去，最后一个才提交，避免填一半误发
+    const j = inputs.indexOf(input);
+    const nx = inputs.slice(j + 1).find((x) => !x.closest(".is-other"));
+    if (nx) nx.focus();
+    else trySubmit();
    });
    lab.appendChild(input);
-   wrap.appendChild(lab);
+   inputs.push(input);
+   body.appendChild(lab);
+  };
+
+  form.fields.forEach((field) => {
+   if (!field || !field.id) return;
+   const type = field.type || "text";
+   if (type === "choice" || type === "single") renderChoices(field, false);
+   else if (type === "multi") renderChoices(field, true);
+   else renderInput(field, type);
   });
 
+  wrap.appendChild(err);
+  const foot = document.createElement("div");
+  foot.className = "ask-form-foot";
+  wrap.appendChild(foot);
+  if (!isDeputy && inputs.some((x) => x.tagName === "TEXTAREA")) {
+   const kh = document.createElement("span");
+   kh.className = "ask-keyhint";
+   kh.textContent = "Enter 换行，Ctrl+Enter 发送";
+   kh.hidden = true; // 只在正在多行框里打字时出现
+   foot.appendChild(kh);
+   inputs.forEach((x) => {
+    if (x.tagName !== "TEXTAREA") return;
+    x.addEventListener("focus", () => (kh.hidden = false));
+    x.addEventListener("blur", () => (kh.hidden = true));
+   });
+  }
   if (!isDeputy) {
    const actions = document.createElement("div");
    actions.className = "ask-form-actions";
@@ -1830,12 +2197,18 @@
     trySubmit();
    });
    actions.appendChild(submit);
-   wrap.appendChild(actions);
+   foot.appendChild(actions);
   }
 
+  if (readonly) {
+   lockAskForm(wrap, "done", "已结束（历史记录，不能再提交）");
+   return wrap;
+  }
   requestAnimationFrame(() => {
-   const first = wrap.querySelector("input, textarea");
-   if (first && !isDeputy) {
+   // 只有输入框、没有选项时才自动聚焦（手机上不自动弹键盘挡住选项）
+   const hasChoices = !!wrap.querySelector(".ask-options");
+   const first = inputs.find((x) => !x.closest(".is-other"));
+   if (first && !isDeputy && !hasChoices) {
     try {
      first.focus({ preventScroll: true });
     } catch (_) {
@@ -1849,6 +2222,14 @@
  function appendMessage(role, content, extra = null) {
  const empty = els.messages.querySelector(".empty, .home-welcome");
  if (empty) empty.remove();
+ // 普通表单随新消息失效；进程确认由服务端绑定的操作状态决定。
+ if (role === "user" && !extra?.fromStore) expireOpenAskForms(null, true);
+ if (role === "assistant" && extra?.metadata?.form_resolved) {
+  const resolved = String(extra.metadata.form_resolved);
+  els.messages?.querySelectorAll(".ask-form").forEach((w) => {
+   if (w.dataset.formId === resolved) lockAskForm(w, "done", "已处理");
+  });
+ }
  // 有实际消息后：退出空态欢迎，输入框保持底栏
  setHomeHeroMode(false);
 
@@ -2016,7 +2397,10 @@
  }
 
  if (role === "assistant" && formSpec && typeof formSpec === "object") {
-  const formEl = renderAskForm(formSpec);
+  // 历史里非末尾的表单（或已有更新的消息）只读回显，不能再提交
+  const live = !!extra?.form || (!extra?.fromStore && !!extra?.metadata?.form);
+  if (live) expireOpenAskForms();
+  const formEl = renderAskForm(formSpec, { readonly: !live });
   if (formEl) col.appendChild(formEl);
  } else if (role === "assistant" && extra?.ask_deputy) {
   const bar = document.createElement("div");
@@ -2722,6 +3106,9 @@
  L.applyToolEnd = applyToolEnd;
  L.formatUsage = formatUsage;
  L.appendMessage = appendMessage;
+ L.renderAskForm = renderAskForm;
+ L.formatAskFormReply = formatAskFormReply;
+ L.expireOpenAskForms = expireOpenAskForms;
  L.refreshTurnActions = refreshTurnActions;
  L.assistantDisplayName = assistantDisplayName;
  L.appendTyping = appendTyping;

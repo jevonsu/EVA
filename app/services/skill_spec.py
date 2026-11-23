@@ -265,7 +265,7 @@ def connection_hacks_in_text(text: str) -> list[str]:
     if _HOST_SPOOF.search(blob):
         hits.append(
             "禁止伪造 Host/localhost（skip_host、FAKE_HOST、putheader Host）。"
-            "局域网服务用 app.services.skill_http.request，"
+            "局域网服务用 await app.services.skill_http.arequest(...)（非阻塞），"
             "base_url 只来自 integration_config()。"
             "502 是网关问题，不要靠改技能代码硬扛。"
         )

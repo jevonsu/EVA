@@ -158,6 +158,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Skill knowledge_refs sync failed (non-fatal)")
 
+    # Protected services (terminal action=service): re-adopt by pid identity.
+    # Status only — startup never kills any process.
+    try:
+        from app.services.service_manager import reconcile as _svc_reconcile
+
+        await asyncio.to_thread(_svc_reconcile)
+    except Exception:
+        logger.exception("services reconcile failed (non-fatal)")
+
     scheduler = get_scheduler()
     await scheduler.start()
 
@@ -176,6 +185,17 @@ async def lifespan(app: FastAPI):
         summary.get("mcp_servers"),
     )
     yield
+
+    # Class-① cleanup only: one-shot terminal runs still alive. Registered
+    # services (class ②) are skipped and keep running after EVA exits.
+    try:
+        from app.services.terminal_exec import shutdown_cleanup
+
+        n = shutdown_cleanup()
+        if n:
+            logger.info("Shutdown: cleaned %d one-shot terminal run(s)", n)
+    except Exception:
+        logger.exception("terminal shutdown cleanup failed")
 
     await scheduler.shutdown()
     await get_mcp_manager().shutdown()
@@ -362,6 +382,11 @@ def create_app() -> FastAPI:
     app.include_router(webhook_api.mgmt_router)
     app.include_router(webhook_api.router)
     app.include_router(smb_media.router)
+    from app.api import prompt_studio as prompt_studio_api
+    app.include_router(prompt_studio_api.router)
+    from app.api import llm_failover as llm_failover_api
+    app.include_router(llm_failover_api.router)
+    app.include_router(llm_failover_api.push_router)
 
     def _auth_page(name: str) -> Response:
         path = STATIC_DIR / "auth" / name

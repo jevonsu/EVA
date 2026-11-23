@@ -446,6 +446,17 @@ _INTENT_RULES: list[tuple[str, re.Pattern[str], list[str], bool]] = [
         False,
     ),
     (
+        "process_control",
+        re.compile(
+            r"(杀|结束|关闭|关掉|干掉|停掉|强制关闭|强退).{0,8}(进程|程序|pid|PID|服务)|"
+            r"进程.{0,8}(占用|是什么|干什么|做什么|查|看看)|"
+            r"端口.{0,6}(被占|占用|谁在用|被谁)|\btaskkill\b|\bpid\s*\d+|任务管理器|卡死",
+            re.I,
+        ),
+        ["process_control"],
+        False,
+    ),
+    (
         "document",
         re.compile(
             r"\.(docx|xlsx|pptx|pdf|md)\b|"

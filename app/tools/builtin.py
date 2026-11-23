@@ -399,6 +399,37 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             return json.dumps(out, ensure_ascii=False)
 
         if act in ("recall", "search", "get"):
+            if item_id:
+                item = await store.get(item_id, include_hidden=True)
+                if item is None:
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "action": "get",
+                            "error": "not_found",
+                            "id": item_id,
+                        },
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "action": "get",
+                        "id": item.id,
+                        "item": {
+                            "id": item.id,
+                            "content": item.content,
+                            "kind": item.kind,
+                            "tags": item.tags,
+                            "status": item.status,
+                            "confidence": item.confidence,
+                            "valid_to": item.valid_to,
+                            "created_at": item.created_at.isoformat(),
+                        },
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
             q = (query or content or "").strip()
             lim = max(1, min(int(limit or 10), 50))
             if q:
@@ -1335,7 +1366,8 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     "action_required": "use_skill_http",
                     "gaps": hacks,
                     "hint": (
-                        "局域网 NocoDB/qB/NAS 请 from app.services.skill_http import request，"
+                        "局域网 NocoDB/qB/NAS 请 from app.services.skill_http import arequest，"
+                        "在 async handle 里 await arequest(...)（不要直接调用阻塞的 request）；"
                         "用设定→集成的 base_url + 账号密码。"
                         "NocoDB 完整操作必须 email/password（PAT/nc_pat_ 不够）。"
                         "502 不要改 handler，更不要删除技能。"
@@ -3297,16 +3329,23 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         spec: str = "",
     ) -> str:
         """Pause this turn and show a form under the bubble."""
-        from app.agent.ask_form import build_form
+        from app.agent.ask_form import AskFormTooLong, build_form
 
-        form = build_form(
-            title=title,
-            prompt=prompt,
-            options=options,
-            multi=multi,
-            fields=fields,
-            spec=spec,
-        )
+        try:
+            form = build_form(
+                title=title,
+                prompt=prompt,
+                options=options,
+                multi=multi,
+                fields=fields,
+                spec=spec,
+            )
+        except AskFormTooLong as exc:
+            # 明确报错，不返回截断的半份表单；提示里只有长度，没有原文
+            return json.dumps(
+                {"ok": False, "error": "form_too_long", "hint": str(exc)},
+                ensure_ascii=False,
+            )
         if not form:
             return json.dumps(
                 {
@@ -3329,25 +3368,26 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         ),
         (
             "ask_user",
-            "需要用户补充或选择时调用，然后停止本轮。"
-            "options=单选（每行一项）；multi=多选（每行一项）；fields=输入框标题（每行一项）。"
-            "也可写 spec，每行一种控件，例：单选 付款：到付 / 现结\\n多选 需要：入库 / 查物流\\n输入 单号。"
-            "不要用正文 A/B 长题代替本工具。",
+            "向用户提一个需要他决定或补充的问题（表单显示在气泡下），调用后停止本轮，正文不要再重复问题。"
+            "只在缺少会实质改变结果、且上下文/记忆/工具都查不到的信息，或必须由用户拍板的高影响动作时用；可逆的小细节自己按合理默认定。"
+            "prompt 写一个自然的问题（为什么要问可放一句）；options=单选，每行一个，2～6 个简短、互不重叠、真实可行的选项，"
+            "需要解释写成「选项 :: 说明」；不要列「其他」（表单自带补充框），不要编造未确认的服务/账户，高风险项不要放第一个。"
+            "multi=多选；fields=输入框标题；spec 可混合：单选 付款：到付 / 现结\\n输入 单号。真正独立的问题最多 3 个。",
             ask_user,
             {
                 "type": "object",
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "短标题，如「还差这几项」",
+                        "description": "可选短标题（≤20字），如「选部署方式」；不要写成第二遍问题",
                     },
                     "prompt": {
                         "type": "string",
-                        "description": "一两句说明为什么要问",
+                        "description": "要用户回答的问题，一两句。例：这份报告发给谁看？内容深浅会不同。",
                     },
                     "options": {
                         "type": "string",
-                        "description": "单选，每行一个。例：到付\\n现结",
+                        "description": "单选，每行一个，可写「选项 :: 说明」。例：给老板看 :: 只要结论和数字\\n给技术同事 :: 保留细节和步骤",
                     },
                     "multi": {
                         "type": "string",
@@ -3838,7 +3878,8 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             "修已有：先 read_skill 再 update=true。"
             "多操作技能必须 parameters.action.enum + 各动作字段；"
             "list/query 必须有 limit（默认 50）。禁止空 properties:{}。"
-            "局域网服务用 skill_http.request，禁止伪造 Host=localhost；"
+            "局域网服务用 await skill_http.arequest(...)（async handle 里禁止直接调用阻塞的 request/urlopen/requests/time.sleep，"
+            "其它阻塞调用用 await asyncio.to_thread(...) 包起来，否则会卡住所有对话）；禁止伪造 Host=localhost；"
             "NocoDB 完整 CRUD 用 email+password 不是 PAT；502 不要改代码、不要删技能。"
             "分组：group 填 capability_groups 的 id 或中文名；省略则放进「其它」，不要靠关键词猜。",
             create_agent_tool,
@@ -3865,6 +3906,9 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                             "    from app.services.credentials import llm_credentials, integration_config\n"
                             "    llm = llm_credentials()  # 或 llm_credentials('设定里的 llm id')\n"
                             "    # 业务连接：cfg=integration_config('id')；多记录读 cfg.get('items')\n"
+                            "    # HTTP：from app.services.skill_http import arequest\n"
+                            "    #       status, data, _h = await arequest('GET', url, timeout=20)\n"
+                            "    # 其它阻塞调用：await asyncio.to_thread(fn, ...)；不要在 async 里直接 time.sleep/urlopen\n"
                             "    return json.dumps({...}, ensure_ascii=False)\n\n"
                             "也可手写 def register(registry)，但 registry.register 第一个参数必须等于 name。\n"
                             "规则: 对话模型走 llm_credentials；业务连接走 integration_config；勿硬编码密钥。"

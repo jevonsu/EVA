@@ -12,11 +12,18 @@
 
 | action | 行为 | token |
 |---|---|---|
-| `run` | 等到结束再返回（默认 90s，最长 300s） | 等待期间不耗 token；返回后再打一轮模型 |
-| `bg` | 立刻返回 `job_id` | 推荐给 pip/npm/clone |
+| `run` | 一次性执行，等到结束再返回（默认 90s，最长 300s）。超时 / 用户停止对话 / EVA 关闭时结束**整棵进程树**。服务器、`tail -f`、watch 等常驻命令直接拒绝 | 等待期间不耗 token；返回后再打一轮模型 |
+| `bg` | 会结束的后台任务，立刻返回 `job_id` | 推荐给 pip/npm/clone |
 | `poll` | 看后台日志尾部 | 每次 poll 才打一轮 |
-| `kill` | 结束后台任务 | |
+| `kill` | 结束后台任务（先核对 pid 身份，再杀整棵树） | |
 | `pwd` | 允许的目录与 venv python | |
+| `service` | **用户明确要求**的常驻服务（web/dev server、端口服务）。脱离 EVA 运行，输出写 `data/services/<id>.log`；停止对话、超时、删会话、重启 EVA 都不结束 | 最多 5 个；启动前检查端口 |
+| `services` | 列出服务；带 `service_id` 看该服务日志尾部 | |
+| `stop_service` | 结束服务。只有用户本轮明确说停止/关闭时才调用，且 `confirm=true`；否则返回 `need_confirm` | |
+
+进程分类：① `run`、技能 HTTP、CLI 模型调用 = EVA 内部执行，必须结束；② `service` = 受保护服务，只有用户明确停止才结束；③ `bg` = 有限后台任务。
+定时任务 / 工作流 / Webhook 路径禁止 `service` 与 `stop_service`。登记表：`data/services.json`（EVA 启动时按 pid+创建时间重新接管，只改状态不杀进程）。
+Docker 部署：容器内 EVA 是 PID 1，重启 EVA = 重启容器，容器内服务必然随之结束。
 
 `pip` / `python` 会改写到 Eva 的 `.venv`。检测到 `pip install` / `npm install` / `git clone` 时，`run` 会自动改成 `bg`。
 

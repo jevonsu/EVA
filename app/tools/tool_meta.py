@@ -64,6 +64,7 @@ TOOL_META: dict[str, dict[str, str]] = {
     "list_api_models": {"role": "primary", "tag": "列模型", "group": "dev"},
     "server_health_check": {"role": "primary", "tag": "健康检查", "group": "dev"},
     "terminal": {"role": "primary", "tag": "终端", "group": "dev"},
+    "process_control": {"role": "primary", "tag": "进程", "group": "dev"},
     "document": {"role": "primary", "tag": "文档", "group": "office"},
 }
 
@@ -225,6 +226,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "list_api_models": "拉取远程 /models",
     "server_health_check": "服务器健康检查",
     "terminal": "受控终端",
+    "process_control": "进程管理（告知后确认结束）",
     "document": "办公文档",
 }
 
@@ -317,6 +319,10 @@ SCENE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "terminal": (
         "终端", "命令行", "执行命令", "pip", "pip install", "npm",
         "跑脚本", "安装依赖", "git clone", "cmd", "powershell",
+    ),
+    "process_control": (
+        "进程", "杀进程", "结束进程", "关闭进程", "强制关闭", "端口占用",
+        "端口被占用", "pid", "任务管理器", "taskkill", "卡死",
     ),
     "document": (
         "word", "excel", "ppt", "pdf", "markdown", "docx", "xlsx", "pptx",
@@ -702,7 +708,7 @@ def routing_instruction_skilldev() -> str:
     """Injected only when create/read/list skill tools are unlocked this turn."""
     return (
         "SKILL LIFECYCLE:\n"
-        "- Protected: builtin + reload_runtime / list_api_models / server_health_check / terminal / document.\n"
+        "- Protected: builtin + reload_runtime / list_api_models / server_health_check / terminal / process_control / document.\n"
         "- Shell/pip/npm/scripts → terminal (cwd=workspace; long jobs action=bg). "
         "Not a full admin shell.\n"
         "- Office files → document; do not create_tool for docx/xlsx/pptx/pdf/md.\n"
@@ -718,7 +724,9 @@ def routing_instruction_skilldev() -> str:
         "- Delete: restate name+purpose → delete_tool(confirm_name=same).\n"
         "- Action-style skills: parameters.action.enum of every branch; "
         "list/query/search include limit (default 50). Never register empty properties:{}.\n"
-        "- LAN APIs: app.services.skill_http.request + integration_config; "
+        "- LAN APIs: `await app.services.skill_http.arequest(...)` + integration_config "
+        "(async handle must not call blocking request()/urlopen/requests/time.sleep directly; "
+        "wrap other blocking calls in `await asyncio.to_thread(...)`); "
         "never spoof Host=localhost. "
         "HTTP 502 → check 设定→集成; do not rewrite the skill or delete it."
     )

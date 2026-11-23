@@ -416,6 +416,19 @@ class WorkflowEngine:
         session_title = f"工作流 · {wf_name}"[:80] if wf_name else None
         agent = get_agent()
         token = _workflow_agent_depth.set(_workflow_agent_depth.get() + 1)
+        # Unattended path: never start/stop protected services from a workflow.
+        from app.tools.protection import (
+            UNATTENDED_BLOCKED_ACTIONS,
+            add_blocked_tools,
+            get_turn_id,
+            get_turn_session_id,
+            get_turn_user_message,
+            reset_blocked_tools,
+            set_turn_context,
+        )
+
+        block_token = add_blocked_tools(UNATTENDED_BLOCKED_ACTIONS)
+        outer_turn = (get_turn_user_message(), get_turn_session_id(), get_turn_id())
         try:
             result = await agent.chat(
                 str(prompt),
@@ -427,6 +440,8 @@ class WorkflowEngine:
                 route_origin="chat.workflow",
             )
         finally:
+            set_turn_context(*outer_turn)
+            reset_blocked_tools(block_token)
             _workflow_agent_depth.reset(token)
 
         if result.session_id and run.get("session_id") != result.session_id:

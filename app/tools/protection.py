@@ -46,6 +46,7 @@ RESERVED_TOOL_NAMES: frozenset[str] = frozenset({
     "integrations",
     "llms",
     "terminal",
+    "process_control",
     "document",
     "reload_runtime",
     "list_api_models",
@@ -78,6 +79,7 @@ PROTECTED_SKILLS: frozenset[str] = frozenset({
     "list_api_models",
     "server_health_check",
     "terminal",
+    "process_control",
     "document",
 })
 
@@ -181,6 +183,15 @@ def skill_package_exists(name: str) -> bool:
 # ---- Release gates (F01 / F02) ----------------------------------------------
 
 import contextvars
+from functools import wraps
+
+# Tool *actions* that need a human in the loop: never on unattended paths
+# (scheduled tasks, workflows, webhooks). Checked as "<tool>:<action>".
+UNATTENDED_BLOCKED_ACTIONS: frozenset[str] = frozenset({
+    "terminal:service",
+    "terminal:stop_service",
+    "process_control:kill",
+})
 
 # Tools that must never run on webhook paths even if use_tools is somehow on.
 WEBHOOK_DANGEROUS_TOOLS: frozenset[str] = frozenset({
@@ -189,7 +200,7 @@ WEBHOOK_DANGEROUS_TOOLS: frozenset[str] = frozenset({
     "promote_skill",
     "validate_skill",
     "terminal",
-})
+}) | UNATTENDED_BLOCKED_ACTIONS
 
 _blocked_tools_cv: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
     "eva_blocked_tools", default=frozenset()
@@ -230,6 +241,80 @@ def get_blocked_tools() -> frozenset[str]:
 def is_tool_blocked(name: str | None) -> bool:
     n = normalize_tool_name(name)
     return bool(n) and n in get_blocked_tools()
+
+
+def add_blocked_tools(names: frozenset[str] | set[str] | None):
+    """Like set_blocked_tools but keeps what an outer path already blocked
+    (e.g. a workflow started from a webhook). Returns a reset token."""
+    return _blocked_tools_cv.set(get_blocked_tools() | frozenset(names or ()))
+
+
+def is_action_blocked(tool: str, action: str) -> bool:
+    t = normalize_tool_name(tool)
+    a = normalize_tool_name(action)
+    return is_tool_blocked(t) or is_tool_blocked(f"{t}:{a}")
+
+
+# ---- Per-turn context (set by Agent.chat; read by tools that need the
+# user's own words this turn, e.g. terminal stop_service) ------------------
+_turn_user_message_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "eva_turn_user_message", default=None
+)
+_turn_session_id_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "eva_turn_session_id", default=None
+)
+
+
+_turn_id_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "eva_turn_id", default=None
+)
+
+
+def set_turn_context(
+    message: str | None, session_id: str | None = None, turn_id: str | None = None
+) -> None:
+    """Called once per user turn. A fresh turn_id lets tools tell "this turn"
+    from "a later turn" (kill confirmation must come in a later turn)."""
+    import uuid as _uuid
+
+    _turn_user_message_cv.set(None if message is None else str(message))
+    _turn_session_id_cv.set(session_id)
+    _turn_id_cv.set(turn_id or _uuid.uuid4().hex)
+
+
+def get_turn_id() -> str | None:
+    return _turn_id_cv.get()
+
+
+def get_turn_user_message() -> str | None:
+    return _turn_user_message_cv.get()
+
+
+def get_turn_session_id() -> str | None:
+    return _turn_session_id_cv.get()
+
+
+def preserve_turn_context(func):
+    """Restore caller context on every chat exit, including cancel/early return.
+
+    Inherit outer restrictions (e.g. webhook); do not clear them. A token is
+    captured before Agent.chat changes any value. This also protects nested
+    calls and sequential calls in the same asyncio task, not only new tasks.
+    """
+    @wraps(func)
+    async def wrapped(*args, **kwargs):
+        variables = (
+            _blocked_tools_cv, _turn_user_message_cv,
+            _turn_session_id_cv, _turn_id_cv,
+        )
+        tokens = [(var, var.set(var.get())) for var in variables]
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            for var, token in reversed(tokens):
+                var.reset(token)
+
+    return wrapped
 
 
 def create_tool_disabled_payload(action: str = "create_tool") -> dict[str, Any]:

@@ -1,0 +1,26 @@
+{
+  "id": "process_control",
+  "name": "进程管理",
+  "description": "查询本机进程（按 PID/进程名/端口），告知作用与结束影响；用户明确同意后才结束指定 PID（可选连同子进程树）。",
+  "version": "1.0.0",
+  "tools": [],
+  "agentos_meta": {
+    "role": "primary",
+    "tag": "进程",
+    "group": "dev",
+    "how_to_call": "查进程 / 端口被谁占用 / 结束进程（需确认）",
+    "scene_keywords": [
+      "进程",
+      "杀进程",
+      "结束进程",
+      "关闭进程",
+      "强制关闭",
+      "端口占用",
+      "端口被占用",
+      "pid",
+      "任务管理器",
+      "taskkill",
+      "卡死的程序"
+    ]
+  }
+}

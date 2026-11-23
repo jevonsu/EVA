@@ -1,13 +1,20 @@
 """Proxy-free HTTP for skills talking to LAN services (NocoDB, qB, NAS APIs).
 
+Inside ``async def handle`` ALWAYS use ``await arequest(...)`` (runs in a worker
+thread). The sync ``request(...)`` blocks EVA's single event loop — every
+session, SSE stream and the stop button freeze until it returns.
+
 Do not use the system HTTP_PROXY / 设定→集成 http.proxy — those are for
 public websites. LAN 502s after a few days are usually proxy or Host-spoofing.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import ssl
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,6 +24,32 @@ from typing import Any
 _NO_PROXY = urllib.request.ProxyHandler({})
 _CTX = ssl.create_default_context()
 _OPENER = urllib.request.build_opener(_NO_PROXY, urllib.request.HTTPSHandler(context=_CTX))
+
+logger = logging.getLogger("app.services.skill_http")
+_warned: set[str] = set()
+_warn_lock = threading.Lock()
+
+
+def _warn_if_on_loop(url: str) -> None:
+    """Log once per host when sync request() runs on the event-loop thread."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return  # worker thread / sync context: fine
+    try:
+        host = urllib.parse.urlparse(url).netloc or url[:60]
+    except Exception:
+        host = "?"
+    with _warn_lock:
+        if host in _warned:
+            return
+        _warned.add(host)
+    logger.warning(
+        "skill_http.request(%s) called on the event loop thread: this blocks all "
+        "sessions until it returns. Use `await skill_http.arequest(...)` or "
+        "`await asyncio.to_thread(request, ...)` in async handlers.",
+        host,
+    )
 
 
 def gateway_hint(status: int | None, body: Any = None) -> str | None:
@@ -52,6 +85,7 @@ def request(
     timeout: float = 30,
 ) -> tuple[int, Any, dict[str, str]]:
     """Return (status, parsed_body, response_headers). Body is dict/list/str."""
+    _warn_if_on_loop(url)
     hdrs = {str(k): str(v) for k, v in (headers or {}).items() if v is not None}
     data: bytes | None = None
     if json_body is not None:
@@ -88,3 +122,25 @@ def request(
         return int(e.code), parsed, rh
     except Exception as e:
         return -1, {"error": str(e)}, {}
+
+
+async def arequest(
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    json_body: Any = None,
+    form: dict[str, Any] | None = None,
+    timeout: float = 30,
+) -> tuple[int, Any, dict[str, str]]:
+    """Non-blocking ``request``: same arguments/return, runs in a worker thread
+    so the event loop (other chats, stop button) keeps going."""
+    return await asyncio.to_thread(
+        request,
+        method,
+        url,
+        headers=headers,
+        json_body=json_body,
+        form=form,
+        timeout=timeout,
+    )
