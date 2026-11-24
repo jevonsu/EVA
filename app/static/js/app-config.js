@@ -692,6 +692,61 @@
   });
  }
 
+ function fillPublicIdentityFields(a) {
+  const agent = a || {};
+  const ch = agent.identity_choices || {};
+  const fallbackLang = [
+   { id: "zh-Hans", label: "简体中文" },
+   { id: "zh-Hant", label: "繁体中文" },
+   { id: "en", label: "English" },
+   { id: "ja", label: "日本語" },
+   { id: "follow_user", label: "自动跟随用户" },
+  ];
+  const fallbackStyle = [
+   { id: "natural", label: "自然口语（说人话）" },
+   { id: "concise", label: "简洁直接" },
+   { id: "gentle", label: "温和耐心" },
+   { id: "formal", label: "正式专业" },
+   { id: "humorous", label: "轻松幽默" },
+   { id: "detailed", label: "详细讲解" },
+   { id: "custom", label: "自定义" },
+  ];
+  const fallbackDetail = [
+   { id: "brief", label: "简要" },
+   { id: "balanced", label: "适中" },
+   { id: "detailed", label: "详尽" },
+  ];
+  const fallbackTerm = [
+   { id: "plain", label: "少用术语，必要时先解释" },
+   { id: "balanced", label: "适度使用术语" },
+   { id: "technical", label: "可以使用专业术语" },
+  ];
+  const dropInherit = (arr, fb) => {
+   const src = Array.isArray(arr) && arr.length ? arr : fb;
+   return src.filter((o) => (o && (o.id || o)) !== "inherit_public");
+  };
+  const langId = typeof L.mapLanguageId === "function" ? L.mapLanguageId(agent.language) : (agent.language || "");
+  const fill = (id, opts, val) => {
+   const el = $(id);
+   if (!el) return;
+   if (typeof L.fillIdentitySelect === "function") {
+    const html = L.identitySelectHtml(opts, val || "");
+    const empty = '<option value="">（未设置）</option>';
+    el.innerHTML = (val ? "" : empty) + html;
+    if (val) el.value = val;
+    else el.value = "";
+    return;
+   }
+   fillSelect(id, opts.map((o) => o.label || o.id || o), val, "");
+  };
+  fill("cfgLanguage", dropInherit(ch.language, fallbackLang), langId);
+  fill("cfgSpeechStyle", dropInherit(ch.speech_style, fallbackStyle), agent.speech_style || "");
+  fill("cfgAnswerDetail", dropInherit(ch.answer_detail, fallbackDetail), agent.answer_detail || "");
+  fill("cfgTerminology", dropInherit(ch.terminology, fallbackTerm), agent.terminology || "");
+  const custom = $("cfgSpeechCustom");
+  if (custom) custom.value = agent.speech_style_custom || "";
+ }
+
  function renderAgentForm(cfg) {
   try {
    if (cfg && state) {
@@ -716,7 +771,7 @@
   $("cfgAgentName").value = a.name || "";
   if (typeof L.syncAvatarField === "function") L.syncAvatarField(a);
   // no default language — empty stays empty after wipe
-  fillSelect("cfgLanguage", presets.language || merged.language, a.language, "");
+  fillPublicIdentityFields(a);
 
   MS_KEYS.forEach((kind) => {
    const id = MS_CONTAINERS[kind];
@@ -888,28 +943,13 @@
  }
 
  async function loadEvolutionPanel() {
-  const body = $("evoPersonaBody");
-  const meta = $("evoPersonaMeta");
-  if (!body) return;
-  const sid = (state && state.sessionId) || "";
-  if (!sid) {
-   if (meta) meta.textContent = "";
-   body.innerHTML =
-    '<p class="evo-persona-empty">新对话还没有演化。聊到触发条数后，这里会显示压缩后的人格要点。</p>';
+  if (typeof L.initSessionPersona === "function") L.initSessionPersona();
+  if (typeof L.loadEvolutionTable === "function") {
+   await L.loadEvolutionTable();
    return;
   }
-  try {
-   const data = await api(
-    "/api/sessions/" + encodeURIComponent(sid) + "/evolution"
-   );
-   renderEvolutionPanel(data);
-  } catch (e) {
-   if (meta) meta.textContent = "";
-   body.innerHTML =
-    '<p class="evo-persona-empty">无法读取演化结果：' +
-    escapeHtml(e.message || e) +
-    "</p>";
-  }
+  const body = $("evoPersonaBody");
+  if (body) body.innerHTML = '<p class="evo-persona-empty">演化表格脚本未加载。</p>';
  }
 
  function collectAgentFormPayload() {
@@ -923,9 +963,13 @@
    avatar: $("cfgAgentAvatar") ? $("cfgAgentAvatar").value || "" : undefined,
    // 旧版「角色 / 语言风格」多选已废弃；统一写入 background 为「角色背景」
    role: [],
-   language: $("cfgLanguage")?.value || "跟随用户",
+   language: $("cfgLanguage")?.value || "",
    language_style: [],
    background: ($("cfgRoleBackground")?.value || "").trim(),
+   speech_style: $("cfgSpeechStyle")?.value || "",
+   speech_style_custom: $("cfgSpeechCustom")?.value || "",
+   answer_detail: $("cfgAnswerDetail")?.value || "",
+   terminology: $("cfgTerminology")?.value || "",
    roleplay_enabled: !!$("cfgRoleplayEnabled")?.checked,
    roleplay_intensity: $("cfgRoleplayIntensity")?.value || "medium",
    roleplay_background: $("cfgRoleplayBackground")?.value || "",

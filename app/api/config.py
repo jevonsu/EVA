@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from functools import lru_cache
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.config_store import (
     get_config_store,
@@ -26,24 +26,28 @@ router = APIRouter(prefix="/api/config", tags=["config"])
 
 
 class AgentUpdate(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, max_length=80)
     avatar: str | None = Field(default=None, max_length=280_000, description="助手头像 data URL 或 URL")
     role: list[str] | str | None = None
-    language: str | None = None
+    language: str | None = Field(default=None, max_length=80)
     language_style: list[str] | str | None = None
-    background: str | None = None
+    background: str | None = Field(default=None, max_length=8000)
+    speech_style: str | None = Field(default=None, max_length=40, description="natural|concise|gentle|formal|humorous|detailed|custom")
+    speech_style_custom: str | None = Field(default=None, max_length=8000)
+    answer_detail: str | None = Field(default=None, max_length=40, description="brief|balanced|detailed")
+    terminology: str | None = Field(default=None, max_length=40, description="plain|balanced|technical")
     # Roleplay (opt-in)
     roleplay_enabled: bool | None = None
     roleplay_intensity: str | None = Field(
         default=None,
         description="light | medium | deep",
     )
-    roleplay_background: str | None = None
-    relationship: str | None = None
-    personality: str | None = None
-    speech_patterns: str | None = None
-    example_dialogue: str | None = None
-    ooc_rules: str | None = None
+    roleplay_background: str | None = Field(default=None, max_length=8000)
+    relationship: str | None = Field(default=None, max_length=8000)
+    personality: str | None = Field(default=None, max_length=8000)
+    speech_patterns: str | None = Field(default=None, max_length=8000)
+    example_dialogue: str | None = Field(default=None, max_length=8000)
+    ooc_rules: str | None = Field(default=None, max_length=8000)
     greeting: str | None = None
     persona_options: dict[str, list[str]] | None = None
     max_tool_rounds: int | None = Field(default=None, ge=1, le=64)
@@ -74,6 +78,44 @@ class AgentUpdate(BaseModel):
         le=8000,
         description="注入 system 的演化文本最大字符",
     )
+
+    @field_validator("language")
+    @classmethod
+    def _lang(cls, v):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return v if v is None else ""
+        from app.agent.identity_prefs import parse_identity_language
+        return parse_identity_language(v, allow_inherit=False)
+
+    @field_validator("speech_style")
+    @classmethod
+    def _style(cls, v):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return v if v is None else ""
+        from app.agent.identity_prefs import normalize_speech_style
+        return normalize_speech_style(v, allow_inherit=False, strict=True)
+
+    @field_validator("answer_detail")
+    @classmethod
+    def _detail(cls, v):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return v if v is None else ""
+        from app.agent.identity_prefs import normalize_answer_detail
+        return normalize_answer_detail(v, allow_inherit=False, strict=True)
+
+    @field_validator("terminology")
+    @classmethod
+    def _term(cls, v):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return v if v is None else ""
+        from app.agent.identity_prefs import normalize_terminology
+        return normalize_terminology(v, allow_inherit=False, strict=True)
+
+    @model_validator(mode="after")
+    def _custom_speech(self):
+        if self.speech_style == "custom" and not (self.speech_style_custom or "").strip():
+            raise ValueError("讲话方式选择「自定义」时，请填写自定义要求")
+        return self
 
 
 class LLMBody(BaseModel):

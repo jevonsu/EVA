@@ -2,7 +2,7 @@
 
 Editable expression:
   1. Identity + persona (one UI block):
-     - always: name, language, background
+     - always: name, language, background, speech_style / answer_detail / terminology
      - opt-in roleplay (roleplay_enabled): relationship / personality /
        speech_patterns / example_dialogue / ooc_rules + intensity
      - runtime knobs: max_tool_rounds, max_history_messages, evolution_*
@@ -31,6 +31,11 @@ ACTIVE_AGENT_KEYS = (
     "language",
     "language_style",
     "background",
+    # Identity communication preferences (not roleplay)
+    "speech_style",
+    "speech_style_custom",
+    "answer_detail",
+    "terminology",
     # Roleplay block (only injected when roleplay_enabled)
     "roleplay_enabled",
     "roleplay_intensity",
@@ -638,6 +643,10 @@ def compact_agent_config(agent: dict[str, Any] | None) -> dict[str, Any]:
     out.setdefault("language", "")
     out.setdefault("language_style", [])
     out.setdefault("background", "")
+    out.setdefault("speech_style", "")
+    out.setdefault("speech_style_custom", "")
+    out.setdefault("answer_detail", "")
+    out.setdefault("terminology", "")
     # ensure layer keys always present
     for key in LAYER_TEXT_FIELDS:
         out.setdefault(key, "")
@@ -710,12 +719,11 @@ def build_persona_prompt(
 
     # Base identity: name / language / 角色背景(background).
     # 旧版 role / language_style 多选已从 UI 移除，不再注入。
-    lang = _field_text(cfg.get("language"))
-    if lang:
-        if lang == "跟随用户":
-            parts.append("【语言】跟随用户当前使用的语言。")
-        else:
-            parts.append(f"【语言】{lang}")
+    from app.agent.identity_prefs import communication_prompt_lines, language_prompt_line
+
+    lang_line = language_prompt_line(cfg.get("language"))
+    if lang_line:
+        parts.append(lang_line)
 
     # 角色背景：仅扮演关闭时注入基础 background；扮演开启时改用 roleplay_background
     if not roleplay_on:
@@ -726,6 +734,9 @@ def build_persona_prompt(
                 bg = legacy_role
         if bg:
             parts.append(f"【角色背景】\n{_compact_multiline(bg)}")
+
+    # Communication preferences (identity, not roleplay)
+    parts.extend(communication_prompt_lines(cfg, compact=False))
 
     # Roleplay block — only when switch is on (fields may still be saved when off)
     if roleplay_on:
@@ -824,12 +835,11 @@ def _build_compact_persona(
         parts.append(
             f"【用户】称呼用户为「{owner}」。"
         )
-    lang = _field_text(cfg.get("language"))
-    if lang:
-        if lang == "跟随用户":
-            parts.append("【语言】跟随用户当前使用的语言。")
-        else:
-            parts.append(f"【语言】{lang}")
+    from app.agent.identity_prefs import communication_prompt_lines, language_prompt_line
+
+    lang_line = language_prompt_line(cfg.get("language"))
+    if lang_line:
+        parts.append(lang_line)
     rp_on = _as_bool(cfg.get("roleplay_enabled"), False)
     if not rp_on:
         bg = sanitize_background_body(cfg.get("background"))
@@ -849,6 +859,7 @@ def _build_compact_persona(
         personality = _strip(cfg.get("personality"))
         if personality:
             parts.append(f"【性格与情绪】\n{_shorten_field(personality, 220)}")
+    parts.extend(communication_prompt_lines(cfg, compact=True))
     parts.append(
         "【优先级】系统工具/记忆/安全规则优先于人设；对外仍用角色身份说话。"
         "本轮不注入示例对白。作业细则以知识库为准。"
@@ -858,16 +869,44 @@ def _build_compact_persona(
     return "\n".join(parts)
 
 
+def _identity_speech_style(v: Any) -> str:
+    from app.agent.identity_prefs import normalize_speech_style
+    return normalize_speech_style(v)
+
+
+def _identity_answer_detail(v: Any) -> str:
+    from app.agent.identity_prefs import normalize_answer_detail
+    return normalize_answer_detail(v)
+
+
+def _identity_terminology(v: Any) -> str:
+    from app.agent.identity_prefs import normalize_terminology
+    return normalize_terminology(v)
+
+
 def persona_public_view(agent_cfg: dict[str, Any] | None) -> dict[str, Any]:
+    from app.agent.identity_prefs import (
+        identity_field_choices,
+        normalize_identity_language,
+    )
+
     cfg = migrate_legacy_system_prompt(dict(agent_cfg or {}))
-    return {
+    language = normalize_identity_language(cfg.get("language"), allow_inherit=False)
+    if not language:
+        language = _as_single(cfg.get("language"))
+    out = {
         # Do not substitute "Agent" / "跟随用户" — empty means user cleared or fresh
         "name": _strip(cfg.get("name")),
         "avatar": _sanitize_avatar(cfg.get("avatar")),
         "role": _as_list(cfg.get("role")),
-        "language": _as_single(cfg.get("language")),
+        "language": language,
+        "language_raw": _as_single(cfg.get("language")),
         "language_style": _as_list(cfg.get("language_style")),
         "background": sanitize_background_body(cfg.get("background")),
+        "speech_style": _identity_speech_style(cfg.get("speech_style")),
+        "speech_style_custom": _strip(cfg.get("speech_style_custom")),
+        "answer_detail": _identity_answer_detail(cfg.get("answer_detail")),
+        "terminology": _identity_terminology(cfg.get("terminology")),
         "roleplay_enabled": bool(cfg.get("roleplay_enabled")),
         "roleplay_intensity": _normalize_intensity(cfg.get("roleplay_intensity")),
         "roleplay_background": sanitize_background_body(cfg.get("roleplay_background")),
@@ -896,4 +935,6 @@ def persona_public_view(agent_cfg: dict[str, Any] | None) -> dict[str, Any]:
         "evolution_max_chars": cfg.get("evolution_max_chars"),
         "persona_preview": build_persona_prompt(cfg),
         "system_fixed_rules_summary": SYSTEM_FIXED_RULES_SUMMARY,
+        "identity_choices": identity_field_choices(for_session=False),
     }
+    return out

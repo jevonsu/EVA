@@ -15,9 +15,9 @@
  <title>AI 助手</title>
  <link rel="icon" type="image/png" href="/static/logo.png" />
  <link rel="stylesheet" href="/static/css/base.css?v=ux9" />
- <link rel="stylesheet" href="/static/css/sidebar.css?v=ux9" />
+ <link rel="stylesheet" href="/static/css/sidebar.css?v=persona2" />
  <link rel="stylesheet" href="/static/css/messages.css?v=ux9-af4" />
- <link rel="stylesheet" href="/static/css/modals.css?v=ux9" />
+ <link rel="stylesheet" href="/static/css/modals.css?v=persona2" />
  <link rel="stylesheet" href="/static/css/mobile.css?v=ux9" />
  <link rel="stylesheet" href="/static/css/llama-theme.css?v=ux9" />
  <link rel="stylesheet" href="/static/css/motion.css?v=ux10" />
@@ -87,6 +87,7 @@
  <div class="topbar-left">
  <button type="button" class="btn topbar-avatar-btn" id="btnMenu" title="菜单" aria-label="菜单" aria-expanded="true" aria-controls="sessionList"><img src="/static/logo.png" alt="" /></button>
  <h1 id="chatTitle" class="icon-inline"><span data-ipk="comment" data-ipk-class="ipk-sm"></span> <span id="chatTitleText">新对话</span></h1>
+ <button type="button" class="btn ghost-sm icon-inline" id="btnSessionPersona" title="本对话人设" aria-label="本对话人设"><span data-ipk="robot-one" data-ipk-class="ipk-sm"></span> 本对话人设</button>
  <p class="hint sr-only" id="sessionHint">输入消息开始对话</p>
  </div>
  <div class="top-actions">
@@ -198,7 +199,68 @@
  </main>
  </div>
 
- <div class="sidebar-scrim hidden" id="sidebarScrim"></div>
+
+<div class="modal-backdrop hidden" id="sessionPersonaBackdrop" role="dialog" aria-modal="true" aria-labelledby="sessionPersonaTitle">
+  <div class="modal" id="sessionPersonaModal">
+    <header class="modal-header">
+      <div>
+        <h2 id="sessionPersonaTitle" class="icon-inline"><span data-ipk="robot-one" data-ipk-class="ipk-sm"></span> 本对话人设</h2>
+        <p class="hint">默认跟随公共人设。独立人设只配置本会话的名称、语言、背景和讲话方式，不含角色扮演；工具上限和系统规则仍用公共设定。</p>
+      </div>
+      <button type="button" class="btn icon-inline" id="btnCloseSessionPersona"><span data-ipk="close" data-ipk-class="ipk-sm"></span> 关闭</button>
+    </header>
+    <div class="modal-body">
+      <p class="sp-source" id="spSourceLine">当前生效：跟随公共人设</p>
+      <div class="sp-mode-row">
+        <label><input type="radio" name="spMode" id="spModeInherit" value="inherit" checked /> 跟随公共人设</label>
+        <label><input type="radio" name="spMode" id="spModeOverride" value="override" /> 独立人设</label>
+      </div>
+      <p class="sp-mode-help" id="spModeHelp">跟随公共人设：本会话完整使用当前公共人设（含公共角色扮演，若已启用）。每轮请求开始读取最新公共快照。</p>
+      <p class="sp-hint" id="spRoleHint" hidden></p>
+      <form class="sp-form is-inherit" id="spForm">
+        <div class="sp-edit-fields agent-form-compact">
+          <div class="agent-id-row">
+            <div class="agent-id-fields">
+              <label class="agent-field">名称
+                <input id="spAgentName" type="text" maxlength="80" placeholder="Eva" />
+              </label>
+              <label class="agent-field">语言
+                <select id="spLanguage"></select>
+              </label>
+            </div>
+          </div>
+          <p class="field-hint" id="spLangHint">语言「跟随公共」只让回复语言跟公共，不等于总体模式的「跟随公共人设」。</p>
+          <label class="agent-field">背景
+            <textarea id="spRoleBackground" class="agent-ta-sm" rows="3" maxlength="8000" placeholder="助手是谁、擅长什么、需要交代的背景。不是角色扮演设定。"></textarea>
+          </label>
+          <label class="agent-field">讲话方式
+            <select id="spSpeechStyle"></select>
+          </label>
+          <label class="agent-field">讲话方式补充 / 自定义要求
+            <textarea id="spSpeechCustom" class="agent-ta-sm" rows="2" maxlength="8000" placeholder="选择「自定义」时请填写；其他方式也可在此补充具体要求。"></textarea>
+          </label>
+          <div class="agent-row agent-row-2">
+            <label class="agent-field">回答详略
+              <select id="spAnswerDetail"></select>
+            </label>
+            <label class="agent-field">术语使用
+              <select id="spTerminology"></select>
+            </label>
+          </div>
+        </div>
+      </form>
+      <p class="form-msg" id="msgSessionPersona"></p>
+      <div class="agent-form-actions">
+        <div class="cfg-tool-cluster">
+          <button type="button" class="cfg-tool" id="btnSpRestore">恢复公共人设</button>
+          <button type="button" class="cfg-tool is-primary" id="btnSpSave">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar-scrim hidden" id="sidebarScrim"></div>
 
  <!-- Config Modal (? /static/html/config-modal.html ????)-->
  <div id="configModalContainer"></div>
@@ -217,7 +279,7 @@
  <!-- Config modal: async (do not block first paint with sync XHR) -->
  <script>
  window.__configModalReady = (function () {
-  var p = fetch("/static/html/config-modal.html?v=ux9", { credentials: "same-origin" })
+  var p = fetch("/static/html/config-modal.html?v=persona2", { credentials: "same-origin" })
    .then(function (r) {
     if (!r.ok) throw new Error("config modal " + r.status);
     return r.text();
@@ -236,18 +298,19 @@
  </script>
 
  <script defer src="/static/js/icons.js"></script>
- <script defer src="/static/js/app-core.js?v=ux9"></script>
+ <script defer src="/static/js/app-core.js?v=persona2"></script>
  <script defer src="/static/js/app-render.js?v=process-consent-1"></script>
- <script defer src="/static/js/app-chat.js?v=process-consent-1"></script>
+ <script defer src="/static/js/app-chat.js?v=persona2"></script>
  <script defer src="/static/js/app-upload.js"></script>
- <script defer src="/static/js/app-voice.js"></script>
+ <script defer src="/static/js/app-voice.js?v=persona2"></script>
  <script defer src="/static/js/app-tts.js"></script>
  <script defer src="/static/js/app-panels.js?v=kbfix1"></script>
  <script defer src="/static/js/app-workspace.js"></script>
- <script defer src="/static/js/app-config.js?v=ux9"></script>
+ <script defer src="/static/js/app-session-persona.js?v=persona2"></script>
+ <script defer src="/static/js/app-config.js?v=persona2"></script>
  <script defer src="/static/js/app-model-routing.js?v=ux9"></script>
  <script defer src="/static/js/app-llm-failover.js?v=fo2"></script>
- <script defer src="/static/js/app-init.js?v=ux9"></script>
+ <script defer src="/static/js/app-init.js?v=persona2"></script>
 <script defer src="/static/js/app-chat-ux.js?v=ux9"></script>
 <script defer src="/static/js/app-update.js?v=upd1"></script>
 <script defer src="/static/js/app-prompt-studio.js?v=ips18"></script>

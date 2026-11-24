@@ -385,6 +385,8 @@ def create_app() -> FastAPI:
     from app.api import prompt_studio as prompt_studio_api
     app.include_router(prompt_studio_api.router)
     from app.api import llm_failover as llm_failover_api
+    from app.api import evolution as evolution_api
+    app.include_router(evolution_api.router)
     app.include_router(llm_failover_api.router)
     app.include_router(llm_failover_api.push_router)
 
