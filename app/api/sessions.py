@@ -10,7 +10,7 @@ import json
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.memory.session import get_session_store
 from app.services import session_events as _sess_bus
@@ -47,6 +47,21 @@ class SessionRestore(BaseModel):
 class SessionPersonaUpdate(BaseModel):
     mode: str = Field(..., description="inherit | override")
     agent: dict[str, Any] | None = None
+
+    @field_validator("mode")
+    @classmethod
+    def _mode(cls, v):
+        m = str(v or "").strip().lower()
+        if m not in ("inherit", "override"):
+            raise ValueError("mode 只能是 inherit 或 override")
+        return m
+
+    @model_validator(mode="after")
+    def _agent_fields(self):
+        if self.mode == "override" and self.agent:
+            from app.agent.identity_prefs import validate_identity_payload
+            validate_identity_payload(self.agent, allow_inherit=True)
+        return self
 
 
 class SessionMessageRestore(BaseModel):
@@ -156,6 +171,7 @@ async def update_session_persona(session_id: str, body: SessionPersonaUpdate) ->
             mode=body.mode,
             agent_fields=body.agent or {},
             previous=(md or {}).get("persona"),
+            strict=True,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

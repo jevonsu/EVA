@@ -80,8 +80,40 @@ const tagged = L.evoQueryTable(rows, { tag: "关系", pageSize: 10 });
 assert.ok(tagged.total > 0);
 assert.ok(tagged.items.every((e) => (e.tag_names || []).includes("关系") || (e.tags || []).includes("关系")));
 
+// identity dropdown XSS + no roleplay fields in session modal
+const optHtml = L.identitySelectHtml(
+  [{ id: 'natural', label: '自然口语（说人话）' }, { id: '<img src=x onerror=alert(1)>', label: '<script>alert(1)</script>' }],
+  '<script>x</script>'
+);
+assert.ok(!optHtml.includes("<script>"));
+assert.ok(!optHtml.includes("<img"));
+assert.ok(optHtml.includes("&lt;script&gt;"));
+assert.ok(optHtml.includes("&lt;img"));
+assert.strictEqual(L.mapLanguageId("跟随用户"), "follow_user");
+assert.strictEqual(L.mapLanguageId("简体中文"), "zh-Hans");
+assert.strictEqual(L.mapLanguageId("English"), "en");
+assert.strictEqual(L.mapLanguageId("日本語"), "ja");
+assert.ok(L.IDENTITY_DEFAULTS.language.some((o) => o.id === "inherit_public"));
+assert.ok(L.IDENTITY_DEFAULTS.speech_style.some((o) => o.id === "natural" && o.label.includes("说人话")));
+
+const modal = fs.readFileSync(path.join(__dirname, "..", "app/static/index.html"), "utf8");
+const start = modal.indexOf("id=\"sessionPersonaBackdrop\"");
+const end = modal.indexOf("id=\"sidebarScrim\"");
+const sessionModal = modal.slice(start, end);
+assert.ok(sessionModal.includes("spSpeechStyle"));
+assert.ok(sessionModal.includes("讲话方式"));
+assert.ok(!sessionModal.includes("spRoleplayEnabled"));
+assert.ok(!sessionModal.includes("spRelationship"));
+assert.ok(!sessionModal.includes("spExampleDialogue"));
+assert.ok(!sessionModal.includes("启用角色扮演"));
+
+const cfgHtml = fs.readFileSync(path.join(__dirname, "..", "app/static/html/config-modal.html"), "utf8");
+assert.ok(cfgHtml.includes("cfgSpeechStyle"));
+assert.ok(cfgHtml.includes("cfgRoleplayEnabled"), "public RP settings must remain");
+
 console.log("ok", {
   page2: page2.items.length,
   factTotal: overflow.total,
   tagged: tagged.total,
+  xssOptions: true,
 });

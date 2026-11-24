@@ -70,7 +70,10 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             return json.dumps({"error": str(exc)})
 
 
-    _PERSONA_IDENTITY = ("name", "language", "background")
+    _PERSONA_IDENTITY = (
+        "name", "language", "background",
+        "speech_style", "speech_style_custom", "answer_detail", "terminology",
+    )
     _PERSONA_ROLEPLAY = (
         "roleplay_enabled", "roleplay_intensity", "roleplay_background",
         "relationship", "personality", "speech_patterns",
@@ -84,10 +87,8 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         from app.agent.persona import persona_public_view
         from app.agent.session_persona import (
             ROLE_CHANGE_HINT,
-            apply_persona_fields,
             build_persona_record,
             persona_api_view,
-            snapshot_persona_fields,
         )
         from app.memory.session import get_session_store
         from app.tools.protection import get_turn_session_id
@@ -173,8 +174,16 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             if k != "roleplay_enabled":
                 payload[k] = str(v)[:8000]
         try:
-            from app.api.config import AgentUpdate
-            payload = AgentUpdate(**payload).model_dump(exclude_unset=True)
+            if target == "session":
+                from app.agent.identity_prefs import validate_identity_payload
+                ident = validate_identity_payload(payload, allow_inherit=True)
+                # keep only identity keys after validation
+                for k in list(payload):
+                    if k in ident:
+                        payload[k] = ident[k]
+            else:
+                from app.api.config import AgentUpdate
+                payload = AgentUpdate(**payload).model_dump(exclude_unset=True)
         except Exception as exc:
             return json.dumps({"ok": False, "error": f"字段校验失败: {exc}"}, ensure_ascii=False)
         # defense: never write keys we stripped
@@ -192,15 +201,33 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             sid, sess = await _current_session()
             if not sid or not sess:
                 return json.dumps({"ok": False, "error": "当前没有会话，无法写本对话人设；改公共人设请显式 target=global"}, ensure_ascii=False)
+            # Independent session persona has no roleplay; ignore RP fields.
+            ignored_rp = [k for k in _PERSONA_ROLEPLAY if k in payload]
+            for k in ignored_rp:
+                payload.pop(k, None)
+            if not payload:
+                return json.dumps({
+                    "ok": False,
+                    "error": "独立人设只支持名称/语言/背景/讲话方式等身份与沟通偏好，不含角色扮演。改公共扮演请显式 target=global",
+                    "ignored_roleplay": ignored_rp,
+                    "allowed": list(_PERSONA_IDENTITY),
+                }, ensure_ascii=False)
+            from app.agent.identity_prefs import LANGUAGE_INHERIT_PUBLIC
+            from app.agent.session_persona import snapshot_identity_fields
             public = store.get_agent()
             md = sess.get("metadata") if isinstance(sess.get("metadata"), dict) else {}
             prev = md.get("persona") if isinstance(md.get("persona"), dict) else {}
             if str(prev.get("mode") or "") == "override" and isinstance(prev.get("agent"), dict):
-                base = apply_persona_fields(public, prev.get("agent"))
+                base_snap = snapshot_identity_fields(prev.get("agent"), allow_inherit=True)
             else:
-                base = public
-            merged = apply_persona_fields(base, payload)
-            rec = build_persona_record(mode="override", agent_fields=merged, previous=prev)
+                base_snap = {
+                    "language": LANGUAGE_INHERIT_PUBLIC,
+                    "speech_style": LANGUAGE_INHERIT_PUBLIC,
+                    "answer_detail": LANGUAGE_INHERIT_PUBLIC,
+                    "terminology": LANGUAGE_INHERIT_PUBLIC,
+                }
+            base_snap.update(payload)
+            rec = build_persona_record(mode="override", agent_fields=base_snap, previous=prev, strict=True)
             await get_session_store().update_metadata(sid, {"persona": rec}, merge=True)
             view = persona_api_view(
                 session=await get_session_store().get(sid),
@@ -216,8 +243,9 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                 "rejected": rejected,
                 "scope": scope,
                 "stripped_identity": stripped_identity,
-                "note": "已写入本对话独立人设，不影响公共人设与其他会话。下一轮起生效。",
+                "note": "已写入本对话独立人设（身份与沟通偏好，不含角色扮演），不影响公共人设与其他会话。下一轮起生效。",
                 "role_change_hint": ROLE_CHANGE_HINT,
+                "ignored_roleplay": ignored_rp,
             }, ensure_ascii=False)
 
         store.update_section("agent", payload)
@@ -3530,12 +3558,14 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         ),
         (
             "update_persona",
-            "读/改人设。默认 target=session，只写入当前对话的独立人设，不影响公共人设和其他会话。"
-            "改设定→公共人设必须显式 target=global。"
-            "基础背景(background)只在扮演关闭时生效；扮演背景(roleplay_background)只在扮演开启时生效，二者独立。"
-            "【重要】改扮演背景用 roleplay_background，改基础背景用 background；只改角色扮演时不要传 background/name/language；"
-            "scope 默认 auto：一旦带角色扮演字段，会自动忽略同次调用里的背景/名字/语言，防止误改。"
-            "只改名字/语言/背景用 scope=identity；两边一起改才用 scope=all。"
+            "读/改人设。默认 target=session，只写入当前对话的独立人设（名称/语言/背景/讲话方式等身份与沟通偏好，不含角色扮演），不影响公共人设和其他会话。"
+            "改设定→公共人设必须显式 target=global。会话目标若传入角色扮演字段会被忽略。"
+            "公共人设中，基础背景(background)只在扮演关闭时生效；扮演背景(roleplay_background)只在扮演开启时生效，二者独立。"
+            "【重要】改公共扮演背景用 target=global 且 roleplay_background；改基础背景用 background；只改角色扮演时不要传 background/name/language；"
+            "scope 默认 auto：一旦带角色扮演字段（仅 target=global 有效），会自动忽略同次调用里的背景/名字/语言，防止误改。"
+            "只改名字/语言/背景/讲话方式用 scope=identity；两边一起改（仅公共）才用 scope=all。"
+            "language 可选 inherit_public（仅会话，跟随公共语言）/ zh-Hans / zh-Hant / en / ja / follow_user。"
+            "speech_style 可选 inherit_public（仅会话）/ natural（说人话）/ concise / gentle / formal / humorous / detailed / custom。"
             "「你叫我Y」→ memory。不能改模型/密钥/端口。",
             update_persona,
             {
@@ -3546,8 +3576,12 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     "session_id": {"type": "string", "description": "可选，默认当前对话"},
                     "scope": {"type": "string", "enum": ["auto", "identity", "roleplay", "all"], "description": "auto默认：有角色扮演字段则忽略 name/language/background；identity只改身份；roleplay只改扮演；all允许同次改两边"},
                     "name": {"type": "string", "description": "显示名称"},
-                    "language": {"type": "string", "description": "回复语言，如 中文 / English"},
-                    "background": {"type": "string", "description": "基础角色背景（仅扮演关闭时注入）；改扮演背景请用 roleplay_background"},
+                    "language": {"type": "string", "description": "回复语言：zh-Hans / zh-Hant / en / ja / follow_user；会话还可 inherit_public 跟随公共语言"},
+                    "background": {"type": "string", "description": "基础背景（独立人设与关闭扮演时的公共人设注入）；改公共扮演背景请用 roleplay_background 且 target=global"},
+                    "speech_style": {"type": "string", "enum": ["inherit_public", "natural", "concise", "gentle", "formal", "humorous", "detailed", "custom"], "description": "讲话方式；natural=自然口语（说人话）。inherit_public 仅会话有效"},
+                    "speech_style_custom": {"type": "string", "description": "自定义或补充的讲话要求"},
+                    "answer_detail": {"type": "string", "enum": ["inherit_public", "brief", "balanced", "detailed"], "description": "回答详略；inherit_public 仅会话有效"},
+                    "terminology": {"type": "string", "enum": ["inherit_public", "plain", "balanced", "technical"], "description": "术语使用程度；inherit_public 仅会话有效"},
                     "roleplay_background": {"type": "string", "description": "扮演用角色背景（仅扮演开启时注入，替代基础背景）"},
                     "roleplay_enabled": {"type": "boolean", "description": "是否开启角色扮演"},
                     "roleplay_intensity": {"type": "string", "enum": ["light", "medium", "deep"], "description": "扮演强度"},
