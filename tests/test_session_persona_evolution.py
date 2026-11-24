@@ -298,8 +298,9 @@ async def test_chat_and_stream_use_frozen_session_persona(isolated, monkeypatch)
     public = _public(name="公共助手", background="公共背景")
     store = get_session_store()
     sess = await store.create(title="独立")
-    rec = build_persona_record(mode="override", agent_fields={"name": "会话角色", "background": "独立背景"})
+    rec = build_persona_record(mode="override", agent_fields={"name": "会话角色", "background": "独立背景", "speech_style": "natural", "language": "zh-Hans"})
     await store.update_metadata(sess["session_id"], {"persona": rec}, merge=True)
+    _public(name="公共助手", background="公共背景", roleplay_enabled=True, relationship="公共关系")
     monkeypatch.setattr(protection, "set_turn_context", lambda *a, **k: None)
     a, llm = _agent(isolated)
     resp = await a.chat("你好", session_id=sess["session_id"], use_tools=False, use_memory=False)
@@ -308,6 +309,11 @@ async def test_chat_and_stream_use_frozen_session_persona(isolated, monkeypatch)
     assert "会话角色" in system
     assert "独立背景" in system
     assert "公共助手" not in system
+    assert "自然口语" in system
+    assert "使用简体中文回复" in system
+    assert "公共关系" not in system
+    assert "【扮演模式" not in system
+    assert "与用户关系" not in system
     # mid-turn public change should not affect already frozen call; next call inherit would
     _public(name="改公共")
     llm.calls.clear()
@@ -375,3 +381,274 @@ def test_manual_entries_not_written_to_memory(isolated):
     assert "角色X" not in blob
     assert "只在本会话" not in blob
     assert "公共演化事实" not in blob
+
+
+def test_empty_public_uses_default_assistant_prompt(isolated):
+    from app.agent.persona import build_persona_prompt
+
+    prompt = build_persona_prompt({})
+    assert prompt
+    assert "你是 AI 助手" in prompt
+
+
+def test_override_does_not_use_or_mutate_public_roleplay(isolated):
+    from app.agent.persona import build_persona_prompt
+    from app.config_store import get_config_store
+
+    public = _public(
+        name="公共助手",
+        language="简体中文",
+        background="公共背景",
+        roleplay_enabled=True,
+        relationship="密友",
+        roleplay_background="扮演世界",
+        personality="傲娇",
+        speech_patterns="舞台旁白",
+    )
+    rec = build_persona_record(
+        mode="override",
+        agent_fields={"name": "会话助手", "language": "en", "background": "独立背景", "speech_style": "natural"},
+    )
+    sess = {"metadata": {"persona": rec}}
+    # public object identity should stay roleplay-on
+    public_before = dict(get_config_store().get_agent())
+    effective, info = resolve_session_agent(public, sess)
+    assert info["mode"] == "override"
+    assert effective.get("roleplay_enabled") is False
+    prompt = build_persona_prompt(effective)
+    assert "会话助手" in prompt
+    assert "独立背景" in prompt
+    assert "Reply in English" in prompt
+    assert "自然口语" in prompt
+    assert "说人话" in prompt
+    assert "不能绕过系统工具" in prompt
+    assert "密友" not in prompt
+    assert "扮演世界" not in prompt
+    assert "傲娇" not in prompt
+    assert "舞台旁白" not in prompt
+    assert "扮演模式" not in prompt
+    public_after = get_config_store().get_agent()
+    assert public_after.get("roleplay_enabled") is True
+    assert public_after.get("relationship") == "密友"
+    assert public_after.get("name") == "公共助手"
+    inherit_eff, inherit_info = resolve_session_agent(public_after, {"metadata": {}})
+    inherit_prompt = build_persona_prompt(inherit_eff)
+    assert inherit_info["mode"] == "inherit"
+    assert inherit_eff.get("roleplay_enabled") is True
+    assert "密友" in inherit_prompt
+    assert "扮演世界" in inherit_prompt
+
+
+def test_legacy_override_roleplay_fields_are_not_executed(isolated):
+    from app.agent.persona import build_persona_prompt
+    from app.memory.session import get_session_store
+
+    public = _public(
+        name="公共助手",
+        language="简体中文",
+        background="公共背景",
+        roleplay_enabled=True,
+        relationship="公共关系",
+    )
+    # Old session snapshot with RP fields still stored on disk
+    legacy = {
+        "mode": "override",
+        "agent": {
+            "roleplay_enabled": True,
+            "relationship": "旧会话密友",
+            "personality": "旧性格",
+            "speech_patterns": "旧口癖",
+            "roleplay_background": "旧扮演背景",
+        },
+    }
+    sess = {"metadata": {"persona": legacy}, "messages": [{"role": "user", "content": "hi"}]}
+    effective, info = resolve_session_agent(public, sess)
+    assert info["mode"] == "override"
+    assert info.get("legacy_roleplay_ignored")
+    prompt = build_persona_prompt(effective)
+    assert "旧会话密友" not in prompt
+    assert "旧性格" not in prompt
+    assert "旧口癖" not in prompt
+    assert "旧扮演背景" not in prompt
+    assert "公共关系" not in prompt
+    assert effective.get("roleplay_enabled") is False
+    # history / stored metadata is not deleted
+    assert sess["metadata"]["persona"]["agent"]["relationship"] == "旧会话密友"
+
+    async def _persist():
+        store = get_session_store()
+        row = await store.create(title="旧独立")
+        await store.update_metadata(row["session_id"], {"persona": legacy}, merge=True)
+        data = await store.get(row["session_id"])
+        return data["metadata"]["persona"]["agent"]["relationship"]
+
+    import asyncio
+    assert asyncio.run(_persist()) == "旧会话密友"
+
+
+def test_language_and_speech_style_prompt_mapping(isolated):
+    from app.agent.persona import build_persona_prompt
+    from app.agent.identity_prefs import LANGUAGE_FOLLOW_USER
+
+    cases = {
+        "zh-Hans": "使用简体中文回复",
+        "简体中文": "使用简体中文回复",
+        "zh-Hant": "使用繁体中文回复",
+        "en": "Reply in English",
+        "English": "Reply in English",
+        "ja": "日本語で返信",
+        "日本語": "日本語で返信",
+        LANGUAGE_FOLLOW_USER: "自动跟随用户当前使用的语言",
+        "自动跟随用户": "自动跟随用户当前使用的语言",
+        "跟随用户": "自动跟随用户当前使用的语言",
+    }
+    for lang, needle in cases.items():
+        text = build_persona_prompt({"name": "N", "language": lang, "roleplay_enabled": False})
+        assert needle in text, (lang, text)
+
+    styles = {
+        "natural": "自然口语（说人话）",
+        "concise": "简洁直接",
+        "gentle": "温和耐心",
+        "formal": "正式专业",
+        "humorous": "轻松幽默",
+        "detailed": "详细讲解",
+    }
+    for style, needle in styles.items():
+        text = build_persona_prompt({"name": "N", "speech_style": style, "roleplay_enabled": False})
+        assert needle in text, style
+        assert "不能绕过系统工具" in text
+
+    custom = build_persona_prompt({
+        "name": "N",
+        "speech_style": "custom",
+        "speech_style_custom": "先给结论再举例",
+        "answer_detail": "brief",
+        "terminology": "plain",
+        "roleplay_enabled": False,
+    })
+    assert "自定义要求" in custom
+    assert "先给结论再举例" in custom
+    assert "默认简要作答" in custom
+    assert "少用专业术语" in custom
+
+
+def test_override_follow_public_fields_and_clear(isolated):
+    from app.agent.persona import build_persona_prompt
+
+    public = _public(name="公共助手", language="zh-Hans", background="公共背景", speech_style="formal")
+    rec = build_persona_record(
+        mode="override",
+        agent_fields={
+            "name": "会话助手",
+            "language": "inherit_public",
+            "speech_style": "inherit_public",
+            "answer_detail": "inherit_public",
+            "terminology": "inherit_public",
+        },
+        strict=True,
+    )
+    assert rec["mode"] == "override"
+    sess = {"metadata": {"persona": rec}}
+    prompt = build_persona_prompt(resolve_session_agent(public, sess)[0])
+    assert "会话助手" in prompt
+    assert "使用简体中文回复" in prompt
+    assert "正式专业" in prompt
+    public2 = _public(name="公共助手", language="ja", background="公共背景", speech_style="humorous")
+    prompt2 = build_persona_prompt(resolve_session_agent(public2, sess)[0])
+    assert "日本語で返信" in prompt2
+    assert "轻松幽默" in prompt2
+    assert "正式专业" not in prompt2
+    # other session inherit is independent
+    other = {"metadata": {}}
+    p_other = build_persona_prompt(resolve_session_agent(public2, other)[0])
+    assert "公共助手" in p_other
+    # clear → inherit, including public RP
+    rec2 = build_persona_record(mode="inherit", agent_fields={}, previous=rec)
+    public_rp = _public(name="公共助手", language="ja", roleplay_enabled=True, relationship="公共关系")
+    eff, info = resolve_session_agent(public_rp, {"metadata": {"persona": rec2}})
+    assert info["mode"] == "inherit"
+    assert "公共关系" in build_persona_prompt(eff)
+
+
+def test_identity_field_validation_bounds(isolated):
+    from app.agent.identity_prefs import validate_identity_payload
+    from app.api.config import AgentUpdate
+    from app.api.sessions import SessionPersonaUpdate
+    import pytest as _pt
+
+    with _pt.raises(ValueError):
+        validate_identity_payload({"speech_style": "stage-acting"}, allow_inherit=True)
+    with _pt.raises(ValueError):
+        validate_identity_payload({"speech_style": "custom", "speech_style_custom": "  "}, allow_inherit=True)
+    with _pt.raises(Exception):
+        AgentUpdate(language="inherit_public")
+    with _pt.raises(Exception):
+        AgentUpdate(speech_style="not-a-style")
+    with _pt.raises(Exception):
+        SessionPersonaUpdate(mode="override", agent={"speech_style": "custom"})
+    ok = SessionPersonaUpdate(mode="override", agent={"language": "跟随公共", "speech_style": "natural"})
+    assert ok.mode == "override"
+    with _pt.raises(Exception):
+        AgentUpdate(name="N" * 81)
+    snapped = validate_identity_payload({"name": "N" * 200, "background": "B" * 9000}, allow_inherit=False)
+    assert len(snapped["name"]) == 80
+    assert len(snapped["background"]) == 8000
+
+
+def test_two_sessions_do_not_mutate_global(isolated):
+    from app.config_store import get_config_store
+
+    public = _public(name="公共助手", language="zh-Hans", roleplay_enabled=True, relationship="公共关系")
+    rec = build_persona_record(mode="override", agent_fields={"name": "会话A", "speech_style": "natural"})
+    a = {"metadata": {"persona": rec}}
+    b = {"metadata": {}}
+    eff_a, info_a = resolve_session_agent(public, a)
+    eff_b, info_b = resolve_session_agent(public, b)
+    assert info_a["mode"] == "override" and info_b["mode"] == "inherit"
+    assert eff_a["name"] == "会话A"
+    assert eff_b["name"] == "公共助手"
+    assert eff_a.get("roleplay_enabled") is False
+    assert eff_b.get("roleplay_enabled") is True
+    stored = get_config_store().get_agent()
+    assert stored["name"] == "公共助手"
+    assert stored.get("roleplay_enabled") is True
+    assert stored.get("relationship") == "公共关系"
+
+
+@pytest.mark.asyncio
+async def test_update_persona_session_ignores_roleplay(isolated, monkeypatch):
+    from app.tools.builtin import register_builtin_tools
+    from app.tools.registry import ToolRegistry
+    from app.memory.session import get_session_store
+    from app.config_store import get_config_store
+    from app.tools import protection
+    from app.agent.persona import build_persona_prompt
+
+    _public(name="公共助手", roleplay_enabled=True, relationship="公共关系")
+    store = get_session_store()
+    sess = await store.create(title="工具会话")
+    monkeypatch.setattr(protection, "get_turn_session_id", lambda: sess["session_id"])
+    reg = ToolRegistry()
+    register_builtin_tools(reg)
+    tool = reg.get("update_persona")
+    out = json.loads(await tool.handler(
+        action="update",
+        name="工具助手",
+        speech_style="natural",
+        roleplay_enabled=True,
+        relationship="想写入的关系",
+        scope="all",
+    ))
+    assert out["ok"] is True
+    assert out["target"] == "session"
+    assert "relationship" in (out.get("ignored_roleplay") or [])
+    data = await store.get(sess["session_id"])
+    agent = data["metadata"]["persona"]["agent"]
+    assert agent["name"] == "工具助手"
+    assert "relationship" not in agent
+    assert get_config_store().get_agent()["relationship"] == "公共关系"
+    prompt = build_persona_prompt(resolve_session_agent(get_config_store().get_agent(), data)[0])
+    assert "工具助手" in prompt
+    assert "想写入的关系" not in prompt
+    assert "公共关系" not in prompt

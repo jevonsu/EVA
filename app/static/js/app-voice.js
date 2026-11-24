@@ -115,6 +115,15 @@
  ) {
  return { mode: "fixed", lang: "en-US", label: "English" };
  }
+ if (
+ raw.includes("日本語") ||
+ raw.includes("日语") ||
+ raw.includes("日語") ||
+ raw.includes("日文") ||
+ /japanese|^ja\b/i.test(t)
+ ) {
+ return { mode: "fixed", lang: "ja-JP", label: "日本語" };
+ }
  // 简体中文 / 中文 / 普通话
  if (
  raw.includes("简体") ||

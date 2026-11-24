@@ -71,7 +71,7 @@
  <div class="agent-section agent-section-identity">
  <div class="agent-section-head">
 <span class="agent-section-title" id="agentBaseSubhead">基础身份</span>
-<span class="agent-section-hint" id="agentBaseHint">名称 · 语言 · 角色背景</span>
+<span class="agent-section-hint" id="agentBaseHint">名称 · 语言 · 背景 · 讲话方式</span>
 </div>
 <div id="agentBaseFields" class="agent-base-fields">
 <div class="agent-id-row">
@@ -86,7 +86,7 @@
 </div>
 <div class="agent-id-fields">
 <label class="agent-field">名称
-<input id="cfgAgentName" type="text" placeholder="Eva" />
+<input id="cfgAgentName" type="text" placeholder="Eva" maxlength="80" />
 </label>
 <label class="agent-field">语言
 <select id="cfgLanguage"></select>
@@ -94,10 +94,28 @@
 </div>
 </div>
 <div class="agent-row">
- <label class="agent-field">角色背景 <em class="agent-opt-hint" id="agentRoleBgHint">仅未启用扮演时使用</em>
- <textarea id="cfgRoleBackground" class="agent-ta-sm" rows="3" placeholder="例：你是谁、职业/身份、经历与立场、世界观。&#10;仅未启用角色扮演时注入；启用扮演后改用下方「扮演角色背景」。"></textarea>
+ <label class="agent-field">背景 <em class="agent-opt-hint" id="agentRoleBgHint">仅未启用扮演时使用</em>
+ <textarea id="cfgRoleBackground" class="agent-ta-sm" rows="3" maxlength="8000" placeholder="例：你是谁、擅长什么、需要交代的背景。&#10;仅未启用角色扮演时注入；启用扮演后改用下方「扮演角色背景」。"></textarea>
  </label>
  </div>
+<div class="agent-row">
+ <label class="agent-field">讲话方式
+  <select id="cfgSpeechStyle"></select>
+ </label>
+</div>
+<div class="agent-row">
+ <label class="agent-field">讲话方式补充 / 自定义要求
+  <textarea id="cfgSpeechCustom" class="agent-ta-sm" rows="2" maxlength="8000" placeholder="选择「自定义」时请填写；其他方式也可在此补充具体要求。"></textarea>
+ </label>
+</div>
+<div class="agent-row agent-row-2">
+ <label class="agent-field">回答详略
+  <select id="cfgAnswerDetail"></select>
+ </label>
+ <label class="agent-field">术语使用
+  <select id="cfgTerminology"></select>
+ </label>
+</div>
  </div>
 </div>
 

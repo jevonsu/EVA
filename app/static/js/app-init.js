@@ -66,10 +66,14 @@
        name: $("cfgAgentName")?.value || "",
        avatar: $("cfgAgentAvatar")?.value || "",
        role: [],
-       language: $("cfgLanguage")?.value || "跟随用户",
+       language: $("cfgLanguage")?.value || "",
        language_style: [],
        // cfgBackground 已更名为 cfgRoleBackground；旧 id 不存在会导致背景被清空
        background: ($("cfgRoleBackground")?.value || "").trim(),
+       speech_style: $("cfgSpeechStyle")?.value || "",
+       speech_style_custom: $("cfgSpeechCustom")?.value || "",
+       answer_detail: $("cfgAnswerDetail")?.value || "",
+       terminology: $("cfgTerminology")?.value || "",
        roleplay_enabled: !!$("cfgRoleplayEnabled")?.checked,
        roleplay_intensity: $("cfgRoleplayIntensity")?.value || "medium",
        roleplay_background: $("cfgRoleplayBackground")?.value || "",
@@ -85,15 +89,13 @@
        evolution_keep_messages: parseInt($("cfgEvoKeep")?.value, 10) || 16,
        evolution_max_entries: parseInt($("cfgEvoMaxEntries")?.value, 10) || 12,
       };
-  // 助手模式：建议填写角色背景；扮演模式：角色背景或扮演字段至少一项
   const roleplayOn = !!data.roleplay_enabled;
   const roleBg = String(data.background || "").trim();
-  if (!roleplayOn) {
-   if (!roleBg) {
-    setMsg("msgAgent", "请填写「角色背景」（或开启角色扮演）", "error");
-    return;
-   }
-  } else {
+  if ((data.speech_style || "") === "custom" && !String(data.speech_style_custom || "").trim()) {
+   setMsg("msgAgent", "讲话方式选择「自定义」时，请填写自定义要求", "error");
+   return;
+  }
+  if (roleplayOn) {
    const hasPersona = [
     data.name,
     roleBg,
@@ -112,10 +114,11 @@
    }
   }
   try {
-   await api("/api/config/agent", {
+   const saved = await api("/api/config/agent", {
     method: "PATCH",
     body: JSON.stringify(data),
    });
+   if (saved && saved.ok === false) throw new Error(saved.error || saved.detail || "保存失败");
    setMsg("msgAgent", "人设已保存", "ok");
    showToast("人设已保存（系统工具规则仍固定）", "success");
    try {

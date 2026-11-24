@@ -54,47 +54,146 @@
   el.className = "form-msg" + (kind ? " " + kind : "");
  }
 
+ const IDENTITY_DEFAULTS = {
+  language: [
+   { id: "inherit_public", label: "跟随公共" },
+   { id: "zh-Hans", label: "简体中文" },
+   { id: "zh-Hant", label: "繁体中文" },
+   { id: "en", label: "English" },
+   { id: "ja", label: "日本語" },
+   { id: "follow_user", label: "自动跟随用户" },
+  ],
+  speech_style: [
+   { id: "inherit_public", label: "跟随公共" },
+   { id: "natural", label: "自然口语（说人话）" },
+   { id: "concise", label: "简洁直接" },
+   { id: "gentle", label: "温和耐心" },
+   { id: "formal", label: "正式专业" },
+   { id: "humorous", label: "轻松幽默" },
+   { id: "detailed", label: "详细讲解" },
+   { id: "custom", label: "自定义" },
+  ],
+  answer_detail: [
+   { id: "inherit_public", label: "跟随公共" },
+   { id: "brief", label: "简要" },
+   { id: "balanced", label: "适中" },
+   { id: "detailed", label: "详尽" },
+  ],
+  terminology: [
+   { id: "inherit_public", label: "跟随公共" },
+   { id: "plain", label: "少用术语，必要时先解释" },
+   { id: "balanced", label: "适度使用术语" },
+   { id: "technical", label: "可以使用专业术语" },
+  ],
+ };
+
+ const LANG_ALIASES = {
+  "跟随公共": "inherit_public",
+  inherit: "inherit_public",
+  inherit_public: "inherit_public",
+  "自动跟随用户": "follow_user",
+  "跟随用户": "follow_user",
+  follow_user: "follow_user",
+  "简体中文": "zh-Hans",
+  "簡體中文": "zh-Hans",
+  "繁体中文": "zh-Hant",
+  "繁體中文": "zh-Hant",
+  English: "en",
+  "英文": "en",
+  "英语": "en",
+  "日本語": "ja",
+  "日语": "ja",
+  "日語": "ja",
+ };
+
  function currentMode() {
   return $("spModeOverride") && $("spModeOverride").checked ? "override" : "inherit";
  }
 
- function fillLanguageSelect(sel, presets, current) {
-  if (!sel) return;
-  const opts = (presets && presets.language) || ["跟随用户", "简体中文", "繁体中文", "English"];
-  sel.innerHTML = opts.map((x) => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join("");
-  if (current) sel.value = current;
+ function identitySelectHtml(options, selected) {
+  const opts = Array.isArray(options) ? options : [];
+  const cur = selected == null ? "" : String(selected);
+  let html = opts.map((o) => {
+   const id = escapeHtml(o.id == null ? o : o.id);
+   const label = escapeHtml(o.label == null ? o : o.label);
+   const sel = String(o.id == null ? o : o.id) === cur ? " selected" : "";
+   return `<option value="${id}"${sel}>${label}</option>`;
+  }).join("");
+  if (cur && !opts.some((o) => String(o.id == null ? o : o.id) === cur)) {
+   const safe = escapeHtml(cur);
+   html = `<option value="${safe}" selected>${safe}</option>` + html;
+  }
+  return html;
  }
 
- function fillPersonaForm(prefix, agent) {
+ function fillIdentitySelect(sel, options, selected) {
+  if (!sel) return "";
+  const html = identitySelectHtml(options, selected);
+  sel.innerHTML = html;
+  if (selected) sel.value = selected;
+  return html;
+ }
+
+ function mapLanguageId(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (LANG_ALIASES[s]) return LANG_ALIASES[s];
+  const low = s.toLowerCase();
+  if (LANG_ALIASES[low]) return LANG_ALIASES[low];
+  return s;
+ }
+
+ function sessionChoices() {
+  const c = _spCache && _spCache.identity_choices;
+  return {
+   language: (c && c.language) || IDENTITY_DEFAULTS.language,
+   speech_style: (c && c.speech_style) || IDENTITY_DEFAULTS.speech_style,
+   answer_detail: (c && c.answer_detail) || IDENTITY_DEFAULTS.answer_detail,
+   terminology: (c && c.terminology) || IDENTITY_DEFAULTS.terminology,
+   copy: (c && c.copy) || {},
+  };
+ }
+
+ function publicChoicesFromAgent(agent) {
+  const c = (agent && agent.identity_choices) || {};
+  const dropInherit = (arr) => (arr || []).filter((o) => (o.id || o) !== "inherit_public");
+  return {
+   language: dropInherit(c.language) || IDENTITY_DEFAULTS.language.filter((o) => o.id !== "inherit_public"),
+   speech_style: dropInherit(c.speech_style) || IDENTITY_DEFAULTS.speech_style.filter((o) => o.id !== "inherit_public"),
+   answer_detail: dropInherit(c.answer_detail) || IDENTITY_DEFAULTS.answer_detail.filter((o) => o.id !== "inherit_public"),
+   terminology: dropInherit(c.terminology) || IDENTITY_DEFAULTS.terminology.filter((o) => o.id !== "inherit_public"),
+  };
+ }
+
+ function fillSessionIdentityForm(agent, publicAgent, opts) {
   const a = agent || {};
+  const pub = publicAgent || {};
+  const prefill = !!(opts && opts.prefillFromPublic);
   const set = (id, v) => { const el = $(id); if (el) el.value = v || ""; };
-  set(prefix + "AgentName", a.name);
-  fillLanguageSelect($(prefix === "sp" ? "spLanguage" : "cfgLanguage"), a.persona_presets, a.language || "跟随用户");
-  set(prefix + "RoleBackground", a.background);
-  const en = $(prefix === "sp" ? "spRoleplayEnabled" : "cfgRoleplayEnabled");
-  if (en) en.checked = !!a.roleplay_enabled;
-  set(prefix === "sp" ? "spRoleplayIntensity" : "cfgRoleplayIntensity", a.roleplay_intensity || "medium");
-  set(prefix + "RoleplayBackground", a.roleplay_background);
-  set(prefix === "sp" ? "spRelationship" : "cfgRelationship", a.relationship);
-  set(prefix === "sp" ? "spPersonality" : "cfgPersonality", a.personality);
-  set(prefix === "sp" ? "spSpeechPatterns" : "cfgSpeechPatterns", a.speech_patterns);
-  set(prefix === "sp" ? "spExampleDialogue" : "cfgExampleDialogue", a.example_dialogue);
-  set(prefix === "sp" ? "spOocRules" : "cfgOocRules", a.ooc_rules);
+  const name = prefill ? (a.name || pub.name || "") : (a.name || "");
+  set("spAgentName", name);
+  const lang = mapLanguageId(prefill ? (a.language || pub.language || "inherit_public") : (a.language || "inherit_public"));
+  const style = prefill ? (a.speech_style || pub.speech_style || "inherit_public") : (a.speech_style || "inherit_public");
+  const detail = prefill ? (a.answer_detail || pub.answer_detail || "inherit_public") : (a.answer_detail || "inherit_public");
+  const term = prefill ? (a.terminology || pub.terminology || "inherit_public") : (a.terminology || "inherit_public");
+  const ch = sessionChoices();
+  fillIdentitySelect($("spLanguage"), ch.language, lang);
+  fillIdentitySelect($("spSpeechStyle"), ch.speech_style, style);
+  fillIdentitySelect($("spAnswerDetail"), ch.answer_detail, detail);
+  fillIdentitySelect($("spTerminology"), ch.terminology, term);
+  set("spRoleBackground", prefill ? (a.background || pub.background || "") : (a.background || ""));
+  set("spSpeechCustom", prefill ? (a.speech_style_custom || pub.speech_style_custom || "") : (a.speech_style_custom || ""));
  }
 
  function collectSessionPersona() {
   return {
    name: $("spAgentName")?.value || "",
-   language: $("spLanguage")?.value || "",
+   language: $("spLanguage")?.value || "inherit_public",
    background: $("spRoleBackground")?.value || "",
-   roleplay_enabled: !!$("spRoleplayEnabled")?.checked,
-   roleplay_intensity: $("spRoleplayIntensity")?.value || "medium",
-   roleplay_background: $("spRoleplayBackground")?.value || "",
-   relationship: $("spRelationship")?.value || "",
-   personality: $("spPersonality")?.value || "",
-   speech_patterns: $("spSpeechPatterns")?.value || "",
-   example_dialogue: $("spExampleDialogue")?.value || "",
-   ooc_rules: $("spOocRules")?.value || "",
+   speech_style: $("spSpeechStyle")?.value || "inherit_public",
+   speech_style_custom: $("spSpeechCustom")?.value || "",
+   answer_detail: $("spAnswerDetail")?.value || "inherit_public",
+   terminology: $("spTerminology")?.value || "inherit_public",
   };
  }
 
@@ -103,7 +202,22 @@
   if ($("spModeOverride")) $("spModeOverride").checked = mode === "override";
   const form = $("spForm");
   if (form) form.classList.toggle("is-inherit", mode !== "override");
+  const fields = form && form.querySelectorAll("input, select, textarea");
+  if (fields) fields.forEach((el) => { el.disabled = mode !== "override"; });
+  const help = $("spModeHelp");
+  if (help) {
+   const copy = sessionChoices().copy || {};
+   help.textContent = mode === "override"
+    ? (copy.override_mode || "独立人设：只配置本会话的助手身份与沟通偏好，不含角色扮演，也不会沿用公共角色扮演。某一栏选「跟随公共」只作用于该栏，不等于总体模式的「跟随公共人设」。")
+    : (copy.inherit_mode || "跟随公共人设：本会话完整使用当前公共人设（含公共角色扮演，若已启用）。每轮请求开始读取最新公共快照，不会改写公共配置。");
+  }
  }
+
+ L.identitySelectHtml = identitySelectHtml;
+ L.fillIdentitySelect = fillIdentitySelect;
+ L.mapLanguageId = mapLanguageId;
+ L.collectSessionPersona = collectSessionPersona;
+ L.IDENTITY_DEFAULTS = IDENTITY_DEFAULTS;
 
  function showPersonaModal(open) {
   const el = $("sessionPersonaBackdrop");
@@ -145,8 +259,10 @@
     hint.hidden = !data.show_role_change_hint && data.mode !== "override";
     if (data.mode === "override" && data.role_change_hint) hint.hidden = false;
    }
-   const formAgent = data.mode === "override" ? data.agent : data.public_agent;
-   fillPersonaForm("sp", formAgent || {});
+   const formAgent = data.mode === "override" ? data.agent : {};
+   fillSessionIdentityForm(formAgent || {}, data.public_agent || {}, {
+    prefillFromPublic: data.mode !== "override",
+   });
   } catch (e) {
    spMsg(e.message || String(e), "error");
   }
@@ -161,10 +277,16 @@
     method: "PATCH",
     body,
    });
+   if (data && data.ok === false) throw new Error(data.error || data.detail || "保存失败");
    _spCache = data;
    setModeUi(data.mode || body.mode);
    const src = $("spSourceLine");
    if (src) src.textContent = "当前生效：" + (data.source_label || "—");
+   if (data.mode === "override") {
+    fillSessionIdentityForm(data.agent || {}, data.public_agent || {}, { prefillFromPublic: false });
+   } else if (data.public_agent) {
+    fillSessionIdentityForm({}, data.public_agent, { prefillFromPublic: true });
+   }
    spMsg("已保存", "ok");
    showToast("本对话人设已保存", "success");
    if (data.role_change_hint && (data.mode === "override" || data.show_role_change_hint)) {
@@ -194,14 +316,22 @@
   $("btnSpRestore")?.addEventListener("click", async () => {
    setModeUi("inherit");
    await saveSessionPersona("inherit");
-   if (_spCache && _spCache.public_agent) fillPersonaForm("sp", _spCache.public_agent);
+   if (_spCache && _spCache.public_agent) {
+    fillSessionIdentityForm({}, _spCache.public_agent, { prefillFromPublic: true });
+   }
   });
   $("spModeInherit")?.addEventListener("change", () => {
    setModeUi("inherit");
-   if (_spCache && _spCache.public_agent) fillPersonaForm("sp", _spCache.public_agent);
+   if (_spCache && _spCache.public_agent) {
+    fillSessionIdentityForm({}, _spCache.public_agent, { prefillFromPublic: true });
+   }
   });
   $("spModeOverride")?.addEventListener("change", () => {
    setModeUi("override");
+   const saved = _spCache && _spCache.mode === "override" ? (_spCache.agent || {}) : {};
+   fillSessionIdentityForm(saved, (_spCache && _spCache.public_agent) || {}, {
+    prefillFromPublic: !(_spCache && _spCache.mode === "override"),
+   });
   });
  }
 
@@ -525,7 +655,7 @@
  L.openSessionPersona = openSessionPersona;
  L.loadEvolutionTable = loadEvolutionTable;
  L.initSessionPersona = initSessionPersona;
- L.fillPersonaForm = fillPersonaForm;
+ L.fillSessionIdentityForm = fillSessionIdentityForm;
 
  if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", initSessionPersona);
