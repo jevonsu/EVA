@@ -299,6 +299,23 @@ def classify_durable_persist(text: str) -> DurablePersistPlan | None:
 # Ordered: first match wins for require_tool; all matching intents merge force tools.
 # NOTE: generic 记住 is handled by classify_durable_persist (not force-memory-only).
 _INTENT_RULES: list[tuple[str, re.Pattern[str], list[str], bool]] = [
+    # history conversations (on-demand; do not auto-inject)
+    (
+        "session_history",
+        re.compile(
+            r"(?:"
+            r"(列出|查看|看看|显示|打开|有哪些|有多少|多少个?|全部|所有).{0,8}(对话|会话|聊天)|"
+            r"(历史对话|会话列表|对话列表|聊天记录)|"
+            r"(之前|以前|上次|上一个).{0,8}(对话|会话|聊天)|"
+            r"搜(索|一下)?(历史)?(对话|会话)|"
+            r"我(都)?(聊|建|创建)了?(多少|哪些|几个)对话|"
+            r"\b(list|search|how many|all) (my )?(chats?|sessions?|conversations?)\b"
+            r")",
+            re.I,
+        ),
+        ["session_history"],
+        True,
+    ),
     # assistant self persona (name / language / background / roleplay) — NOT memory
     (
         "update_persona",

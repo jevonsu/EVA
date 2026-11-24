@@ -566,9 +566,12 @@ window.Lily = (() => {
  if (window.Lily && typeof window.Lily.initWorkspacePanel === "function") {
  try { window.Lily.initWorkspacePanel(); } catch (_) {}
  }
+ if (window.Lily && typeof window.Lily.initSessionPersona === "function") {
+ try { window.Lily.initSessionPersona(); } catch (_) {}
+ }
  }
  if (!document.getElementById('configModal')) {
- fetch('/static/html/config-modal.html?v=ux9')
+ fetch('/static/html/config-modal.html?v=persona1')
  .then(function(r) { return r.text(); })
  .then(function(html) {
  var c = document.getElementById('configModalContainer');

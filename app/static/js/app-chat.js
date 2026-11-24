@@ -396,12 +396,17 @@ L.markSessionRead = markSessionRead;
  <div class="title">${unread ? '<span class="session-unread-dot" title="有新回复（未读）" aria-label="未读"></span>' : ""}${escapeHtml(s.title || "未命名对话")}${generating ? ' <span class="session-gen-dot" title="后台生成中"></span>' : ""}</div>
  <div class="meta">${s.message_count ?? "?"} 条${timeBit ? ` · ${escapeHtml(timeBit)}` : ""}${genBit}</div>
  </div>
+ <button type="button" class="session-persona" title="本对话人设" aria-label="本对话人设">${_ipk("robot-one","ipk-sm")}</button>
  <button type="button" class="session-rename" title="重命名" aria-label="重命名">${_ipk("edit","ipk-sm")}</button>
  <button type="button" class="session-del" title="删除对话" aria-label="删除">${_ipk("delete","ipk-sm")}</button>`;
  row.querySelector(".session-main").addEventListener("click", () => {
  closeMobileSidebar();
  markSessionRead(s.session_id, s.message_count);
  openSession(s.session_id, s.title);
+ });
+ row.querySelector(".session-persona")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (typeof L.openSessionPersona === "function") L.openSessionPersona(s.session_id);
  });
  row.querySelector(".session-del").addEventListener("click", (e) =>
  deleteSession(s.session_id, e)

@@ -590,6 +590,9 @@
    if (ok && typeof L.hydrateIconPark === "function") {
     L.hydrateIconPark(document.getElementById("configModalContainer") || document);
    }
+   if (ok && typeof L.initSessionPersona === "function") {
+    try { L.initSessionPersona(); } catch (_) {}
+   }
   });
  }
  // 合并启动请求：health 内已拉 agent；此处只再拉一份完整 /api/config 做人设缓存
