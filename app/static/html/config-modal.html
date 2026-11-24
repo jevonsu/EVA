@@ -190,20 +190,103 @@
  <p class="field-hint" style="margin:6px 0 0">会话演化：达到触发条数后把更早内容压成摘要并注入后续对话，避免长聊遗忘关键结论。</p>
  </details>
 
- <!-- ② 演化人格（当前会话压缩结果，只读） -->
+ <!-- ② 演化人格（可编辑表格；与长期记忆分离） -->
  <div class="agent-section" id="evoPersonaSection">
  <div class="agent-section-head">
  <span class="agent-section-title">② 演化人格</span>
- <span class="agent-section-hint">当前会话压缩后的人格与要点</span>
+ <span class="agent-section-hint">会话演化摘要与公共演化要点，不是长期记忆</span>
  <div class="cfg-tool-cluster">
- <button type="button" class="cfg-tool" id="btnRefreshEvolution" title="刷新演化结果">
+ <button type="button" class="cfg-tool" id="btnEvoAddEntry">新建条目</button>
+ <button type="button" class="cfg-tool" id="btnEvoManageTags">标签管理</button>
+ <button type="button" class="cfg-tool" id="btnRefreshEvolution" title="刷新">
  <span data-ipk="refresh" data-ipk-class="ipk-xs"></span><span>刷新</span>
  </button>
  </div>
  </div>
  <p class="evo-persona-meta" id="evoPersonaMeta"></p>
+ <div class="evo-toolbar" id="evoToolbar">
+  <label>作用域
+   <select id="evoScope">
+    <option value="session">当前会话</option>
+    <option value="global">公共演化</option>
+    <option value="all">全部</option>
+   </select>
+  </label>
+  <label>搜索
+   <input id="evoSearch" type="search" placeholder="内容或标签" />
+  </label>
+  <label>类型
+   <select id="evoKindFilter"><option value="">全部类型</option></select>
+  </label>
+  <label>标签
+   <select id="evoTagFilter"><option value="">全部标签</option></select>
+  </label>
+  <label>来源
+   <select id="evoSourceFilter">
+    <option value="">全部来源</option>
+    <option value="auto">自动压缩</option>
+    <option value="manual">手动添加</option>
+    <option value="edited">手动修订</option>
+   </select>
+  </label>
+ </div>
+ <p class="evo-status" id="evoTableStatus" role="status"></p>
  <div id="evoPersonaBody" class="evo-persona-body">
- <p class="evo-persona-empty">打开一个会话后，演化结果会出现在这里。</p>
+  <div class="evo-table-wrap">
+   <table class="evo-table" id="evoTable">
+    <thead>
+     <tr>
+      <th>内容</th>
+      <th>标签</th>
+      <th>类型</th>
+      <th>来源</th>
+      <th>作用域</th>
+      <th>更新时间</th>
+      <th>操作</th>
+     </tr>
+    </thead>
+    <tbody id="evoTableBody"></tbody>
+   </table>
+  </div>
+  <div class="evo-pager" id="evoPager"></div>
+ </div>
+ <div class="evo-editor" id="evoEditor" hidden>
+  <strong id="evoEditorTitle">编辑条目</strong>
+  <input type="hidden" id="evoEditId" />
+  <input type="hidden" id="evoEditScope" />
+  <label class="agent-field">作用域
+   <select id="evoEditScopeSelect">
+    <option value="session">当前会话</option>
+    <option value="global">公共演化</option>
+   </select>
+  </label>
+  <label class="agent-field">类型
+   <select id="evoEditKind"></select>
+  </label>
+  <label class="agent-field">内容
+   <textarea id="evoEditContent" rows="3" maxlength="800"></textarea>
+  </label>
+  <label class="agent-field">标签
+   <div id="evoEditTags"></div>
+  </label>
+  <div class="cfg-tool-cluster">
+   <button type="button" class="cfg-tool is-primary" id="btnEvoSaveEntry">保存条目</button>
+   <button type="button" class="cfg-tool" id="btnEvoCancelEntry">取消</button>
+  </div>
+  <p class="form-msg" id="msgEvoEditor"></p>
+ </div>
+ <div class="evo-tag-mgr" id="evoTagMgr" hidden>
+  <strong>标签管理</strong>
+  <p class="field-hint">重命名或删除标签不会删除条目，只会解除关联。</p>
+  <div id="evoTagList"></div>
+  <label class="agent-field">新标签
+   <input id="evoNewTagName" type="text" maxlength="32" />
+  </label>
+  <div class="cfg-tool-cluster">
+   <button type="button" class="cfg-tool is-primary" id="btnEvoAddTag">新建标签</button>
+   <button type="button" class="cfg-tool" id="btnEvoCloseTags">关闭</button>
+  </div>
+  <p class="form-msg" id="msgEvoTags"></p>
  </div>
  </div>
 

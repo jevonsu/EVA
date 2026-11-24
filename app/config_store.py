@@ -239,6 +239,17 @@ def default_config() -> dict[str, Any]:
             "root": "",
             "hub_url": "",
         },
+        "evolution_catalog": {
+            "tags": [],
+            "global": {
+                "version": 0,
+                "text": "",
+                "entries": [],
+                "updated_at": None,
+                "message_count_at_update": 0,
+                "tombstones": [],
+            },
+        },
     }
 
 

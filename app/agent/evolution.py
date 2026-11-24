@@ -91,35 +91,15 @@ def empty_evolution() -> dict[str, Any]:
         "updated_at": None,
         "message_count_at_update": 0,
         "messages_since_update": 0,
+        "tombstones": [],
     }
 
 
 def normalize_evolution(raw: Any) -> dict[str, Any]:
-    base = empty_evolution()
-    if not isinstance(raw, dict):
-        return base
-    base["version"] = int(raw.get("version") or 0)
-    base["text"] = str(raw.get("text") or "")
-    ents = raw.get("entries")
-    if isinstance(ents, list):
-        clean: list[dict[str, str]] = []
-        for e in ents:
-            if isinstance(e, dict) and str(e.get("content") or "").strip():
-                clean.append(
-                    {
-                        "kind": str(e.get("kind") or "fact")[:32],
-                        "content": str(e.get("content") or "").strip()[:500],
-                    }
-                )
-            elif isinstance(e, str) and e.strip():
-                clean.append({"kind": "fact", "content": e.strip()[:500]})
-        base["entries"] = clean
-    base["updated_at"] = raw.get("updated_at")
-    try:
-        base["message_count_at_update"] = int(raw.get("message_count_at_update") or 0)
-    except (TypeError, ValueError):
-        base["message_count_at_update"] = 0
-    return base
+    """Normalize a digest, preserving ids/tags/source/tombstones when present."""
+    from app.agent.evolution_entries import normalize_digest
+
+    return normalize_digest(raw)
 
 
 def evolution_public_view(
@@ -139,9 +119,15 @@ def evolution_public_view(
             continue
         entries.append(
             {
+                "id": str(e.get("id") or ""),
                 "kind": kind,
                 "kind_label": KIND_LABELS.get(kind, kind),
                 "content": content,
+                "tags": list(e.get("tags") or []),
+                "source": str(e.get("source") or "auto"),
+                "protected": bool(e.get("protected")),
+                "updated_at": e.get("updated_at"),
+                "created_at": e.get("created_at"),
             }
         )
     entries.sort(key=lambda x: 0 if x.get("kind") == "preference" else 1)
@@ -182,7 +168,9 @@ def render_evolution_block(evo: dict[str, Any] | None, *, max_chars: int = 2200)
         for i, e in enumerate(entries, 1):
             kind = (e.get("kind") or "fact").strip()
             content = (e.get("content") or "").strip()
-            lines.append(f"{i}. [{kind}] {content}")
+            src = (e.get("source") or "auto").strip()
+            mark = "manual" if src in ("manual", "edited") or e.get("protected") else "auto"
+            lines.append(f"{i}. [{kind}/{mark}] {content}")
     elif text:
         lines.append(text)
 
@@ -253,7 +241,9 @@ async def evolve_session_context(
         "- Do NOT copy procedures/SOPs. Durable standing rules live in kb / memory.\n"
         "- Do NOT keep live business records (orders, payments, inventory) — those live in business tools.\n"
         "- Drop: chit-chat, failed tool noise, full prompts longer than one line (summarize instead).\n"
-        "- Merge/update old evolution; correct superseded decisions.\n"
+        "- Merge/update AUTO entries; NEVER drop, rewrite, or recreate entries marked manual/edited.\n"
+        "- Do not resurrect deleted notes.\n"
+        "- Merge/update old evolution; correct superseded AUTO decisions.\n"
         "- Language: match the conversation (usually Chinese).\n"
         "- No markdown fences."
     )
@@ -314,13 +304,16 @@ async def evolve_session_context(
     if not text and clean_entries:
         text = "；".join(f"{e['kind']}:{e['content']}" for e in clean_entries)[:max_chars]
 
-    return {
+    generated = {
         "version": int(prev.get("version") or 0) + 1,
         "text": text,
         "entries": clean_entries,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "message_count_at_update": 0,  # filled by caller
     }
+    from app.agent.evolution_entries import merge_evolution
+
+    return merge_evolution(prev, generated, max_entries=max_entries)
 
 
 def _parse_json_object(raw: str) -> dict[str, Any]:

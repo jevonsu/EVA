@@ -888,28 +888,13 @@
  }
 
  async function loadEvolutionPanel() {
-  const body = $("evoPersonaBody");
-  const meta = $("evoPersonaMeta");
-  if (!body) return;
-  const sid = (state && state.sessionId) || "";
-  if (!sid) {
-   if (meta) meta.textContent = "";
-   body.innerHTML =
-    '<p class="evo-persona-empty">新对话还没有演化。聊到触发条数后，这里会显示压缩后的人格要点。</p>';
+  if (typeof L.initSessionPersona === "function") L.initSessionPersona();
+  if (typeof L.loadEvolutionTable === "function") {
+   await L.loadEvolutionTable();
    return;
   }
-  try {
-   const data = await api(
-    "/api/sessions/" + encodeURIComponent(sid) + "/evolution"
-   );
-   renderEvolutionPanel(data);
-  } catch (e) {
-   if (meta) meta.textContent = "";
-   body.innerHTML =
-    '<p class="evo-persona-empty">无法读取演化结果：' +
-    escapeHtml(e.message || e) +
-    "</p>";
-  }
+  const body = $("evoPersonaBody");
+  if (body) body.innerHTML = '<p class="evo-persona-empty">演化表格脚本未加载。</p>';
  }
 
  function collectAgentFormPayload() {

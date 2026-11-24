@@ -15,6 +15,13 @@ from pydantic import BaseModel, Field
 from app.memory.session import get_session_store
 from app.services import session_events as _sess_bus
 from app.models.schemas import SessionInfo
+from app.agent.session_persona import (
+    ROLE_CHANGE_HINT,
+    build_persona_record,
+    persona_api_view,
+)
+from app.config_store import get_config_store
+from app.services.session_history import excerpt_session, query_sessions
 
 class SessionCreate(BaseModel):
     title: str | None = Field(None, max_length=120)
@@ -35,6 +42,11 @@ class SessionMessageDelete(BaseModel):
 
 class SessionRestore(BaseModel):
     session: dict[str, Any]
+
+
+class SessionPersonaUpdate(BaseModel):
+    mode: str = Field(..., description="inherit | override")
+    agent: dict[str, Any] | None = None
 
 
 class SessionMessageRestore(BaseModel):
@@ -107,6 +119,50 @@ async def create_session(body: SessionCreate) -> dict:
     title = (body.title or "").strip()[:80] or None
     data = await get_session_store().create(title=title)
     return {"ok": True, **data}
+
+
+@router.get("/query")
+async def query_session_history(q: str = "", page: int = 1, page_size: int = 10) -> dict:
+    """Paginated session list/search for the agent. Does not return persona snapshots or full transcripts."""
+    return await query_sessions(q=q, page=page, page_size=page_size)
+
+
+@router.get("/{session_id}/excerpt")
+async def get_session_excerpt(session_id: str, offset: int = 0, limit: int = 20) -> dict:
+    try:
+        return await excerpt_session(session_id, offset=offset, limit=limit)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found") from None
+
+
+@router.get("/{session_id}/persona")
+async def get_session_persona(session_id: str) -> dict:
+    store = get_session_store()
+    data = await store.get(session_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return persona_api_view(session=data, public_agent=get_config_store().get_agent())
+
+
+@router.patch("/{session_id}/persona")
+async def update_session_persona(session_id: str, body: SessionPersonaUpdate) -> dict:
+    store = get_session_store()
+    data = await store.get(session_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Session not found")
+    md = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    try:
+        rec = build_persona_record(
+            mode=body.mode,
+            agent_fields=body.agent or {},
+            previous=(md or {}).get("persona"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    updated = await store.update_metadata(session_id, {"persona": rec}, merge=True)
+    view = persona_api_view(session=updated, public_agent=get_config_store().get_agent())
+    view["role_change_hint"] = ROLE_CHANGE_HINT
+    return view
 
 
 @router.get("/{session_id}/evolution")
